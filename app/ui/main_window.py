@@ -784,10 +784,10 @@ class MainWindow(QMainWindow):
             kind = {"sfx": " · SFX (tự nhận diện)", "manual": " · vẽ tay", "lasso": " · lasso"}.get(r.kind, "")
             text = f"Vùng #{idx + 1} / {len(self.page.regions)}{kind} – {state}"
             if len(self.selection) > 1:
-                nums = ", ".join(f"#{i + 1}" for i in sorted(self.selection))
-                text = (f"Đang chọn {len(self.selection)} vùng: {nums}. Đổi font/kiểu sẽ áp cho tất cả; "
-                        f"Xử lý sẽ làm lần lượt từng vùng (vùng chưa có chữ tự nhận câu dịch kế tiếp).\n"
-                        f"Ô bên dưới là chữ của vùng #{idx + 1}.")
+                sel = sorted(self.selection)
+                nums = ", ".join(f"#{i + 1}" for i in sel[:8]) + (" …" if len(sel) > 8 else "")
+                text = (f"Đang chọn {len(sel)} vùng ({nums}) – đổi font/kiểu áp cho tất cả, "
+                        f"Xử lý làm lần lượt từng vùng. Ô dưới: chữ vùng #{idx + 1}.")
             self.lbl_region.setText(text)
             text = r.text
             self._suggested_text = None
