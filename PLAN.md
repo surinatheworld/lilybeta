@@ -20,20 +20,22 @@
 | Redraw nền | Bóng trắng: tô màu nền; nền phức tạp: LaMa (ONNX), dự phòng `cv2.inpaint` | LaMa vẽ lại nền texture/tranh rất tốt, chạy được bằng CPU |
 | Lưu dự án | JSON | Lưu vị trí, font, cỡ chữ từng bóng để mở lại sửa |
 
-## 3. Luồng làm việc
+## 3. Luồng làm việc (đã chốt)
 
 ```
-Mở thư mục raw ──► Phát hiện vùng chữ (auto) ──► Người dùng sửa/thêm/xoá vùng
+Mở 1 ảnh raw ──► Tự nhận diện chữ (ưu tiên tiếng Nhật, cả chữ dọc) và khoanh vùng
        │
        ▼
-Nạp bản dịch ──► Ghép câu dịch ↔ vùng chữ theo thứ tự đọc
+Người dùng chọn vùng ──► chọn câu dịch tương ứng trong file docs (.docx/.txt)
        │
        ▼
-Clean (xoá chữ gốc + redraw nền) ──► Type chữ (font, tự co cỡ, xuống dòng, căn giữa)
+Chọn font (font trên máy) ──► Tool xử lý: xoá chữ gốc + redraw nền + chèn bản dịch
        │
        ▼
-Chỉnh tay (kéo, đổi font, viền chữ, xoay) ──► Xuất PNG/JPG
+Chỉnh lại nếu cần ──► Xuất PNG/JPG
 ```
+
+Trạng thái: luồng trên đã làm xong (MVP). Xem README.md để biết cách dùng.
 
 ### Định dạng file bản dịch (đề xuất)
 
