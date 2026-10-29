@@ -8,6 +8,8 @@ import urllib.request
 import cv2
 import numpy as np
 
+from .inpaint_util import blend_back, resize_to, square_around
+
 MODEL_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx"
 MODEL_PATH = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "models", "lama_fp32.onnx")
@@ -39,32 +41,16 @@ def is_ready() -> bool:
 
 def inpaint(img: np.ndarray, mask: np.ndarray) -> None:
     """Vẽ lại vùng `mask` (0/255, cỡ ảnh) trên `img` (BGR) tại chỗ."""
-    ys, xs = np.nonzero(mask)
-    if len(xs) == 0:
+    box = square_around(mask)
+    if box is None:
         return
-    h, w = img.shape[:2]
-    x1, y1, x2, y2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
-    # Cắt ô vuông quanh vùng cần vẽ, chừa đủ nền xung quanh để model "nhìn" hoạ tiết.
-    side = int(max(x2 - x1, y2 - y1) * 2.2)
-    side = min(max(side, 192), max(h, w))
-    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-    sx1 = int(np.clip(cx - side // 2, 0, max(0, w - side)))
-    sy1 = int(np.clip(cy - side // 2, 0, max(0, h - side)))
-    sx2, sy2 = min(w, sx1 + side), min(h, sy1 + side)
-
-    crop = img[sy1:sy2, sx1:sx2]
-    m = mask[sy1:sy2, sx1:sx2]
-    ch, cw = crop.shape[:2]
-    inp = cv2.resize(crop, (SIZE, SIZE), interpolation=cv2.INTER_AREA if max(ch, cw) > SIZE else cv2.INTER_CUBIC)
-    mk = cv2.resize(m, (SIZE, SIZE), interpolation=cv2.INTER_NEAREST)
+    x1, y1, x2, y2 = box
+    crop = img[y1:y2, x1:x2]
+    inp = resize_to(crop, SIZE, SIZE)
+    mk = cv2.resize(mask[y1:y2, x1:x2], (SIZE, SIZE), interpolation=cv2.INTER_NEAREST)
     mk = (cv2.dilate(mk, np.ones((3, 3), np.uint8)) > 0).astype(np.float32)
 
     image = cv2.cvtColor(inp, cv2.COLOR_BGR2RGB).transpose(2, 0, 1)[None].astype(np.float32) / 255.0
     out = get_session().run(None, {"image": image, "mask": mk[None, None]})[0][0]
     out = cv2.cvtColor(np.clip(out.transpose(1, 2, 0), 0, 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
-    out = cv2.resize(out, (cw, ch), interpolation=cv2.INTER_AREA if max(ch, cw) < SIZE else cv2.INTER_CUBIC)
-
-    # Chỉ thay phần trong mask, mép hoà dần để không lộ đường cắt.
-    alpha = cv2.GaussianBlur((m > 0).astype(np.float32), (5, 5), 0)
-    alpha = np.maximum(alpha, (m > 0).astype(np.float32))[..., None]
-    crop[:] = (out * alpha + crop * (1 - alpha)).astype(np.uint8)
+    blend_back(img, box, resize_to(out, x2 - x1, y2 - y1), mask)

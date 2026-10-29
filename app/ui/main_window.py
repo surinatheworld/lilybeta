@@ -30,11 +30,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core import lama
+from ..core import cloud, lama, secrets
 from ..core.detect import TextDetector
 from ..core.docs import load_lines
 from ..core.page import Page, Region
 from ..core.typeset import TextStyle, missing_chars
+from .api_dialog import PROVIDERS, ApiDialog, model_for
 from .image_view import TOOL_LASSO, TOOL_RECT, ImageView
 
 IMAGE_FILTER = "Ảnh (*.png *.jpg *.jpeg *.webp *.bmp)"
@@ -74,6 +75,30 @@ class LamaLoader(QThread):
             self.done.emit(str(e))
 
 
+class CleanWorker(QThread):
+    """Xoá chữ + vẽ lại nền ở luồng nền (AI trên mạng có thể mất vài chục giây)."""
+
+    failed = Signal(str)
+
+    def __init__(self, parent, page: Page, region: Region, fit_bubble: bool):
+        super().__init__(parent)
+        self.page, self.region, self.fit_bubble = page, region, fit_bubble
+
+    def run(self):
+        try:
+            self.page.clean(self.region, fit_bubble=self.fit_bubble)
+        except Exception as e:  # noqa: BLE001 - báo lỗi cho người dùng
+            self.failed.emit(str(e))
+
+
+ENGINES = [
+    ("opencv", "Thường (OpenCV) – nhanh, nền tranh hơi mờ"),
+    ("lama", "AI LaMa – chạy trên máy, miễn phí"),
+    ("gemini", "AI Google Gemini – cần API key"),
+    ("openai", "AI OpenAI (ChatGPT) – cần API key"),
+]
+
+
 class ColorButton(QPushButton):
     changed = Signal(str)
 
@@ -104,6 +129,7 @@ class MainWindow(QMainWindow):
 
         self.detector: TextDetector | None = None
         self.worker: DetectWorker | None = None
+        self.clean_worker: CleanWorker | None = None
         self.page: Page | None = None
         self.selected = -1
         self.lines: list[str] = []
@@ -123,6 +149,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(splitter)
         self._build_toolbar()
         self._load_style_settings()
+        self._update_ai_label()
         self.statusBar().showMessage("Mở ảnh raw (Ctrl+O) hoặc kéo thả ảnh vào cửa sổ.")
 
     # --- dựng giao diện ----------------------------------------------------
@@ -263,12 +290,20 @@ class MainWindow(QMainWindow):
                                    "(chữ Nhật dọc thường có khung hẹp và cao).")
         self.chk_bubble.toggled.connect(self._bubble_toggled)
         fl.addRow("", self.chk_bubble)
-        self.chk_ai = QCheckBox("Vẽ lại nền bằng AI (LaMa) – đẹp hơn ở nền tranh, SFX")
-        self.chk_ai.setToolTip("Bóng thoại trắng vẫn tô màu nền như thường (nhanh). AI chỉ dùng cho nền có hoạ tiết, "
-                               "mỗi vùng mất vài giây; lần đầu cần nạp model ~30 giây.")
-        self.chk_ai.setChecked(self.settings.value("use_ai", True) in (True, "true"))
-        self.chk_ai.toggled.connect(self._ai_toggled)
-        fl.addRow("", self.chk_ai)
+        self.engine_box = QComboBox()
+        for eid, label in ENGINES:
+            self.engine_box.addItem(label, eid)
+        self.engine_box.setToolTip("Cách vẽ lại nền sau khi xoá chữ. Bóng thoại trắng / nền trơn luôn được tô màu "
+                                   "nền (tức thì); AI chỉ dùng cho nền có hoạ tiết (tranh, lưới chấm, SFX).")
+        idx = self.engine_box.findData(self.settings.value("ai/engine", "lama"))
+        self.engine_box.setCurrentIndex(max(0, idx))
+        self.engine_box.currentIndexChanged.connect(self._engine_changed)
+        btn_api = QPushButton("API key…")
+        btn_api.clicked.connect(self.open_api_dialog)
+        erow = QHBoxLayout()
+        erow.addWidget(self.engine_box, 1)
+        erow.addWidget(btn_api)
+        fl.addRow("Vẽ lại nền", erow)
         self.lbl_ai = QLabel()
         self.lbl_ai.setStyleSheet("color:#888;")
         fl.addRow(self.lbl_ai)
@@ -337,12 +372,40 @@ class MainWindow(QMainWindow):
             r.style = style
             self.refresh()
 
-    def _ai_toggled(self, on: bool):
-        self.settings.setValue("use_ai", on)
-        if self.page:
-            self.page.use_ai = on
-        if on:
+    @property
+    def engine(self) -> str:
+        return self.engine_box.currentData()
+
+    def _engine_changed(self, *_):
+        self.settings.setValue("ai/engine", self.engine)
+        self.lbl_ai.setText("")
+        if self.engine == "lama":
             self._preload_lama()
+        elif self.engine in PROVIDERS:
+            if not secrets.get_key(self.engine):
+                self.open_api_dialog()
+            self._update_ai_label()
+
+    def _update_ai_label(self):
+        if self.engine in PROVIDERS:
+            has_key = bool(secrets.get_key(self.engine))
+            self.lbl_ai.setText(f"✓ Dùng {model_for(self.settings, self.engine)}" if has_key
+                                else "⚠ Chưa có API key – bấm “API key…”")
+
+    def open_api_dialog(self):
+        if ApiDialog(self.settings, self).exec():
+            self._update_ai_label()
+
+    def _make_inpainter(self):
+        """Hàm vẽ lại nền theo lựa chọn hiện tại (None = OpenCV)."""
+        if self.engine == "lama":
+            return lama.inpaint
+        if self.engine in PROVIDERS:
+            key = secrets.get_key(self.engine)
+            if not key:
+                raise cloud.CloudError("Chưa nhập API key. Bấm “API key…” để nhập, hoặc chọn LaMa.")
+            return cloud.make_inpainter(self.engine, key, model_for(self.settings, self.engine))
+        return None
 
     def _preload_lama(self):
         if lama.is_ready() or getattr(self, "_lama_loader", None) is not None:
@@ -355,31 +418,51 @@ class MainWindow(QMainWindow):
     def _lama_loaded(self, err: str):
         self._lama_loader = None
         if err:
-            self.lbl_ai.setText("⚠ Không nạp được AI vẽ nền, dùng cách thường.")
-            self.chk_ai.setChecked(False)
+            self.lbl_ai.setText("⚠ Không nạp được LaMa, chuyển sang cách thường.")
+            self.engine_box.setCurrentIndex(self.engine_box.findData("opencv"))
             QMessageBox.warning(self, "AI vẽ nền", err)
         else:
-            self.lbl_ai.setText("✓ AI vẽ nền sẵn sàng")
+            if self.engine == "lama":
+                self.lbl_ai.setText("✓ AI LaMa sẵn sàng")
 
-    def _clean(self, r: Region, fit_bubble: bool):
-        """Xoá chữ + vẽ lại nền; có thể mất vài giây khi dùng AI nên hiện trạng thái chờ."""
-        self.page.use_ai = self.chk_ai.isChecked()
-        if not r.cleaned:
-            msg = "Đang xoá chữ…" if lama.is_ready() or not self.page.use_ai else "Đang chờ nạp AI vẽ nền…"
-            self.statusBar().showMessage(msg)
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            QApplication.processEvents()
+    def _clean_then(self, r: Region, after):
+        """Xoá chữ ở luồng nền, xong thì gọi `after()`. Trong lúc chờ khoá thao tác để không sửa trang song song."""
+        if r.cleaned:
+            self.page.clean(r, fit_bubble=self.chk_bubble.isChecked())
+            after()
+            return
+        if self.clean_worker is not None:
+            return
         try:
-            self.page.clean(r, fit_bubble=fit_bubble)
-        finally:
-            if QApplication.overrideCursor() is not None:
-                QApplication.restoreOverrideCursor()
+            self.page.inpainter = self._make_inpainter()
+        except cloud.CloudError as e:
+            QMessageBox.warning(self, "AI vẽ nền", str(e))
+            return
+        name = self.engine_box.currentText().split(" – ")[0]
+        wait = " (đang chờ nạp model)" if self.engine == "lama" and not lama.is_ready() else ""
+        self.statusBar().showMessage(f"Đang xoá chữ vùng #{self.selected + 1} – {name}{wait}…")
+        self.centralWidget().setEnabled(False)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.clean_worker = CleanWorker(self, self.page, r, self.chk_bubble.isChecked())
+        self.clean_worker.failed.connect(lambda msg: QMessageBox.warning(self, "Lỗi khi xoá chữ", msg))
+
+        def finished():
+            self.clean_worker = None
+            QApplication.restoreOverrideCursor()
+            self.centralWidget().setEnabled(True)
             self.statusBar().clearMessage()
+            if r.cleaned:
+                after()
+            else:
+                self.refresh()
+
+        self.clean_worker.finished.connect(finished)
+        self.clean_worker.start()
 
     def _bubble_toggled(self, on: bool):
         r = self.region
         if r is not None and r.cleaned:
-            self._clean(r, fit_bubble=on)
+            self.page.clean(r, fit_bubble=on)
             self.refresh()
 
     def _update_warning(self):
@@ -405,8 +488,7 @@ class MainWindow(QMainWindow):
         self.view.set_image(self.page.render(), fit=True)
         self.refresh()
         self.run_detect()
-        self.page.use_ai = self.chk_ai.isChecked()
-        if self.page.use_ai:
+        if self.engine == "lama":
             self._preload_lama()
 
     def open_docs(self):
@@ -533,22 +615,27 @@ class MainWindow(QMainWindow):
             return
         r.text = self.txt.toPlainText()
         r.style = self.current_style()
-        self._clean(r, fit_bubble=self.chk_bubble.isChecked())
-        line = self._line_of_text(r.text)
-        if line is not None:
-            self.used_lines.add(line)
-            self._fill_lines()
-        self.refresh()
-        self._goto_next_pending()
+
+        def after():
+            line = self._line_of_text(r.text)
+            if line is not None:
+                self.used_lines.add(line)
+                self._fill_lines()
+            self.refresh()
+            self._goto_next_pending()
+
+        self._clean_then(r, after)
 
     def clean_selected(self):
         r = self.region
         if r is None:
             return
-        self._clean(r, fit_bubble=self.chk_bubble.isChecked())
-        r.text = ""
-        self.refresh()
-        self.select_region(self.selected)
+        def after():
+            r.text = ""
+            self.refresh()
+            self.select_region(self.selected)
+
+        self._clean_then(r, after)
 
     def reset_selected(self):
         r = self.region
