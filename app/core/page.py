@@ -22,6 +22,8 @@ class Region:
     style: TextStyle = field(default_factory=TextStyle)
     cleaned: bool = False
     text_rects: list[Box] = field(default_factory=list)  # các khung có thể đặt chữ (lòng bóng thoại)
+    kind: str = "text"  # "text" | "sfx" | "manual" (vẽ tay) | "lasso"
+    polygon: list[tuple[int, int]] | None = None  # đường khoanh lasso (toạ độ ảnh)
 
     @property
     def text_rect(self) -> Box:
@@ -54,15 +56,34 @@ class Page:
         boxes, self.text_mask = detector.detect(self.original)
         boxes = sort_reading_order(boxes, right_to_left)
         self.regions = [r for r in self.regions if r.cleaned]
-        self.regions += [Region((b.x1, b.y1, b.x2, b.y2)) for b in boxes]
+        self.regions += [Region((b.x1, b.y1, b.x2, b.y2), kind=b.kind) for b in boxes]
 
     def add_region(self, box: Box) -> Region:
         x1, y1, x2, y2 = box
         w, h = self.size
         box = (max(0, min(x1, x2)), max(0, min(y1, y2)), min(w, max(x1, x2)), min(h, max(y1, y2)))
-        r = Region(box)
+        r = Region(box, kind="manual")
         self.regions.append(r)
         return r
+
+    def add_lasso(self, points: list[tuple[int, int]]) -> Region:
+        w, h = self.size
+        pts = [(int(np.clip(x, 0, w - 1)), int(np.clip(y, 0, h - 1))) for x, y in points]
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        r = Region((min(xs), min(ys), max(xs) + 1, max(ys) + 1), kind="lasso", polygon=pts)
+        self.regions.append(r)
+        return r
+
+    def area_mask(self, region: Region) -> np.ndarray | None:
+        if not region.polygon:
+            return None
+        w, h = self.size
+        m = np.zeros((h, w), np.uint8)
+        cv2.fillPoly(m, [np.array(region.polygon, np.int32)], 255)
+        return m
+
+    def _clean_pixels(self, region: Region) -> None:
+        clean_region(self.working, self.text_mask, region.box, self.area_mask(region))
 
     def remove_region(self, region: Region) -> None:
         self.reset(region)
@@ -70,9 +91,12 @@ class Page:
 
     def clean(self, region: Region, fit_bubble: bool = True) -> None:
         if not region.cleaned:
-            clean_region(self.working, self.text_mask, region.box)
+            self._clean_pixels(region)
             region.cleaned = True
-        region.text_rects = text_area_candidates(self.working, region.box) if fit_bubble else [region.box]
+        if fit_bubble:
+            region.text_rects = text_area_candidates(self.working, region.box, self.area_mask(region))
+        else:
+            region.text_rects = [region.box]
 
     def reset(self, region: Region) -> None:
         """Hoàn tác vùng: khôi phục ảnh gốc và bỏ chữ."""
@@ -84,7 +108,7 @@ class Page:
             # Vẽ lại các vùng khác đã xoá mà chồng lên phần vừa khôi phục.
             for other in self.regions:
                 if other is not region and other.cleaned and _overlap(other.box, (x1, y1, x2, y2)):
-                    clean_region(self.working, self.text_mask, other.box)
+                    self._clean_pixels(other)
         region.cleaned = False
         region.text = ""
         region.text_rects = []

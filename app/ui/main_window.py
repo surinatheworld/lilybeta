@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import QSettings, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
@@ -33,7 +33,7 @@ from ..core.detect import TextDetector
 from ..core.docs import load_lines
 from ..core.page import Page, Region
 from ..core.typeset import TextStyle, missing_chars
-from .image_view import ImageView
+from .image_view import TOOL_LASSO, TOOL_RECT, ImageView
 
 IMAGE_FILTER = "Ảnh (*.png *.jpg *.jpeg *.webp *.bmp)"
 DOCS_FILTER = "Bản dịch (*.docx *.txt)"
@@ -98,6 +98,7 @@ class MainWindow(QMainWindow):
         self.view = ImageView()
         self.view.regionClicked.connect(self.select_region)
         self.view.regionDrawn.connect(self.add_region)
+        self.view.lassoDrawn.connect(self.add_lasso)
 
         splitter = QSplitter()
         splitter.addWidget(self.view)
@@ -137,6 +138,18 @@ class MainWindow(QMainWindow):
         self.act_boxes.setChecked(True)
         act("Vừa khung", self.view.fit_width, "Ctrl+0")
         tb.addSeparator()
+        # Công cụ vẽ vùng mới: kéo chuột trên ảnh.
+        tools = QActionGroup(self)
+        self.act_rect = act("▭ Khung chữ nhật", lambda: self.view.set_tool(TOOL_RECT), "R")
+        self.act_lasso = act("➰ Lasso", lambda: self.view.set_tool(TOOL_LASSO), "L")
+        for a, tip in ((self.act_rect, "Kéo chuột để vẽ khung chữ nhật (R)"),
+                       (self.act_lasso, "Kéo chuột để khoanh tự do quanh chữ/SFX; toàn bộ phần khoanh sẽ bị xoá (L)")):
+            a.setCheckable(True)
+            a.setToolTip(tip)
+            tools.addAction(a)
+        self.act_rect.setChecked(True)
+        self.view.set_tool(TOOL_RECT)
+        tb.addSeparator()
         act("Xuất ảnh", self.export_image, "Ctrl+S")
 
     def _build_panel(self) -> QWidget:
@@ -146,7 +159,8 @@ class MainWindow(QMainWindow):
         # Vùng chữ đang chọn
         g_region = QGroupBox("Vùng chữ")
         rl = QVBoxLayout(g_region)
-        self.lbl_region = QLabel("Chưa chọn vùng. Bấm vào khung trên ảnh, hoặc kéo chuột để tự vẽ vùng.")
+        self.lbl_region = QLabel("Chưa chọn vùng. Bấm vào khung trên ảnh, hoặc kéo chuột để tự vẽ vùng "
+                                 "(khung chữ nhật hoặc lasso).")
         self.lbl_region.setWordWrap(True)
         rl.addWidget(self.lbl_region)
         self.txt = QPlainTextEdit()
@@ -406,7 +420,8 @@ class MainWindow(QMainWindow):
             self.txt.setPlainText("")
         else:
             state = "đã xử lý" if r.done else ("đã xoá chữ" if r.cleaned else "chưa xử lý")
-            self.lbl_region.setText(f"Vùng #{idx + 1} / {len(self.page.regions)} – {state}")
+            kind = {"sfx": " · SFX (tự nhận diện)", "manual": " · vẽ tay", "lasso": " · lasso"}.get(r.kind, "")
+            self.lbl_region.setText(f"Vùng #{idx + 1} / {len(self.page.regions)}{kind} – {state}")
             text = r.text
             if not text:
                 nxt = self._next_unused_line()
@@ -424,6 +439,12 @@ class MainWindow(QMainWindow):
         if self.page is None:
             return
         self.page.add_region(box)
+        self.select_region(len(self.page.regions) - 1)
+
+    def add_lasso(self, points):
+        if self.page is None:
+            return
+        self.page.add_lasso(points)
         self.select_region(len(self.page.regions) - 1)
 
     def _step_region(self, d: int):

@@ -19,7 +19,11 @@ python -m venv .venv
 
 1. **Mở ảnh raw** (Ctrl+O hoặc kéo thả ảnh vào cửa sổ). Tool tự nhận diện chữ và khoanh các vùng, đánh số theo thứ tự đọc (chọn *Manga: phải → trái* hoặc *Manhwa: trái → phải* trên thanh công cụ).
 2. **Mở bản dịch** (Ctrl+D): file `.docx` hoặc `.txt`, mỗi đoạn là một câu. Dòng bắt đầu bằng `//` bị bỏ qua. Xuống dòng mềm (Shift+Enter trong Word) hoặc dấu `|` để ép xuống dòng trong bóng thoại.
-3. **Chọn vùng**: bấm vào khung trên ảnh. Thiếu vùng thì kéo chuột ở chỗ trống để tự vẽ.
+3. **Chọn vùng**: bấm vào khung trên ảnh.
+   - Khung **đỏ**: chữ trong bóng thoại / hộp dẫn truyện. Bóng thoại đôi được tách thành từng nửa, mỗi nửa một câu.
+   - Khung **cam nét đứt** (nhãn `SFX`): cụm chữ lẻ tự tìm thấy (SFX, chữ nhỏ ngoài bóng). Không cần thì bấm *Xoá khung*.
+   - Thiếu vùng thì tự vẽ: chọn công cụ **▭ Khung chữ nhật** (phím R) hoặc **➰ Lasso** (phím L) rồi kéo chuột.
+     Lasso khoanh tự do quanh SFX/chữ vẽ tay: **toàn bộ phần khoanh sẽ bị xoá** rồi vẽ lại nền, bản dịch đặt trong vùng khoanh.
 4. **Chọn câu dịch**: bấm một câu trong danh sách (bấm đúp = gán và xử lý luôn). Tool tự gợi ý câu chưa dùng tiếp theo.
 5. **Chọn font** trong danh sách font của máy, cỡ chữ (*Tự động* = tự co vừa bóng), đậm/nghiêng/in hoa, màu chữ, màu và độ dày viền. Font thiếu dấu tiếng Việt sẽ có cảnh báo đỏ.
 6. **Xử lý** (Ctrl+Enter): xoá chữ gốc, vẽ lại nền, chèn bản dịch. Tool tự chuyển sang vùng tiếp theo.
@@ -31,6 +35,7 @@ Vùng đã xử lý vẫn sửa được: chọn lại rồi đổi chữ/font, 
 |---|---|
 | Lăn chuột / Ctrl + lăn | Cuộn / phóng to-thu nhỏ |
 | Chuột phải hoặc giữa + kéo | Di chuyển ảnh |
+| R / L | Công cụ khung chữ nhật / lasso |
 | Tab | Sang vùng tiếp theo |
 | Delete | Xoá khung đang chọn |
 | B | Ẩn/hiện khung |
