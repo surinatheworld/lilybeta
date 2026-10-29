@@ -4,17 +4,21 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-MARGIN = 12
+MARGIN = 20
+FURIGANA_PAD = 10
 
 
 def build_text_mask(text_mask: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
     """Mask nhị phân (0/255) các nét chữ trong khung, nới rộng để ăn cả viền chữ."""
-    x1, y1, x2, y2 = box
     h, w = text_mask.shape[:2]
+    # Nới khung ra một chút để ăn cả furigana nằm sát mép khung chữ.
+    x1, y1 = max(0, box[0] - FURIGANA_PAD), max(0, box[1] - FURIGANA_PAD)
+    x2, y2 = min(w, box[2] + FURIGANA_PAD), min(h, box[3] + FURIGANA_PAD)
     out = np.zeros((h, w), np.uint8)
     out[y1:y2, x1:x2] = (text_mask[y1:y2, x1:x2] > 0.3).astype(np.uint8) * 255
     if out[y1:y2, x1:x2].sum() == 0:
-        out[y1:y2, x1:x2] = 255  # model không ra nét chữ: xoá cả khung
+        bx1, by1, bx2, by2 = box
+        out[by1:by2, bx1:bx2] = 255  # model không ra nét chữ: xoá cả khung
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     return cv2.dilate(out, k, iterations=2)
 
@@ -38,7 +42,9 @@ def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, in
     ring[mask > 0] = 0
     border = crop[ring > 0]
     if len(border) and border.std(axis=0).max() < 14:
-        crop[mask > 0] = np.median(border, axis=0).astype(np.uint8)
+        bg = np.median(border, axis=0).astype(np.uint8)
+        crop[mask > 0] = bg
+        _remove_leftover_strokes(crop, (x1 - cx1, y1 - cy1, x2 - cx1, y2 - cy1))
         return
     # Nền chuyển màu mượt (gradient): khớp mặt cong bậc 2 theo viền rồi tô lại.
     if len(border) >= 30:
@@ -49,6 +55,28 @@ def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, in
             crop[my, mx] = np.clip(_surface(mx, my) @ coef, 0, 255).astype(np.uint8)
             return
     crop[:] = cv2.inpaint(crop, mask, 5, cv2.INPAINT_TELEA)
+
+
+def _remove_leftover_strokes(crop: np.ndarray, box: tuple[int, int, int, int]) -> None:
+    """Nền trơn: xoá nét mảnh model bỏ sót (vd "──") nằm lọt thỏm trong lòng bóng.
+
+    Chỉ xoá những điểm bị nền bao quanh hoàn toàn, nên viền bóng và nền ngoài bóng không bị đụng tới.
+    """
+    x1, y1, x2, y2 = box
+    seed = ((x1 + x2) // 2, (y1 + y2) // 2)
+    ff = np.zeros((crop.shape[0] + 2, crop.shape[1] + 2), np.uint8)
+    flags = 4 | cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE | (255 << 8)
+    cv2.floodFill(crop.copy(), ff, seed, (0, 0, 0), (30, 30, 30), (30, 30, 30), flags)
+    region = ff[1:-1, 1:-1]
+    contours, _ = cv2.findContours(region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    interior = np.zeros_like(region)
+    cv2.drawContours(interior, contours, -1, 255, cv2.FILLED)
+    holes = (interior > 0) & (region == 0)
+    inside_box = np.zeros_like(holes)
+    inside_box[y1:y2, x1:x2] = True
+    holes = cv2.dilate((holes & inside_box).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    holes &= interior > 0
+    crop[holes] = crop[seed[1], seed[0]]
 
 
 def _surface(xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
@@ -62,26 +90,63 @@ def _fit_surface(xs, ys, values):
     return coef, a @ coef
 
 
-def bubble_rect(img: np.ndarray, box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
-    """Tìm lòng bóng thoại chứa `box` (sau khi đã xoá chữ) để đặt bản dịch cho rộng rãi.
+def text_area_candidates(img: np.ndarray, box: tuple[int, int, int, int]) -> list[tuple[int, int, int, int]]:
+    """Các khung có thể đặt bản dịch trong lòng bóng thoại chứa `box` (sau khi đã xoá chữ).
 
-    Loang màu từ tâm khung; nếu vùng loang quá lớn (không phải bóng thoại) thì giữ nguyên khung.
+    Loang màu từ tâm khung để lấy lòng bóng, rồi liệt kê các hình chữ nhật nằm trọn trong đó.
+    Nếu vùng loang không giống bóng thoại (tràn ra mép ảnh, quá lớn) thì chỉ dùng khung gốc.
     """
     h, w = img.shape[:2]
-    x1, y1, x2, y2 = box
+    x1, y1, x2, y2 = (int(v) for v in box)
     seed = ((x1 + x2) // 2, (y1 + y2) // 2)
     ff_mask = np.zeros((h + 2, w + 2), np.uint8)
     flags = 4 | cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE | (255 << 8)
     cv2.floodFill(img.copy(), ff_mask, seed, (0, 0, 0), (12, 12, 12), (12, 12, 12), flags)
-    region = ff_mask[1:-1, 1:-1]
+    region = ff_mask[1:-1, 1:-1] > 0
     ys, xs = np.nonzero(region)
     if len(xs) == 0:
-        return box
+        return [box]
     bx1, by1, bx2, by2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
-    box_area = (x2 - x1) * (y2 - y1)
-    if (bx2 - bx1) * (by2 - by1) > box_area * 8 or bx1 == 0 or by1 == 0 or bx2 == w or by2 == h:
-        return box
-    # Hình chữ nhật nội tiếp gần đúng của bóng (thường là elip): thu vào ~15% mỗi chiều.
-    ix, iy = int((bx2 - bx1) * 0.15), int((by2 - by1) * 0.15)
-    rx1, ry1, rx2, ry2 = bx1 + ix, by1 + iy, bx2 - ix, by2 - iy
-    return (min(rx1, x1), min(ry1, y1), max(rx2, x2), max(ry2, y2))
+    box_area = max(1, (x2 - x1) * (y2 - y1))
+    if (bx1 == 0 or by1 == 0 or bx2 == w or by2 == h
+            or len(xs) > 0.3 * w * h or len(xs) > 80 * box_area):
+        return [box]
+
+    pad = 3
+    cands = []
+    for rx1, ry1, rx2, ry2 in _inner_rects(region[by1:by2, bx1:bx2], (y1 + y2) // 2 - by1):
+        r = (int(bx1 + rx1 + pad), int(by1 + ry1 + pad), int(bx1 + rx2 - pad), int(by1 + ry2 - pad))
+        if r[2] - r[0] > 8 and r[3] - r[1] > 8:
+            cands.append(r)
+    # Khung chữ gốc có thể chòi ra ngoài lòng bóng (bóng đôi, bóng méo) nên chỉ dùng khi không còn cách khác.
+    return cands or [box]
+
+
+def _inner_rects(region: np.ndarray, text_cy: int) -> list[tuple[int, int, int, int]]:
+    """Các hình chữ nhật nằm trọn trong `region`, với nhiều tâm dọc và chiều cao khác nhau.
+
+    Bóng thoại có thể méo hoặc là bóng đôi, nên thử nhiều tâm (cả tâm chữ gốc) rồi để
+    bước dàn chữ chọn khung cho cỡ chữ lớn nhất.
+    """
+    h, w = region.shape
+    cols = np.arange(w)
+    has = region.any(axis=1)
+    left = np.where(has, np.where(region, cols, w).min(axis=1), w)
+    right = np.where(has, np.where(region, cols, -1).max(axis=1) + 1, 0)
+    centers = {int(np.clip(text_cy, 0, h - 1))}
+    centers.update(int(h * f) for f in (0.3, 0.4, 0.5, 0.6, 0.7))
+    step = max(2, h // 40)
+    out = []
+    for cy in sorted(centers):
+        cur_l, cur_r = 0, w
+        for hh in range(1, h, 1):
+            top, bot = cy - hh, cy + hh - 1
+            if top < 0 or bot >= h:
+                break
+            cur_l = max(cur_l, left[top], left[bot])
+            cur_r = min(cur_r, right[top], right[bot])
+            if cur_r - cur_l <= 0:
+                break
+            if hh % step == 0:
+                out.append((int(cur_l), top, int(cur_r), bot + 1))
+    return out
