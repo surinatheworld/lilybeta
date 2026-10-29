@@ -6,7 +6,7 @@ Thay chữ gốc (tiếng Nhật, Hàn, Trung…) trên ảnh truyện bằng b�
 
 Cần Python 3.10 trở lên ([python.org](https://www.python.org/downloads/), nhớ tick *Add Python to PATH*).
 
-Bấm đúp **`run.bat`**. Lần đầu tool tự cài thư viện; lần đầu nhận diện chữ sẽ tự tải model (~95MB) về thư mục `models/`.
+Bấm đúp **`run.bat`**. Lần đầu tool tự cài thư viện và tự tải 2 model AI về thư mục `models/`: nhận diện chữ (~95MB) và vẽ lại nền LaMa (~200MB).
 
 Hoặc chạy tay:
 ```bash
@@ -27,6 +27,8 @@ python -m venv .venv
 4. **Chọn câu dịch**: bấm một câu trong danh sách (bấm đúp = gán và xử lý luôn). Tool tự gợi ý câu chưa dùng tiếp theo.
 5. **Chọn font** trong danh sách font của máy, cỡ chữ (*Tự động* = tự co vừa bóng), đậm/nghiêng/in hoa, màu chữ, màu và độ dày viền. Font thiếu dấu tiếng Việt sẽ có cảnh báo đỏ.
 6. **Xử lý** (Ctrl+Enter): xoá chữ gốc, vẽ lại nền, chèn bản dịch. Tool tự chuyển sang vùng tiếp theo.
+   - Bóng thoại trắng / nền trơn: tô lại màu nền (tức thì).
+   - Nền có hoạ tiết (tranh, lưới chấm, SFX đè lên tranh): vẽ lại bằng **AI LaMa** chạy trên máy, không cần mạng hay API (vài giây mỗi vùng). Model được nạp ngầm khi mở ảnh; tắt bằng ô *Vẽ lại nền bằng AI* nếu máy yếu.
 7. **Xuất ảnh** (Ctrl+S).
 
 Vùng đã xử lý vẫn sửa được: chọn lại rồi đổi chữ/font, ảnh cập nhật ngay. *Hoàn tác vùng* (Ctrl+Z) trả lại ảnh gốc ở vùng đó.
@@ -44,7 +46,8 @@ Vùng đã xử lý vẫn sửa được: chọn lại rồi đổi chữ/font, 
 ## Cấu trúc
 
 - `app/core/detect.py` – nhận diện vùng chữ ([comic-text-detector](https://github.com/dmMaze/comic-text-detector), chạy bằng OpenCV DNN)
-- `app/core/clean.py` – xoá chữ, vẽ lại nền (tô màu nền / nền gradient / inpaint)
+- `app/core/clean.py` – xoá chữ, vẽ lại nền (tô màu nền / nền gradient / AI)
+- `app/core/lama.py` – vẽ lại nền bằng [LaMa](https://github.com/advimman/lama) (ONNX, onnxruntime)
 - `app/core/typeset.py` – dàn chữ, tự co cỡ, viền chữ
 - `app/core/docs.py` – đọc bản dịch `.docx` / `.txt`
 - `app/core/page.py` – trạng thái trang

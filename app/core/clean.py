@@ -24,11 +24,12 @@ def build_text_mask(text_mask: np.ndarray, box: tuple[int, int, int, int]) -> np
 
 
 def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int, int],
-                 area_mask: np.ndarray | None = None) -> None:
+                 area_mask: np.ndarray | None = None, use_ai: bool = False) -> None:
     """Xoá chữ trong `box` trực tiếp trên `img` (BGR).
 
     `area_mask` (vùng khoanh lasso, 0/255 cỡ ảnh): xoá toàn bộ trong vùng đó thay vì chỉ nét chữ.
-    Nền đồng màu (bóng thoại trắng…) được tô bằng màu nền; nền phức tạp dùng inpaint.
+    Nền đồng màu (bóng thoại trắng…) được tô bằng màu nền; nền chuyển màu mượt được khớp lại;
+    nền có hoạ tiết (tranh, lưới chấm) vẽ lại bằng AI LaMa nếu `use_ai`, không thì inpaint của OpenCV.
     """
     h, w = img.shape[:2]
     x1, y1, x2, y2 = box
@@ -60,6 +61,16 @@ def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, in
             my, mx = np.nonzero(mask)
             crop[my, mx] = np.clip(_surface(mx, my) @ coef, 0, 255).astype(np.uint8)
             return
+    if use_ai:
+        from . import lama
+
+        # Chữ trên tranh (SFX) thường có viền trắng quanh nét: nới mask để xoá luôn phần viền.
+        if area_mask is None:
+            mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=2)
+        full = np.zeros(img.shape[:2], np.uint8)
+        full[cy1:cy2, cx1:cx2] = mask
+        lama.inpaint(img, full)
+        return
     crop[:] = cv2.inpaint(crop, mask, 5, cv2.INPAINT_TELEA)
 
 
