@@ -1,7 +1,8 @@
 """Dàn chữ bản dịch vào một khung bằng font hệ thống (cần QGuiApplication đã khởi tạo)."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, astuple, dataclass
+from functools import lru_cache
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen
@@ -75,22 +76,30 @@ def prepare(text: str, style: TextStyle) -> str:
 
 def layout(text: str, style: TextStyle, w: float, h: float) -> tuple[QFont, list[str], float]:
     """Chọn cỡ chữ lớn nhất vừa khung. Trả về (font, các dòng, chiều cao dòng)."""
+    _, size, lines, lh = _layout(text, astuple(style), int(w), int(h))
+    return make_font(style, size), list(lines), lh
+
+
+@lru_cache(maxsize=20000)
+def _layout(text: str, style_key: tuple, w: int, h: int) -> tuple[bool, int, tuple[str, ...], float]:
+    """(vừa khung?, cỡ chữ, các dòng, chiều cao dòng) – có cache vì được gọi rất nhiều lần."""
+    style = TextStyle(*style_key)
     text = prepare(text, style)
     pad = min(w, h) * style.padding
     iw, ih = max(1.0, w - 2 * pad), max(1.0, h - 2 * pad)
 
     def fit(size: int):
-        font = make_font(style, size)
-        fm = QFontMetricsF(font)
+        fm = QFontMetricsF(make_font(style, size))
         lines = wrap(text, fm, iw)
         lh = fm.height() * style.line_spacing
         widest = max((fm.horizontalAdvance(l) for l in lines), default=0)
-        ok = len(lines) * lh <= ih and widest <= iw + 0.5
-        return ok, font, lines, lh
+        # Không cắt đôi một từ (vd "Chu|yện"): từ dài nhất phải vừa một dòng.
+        longest_word = max((fm.horizontalAdvance(wd) for wd in text.split()), default=0)
+        ok = len(lines) * lh <= ih and widest <= iw + 0.5 and longest_word <= iw + 0.5
+        return ok, size, tuple(lines), lh
 
     if style.size > 0:
-        _, font, lines, lh = fit(style.size)
-        return font, lines, lh
+        return fit(style.size)
 
     lo, hi = MIN_SIZE, max(MIN_SIZE, min(MAX_SIZE, int(ih)))
     best = None
@@ -101,10 +110,20 @@ def layout(text: str, style: TextStyle, w: float, h: float) -> tuple[QFont, list
             best, lo = res, mid + 1
         else:
             hi = mid - 1
-    if best is None:
-        best = fit(MIN_SIZE)
-    _, font, lines, lh = best
-    return font, lines, lh
+    return best or fit(MIN_SIZE)
+
+
+def best_rect(text: str, style: TextStyle, rects: list[tuple[int, int, int, int]]):
+    """Trong các khung ứng viên, chọn khung đặt được chữ to nhất (cùng cỡ thì khung rộng hơn)."""
+    key = astuple(style)
+    t = prepare(text, style)
+
+    def score(r):
+        x1, y1, x2, y2 = r
+        ok, size, _, _ = _layout(t, key, x2 - x1, y2 - y1)
+        return (ok, size, (x2 - x1) * (y2 - y1))
+
+    return max(rects, key=score)
 
 
 def draw_text(p: QPainter, text: str, style: TextStyle, rect: QRectF) -> None:

@@ -8,9 +8,9 @@ import numpy as np
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage, QPainter
 
-from .clean import MARGIN, bubble_rect, clean_region
+from .clean import MARGIN, clean_region, text_area_candidates
 from .detect import TextDetector, sort_reading_order
-from .typeset import TextStyle, draw_text
+from .typeset import TextStyle, best_rect, draw_text
 
 Box = tuple[int, int, int, int]
 
@@ -21,7 +21,12 @@ class Region:
     text: str = ""
     style: TextStyle = field(default_factory=TextStyle)
     cleaned: bool = False
-    text_rect: Box | None = None  # khung đặt chữ (mặc định = box, hoặc lòng bóng thoại)
+    text_rects: list[Box] = field(default_factory=list)  # các khung có thể đặt chữ (lòng bóng thoại)
+
+    @property
+    def text_rect(self) -> Box:
+        """Khung đặt chữ cho cỡ chữ lớn nhất với nội dung và kiểu chữ hiện tại."""
+        return best_rect(self.text, self.style, self.text_rects) if self.text_rects else self.box
 
     @property
     def done(self) -> bool:
@@ -67,7 +72,7 @@ class Page:
         if not region.cleaned:
             clean_region(self.working, self.text_mask, region.box)
             region.cleaned = True
-        region.text_rect = bubble_rect(self.working, region.box) if fit_bubble else region.box
+        region.text_rects = text_area_candidates(self.working, region.box) if fit_bubble else [region.box]
 
     def reset(self, region: Region) -> None:
         """Hoàn tác vùng: khôi phục ảnh gốc và bỏ chữ."""
@@ -82,7 +87,7 @@ class Page:
                     clean_region(self.working, self.text_mask, other.box)
         region.cleaned = False
         region.text = ""
-        region.text_rect = None
+        region.text_rects = []
 
     def render(self) -> QImage:
         rgb = cv2.cvtColor(self.working, cv2.COLOR_BGR2RGB)
@@ -91,7 +96,7 @@ class Page:
         p = QPainter(img)
         for r in self.regions:
             if r.cleaned and r.text.strip():
-                x1, y1, x2, y2 = r.text_rect or r.box
+                x1, y1, x2, y2 = r.text_rect
                 draw_text(p, r.text, r.style, QRectF(x1, y1, x2 - x1, y2 - y1))
         p.end()
         return img
