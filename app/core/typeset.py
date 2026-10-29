@@ -53,7 +53,7 @@ def wrap(text: str, fm: QFontMetricsF, max_w: float) -> list[str]:
         cur = ""
         for word in para.split():
             cand = f"{cur} {word}" if cur else word
-            if fm.horizontalAdvance(cand) <= max_w:
+            if fm.horizontalAdvance(cand) <= max_w + 0.5:
                 cur = cand
                 continue
             if cur:

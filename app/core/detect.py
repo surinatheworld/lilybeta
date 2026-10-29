@@ -27,6 +27,7 @@ class TextBox:
     x2: int
     y2: int
     score: float
+    kind: str = "text"  # "text" = khung chữ model tìm thấy, "sfx" = cụm nét chữ lẻ (SFX, chữ nhỏ)
 
     @property
     def area(self) -> int:
@@ -59,7 +60,8 @@ class TextDetector:
             np.maximum(mask[y0:y1], tile_mask, out=mask[y0:y1])
             for b in tile_boxes:
                 boxes.append(TextBox(b.x1, b.y1 + y0, b.x2, b.y2 + y0, b.score))
-        return _nms(boxes), mask
+        boxes = split_double_bubbles(_nms(boxes), mask)
+        return boxes + find_sfx(mask, boxes), mask
 
     def _infer(self, img: np.ndarray) -> tuple[list[TextBox], np.ndarray]:
         h, w = img.shape[:2]
@@ -87,6 +89,65 @@ class TextDetector:
         if m.max() > 1.0 or m.min() < 0.0:
             m = 1.0 / (1.0 + np.exp(-m))
         return _nms(boxes), cv2.resize(m, (w, h), interpolation=cv2.INTER_LINEAR)
+
+
+def split_double_bubbles(boxes: list[TextBox], mask: np.ndarray) -> list[TextBox]:
+    """Tách khối chữ của bóng thoại đôi thành từng phần.
+
+    Gom nét chữ trong khung thành cụm; các cụm chung hàng hoặc chung cột (cùng một bóng)
+    được gộp lại. Còn lại từ 2 nhóm nằm chéo nhau thì đó là các nửa của bóng đôi.
+    """
+    out = []
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13))
+    for b in boxes:
+        sub = (mask[b.y1:b.y2, b.x1:b.x2] > 0.3).astype(np.uint8)
+        n, _, st, _ = cv2.connectedComponentsWithStats(cv2.dilate(sub, k))
+        total = st[1:, 4].sum() if n > 1 else 0
+        groups = [[int(x), int(y), int(x + w), int(y + h)] for x, y, w, h, a in st[1:] if a >= 0.1 * total]
+        merged = True
+        while merged and len(groups) > 1:
+            merged = False
+            for i in range(len(groups)):
+                for j in range(i + 1, len(groups)):
+                    a, c = groups[i], groups[j]
+                    if a[0] < c[2] and c[0] < a[2] or a[1] < c[3] and c[1] < a[3]:
+                        groups[i] = [min(a[0], c[0]), min(a[1], c[1]), max(a[2], c[2]), max(a[3], c[3])]
+                        del groups[j]
+                        merged = True
+                        break
+                if merged:
+                    break
+        if len(groups) < 2:
+            out.append(b)
+            continue
+        for x1, y1, x2, y2 in groups:
+            # Nét đã bị nới 6px khi gom cụm, trả lại phần đó.
+            out.append(TextBox(b.x1 + x1 + 4, b.y1 + y1 + 4, b.x1 + x2 - 4, b.y1 + y2 - 4, b.score))
+    return out
+
+
+def find_sfx(mask: np.ndarray, boxes: list[TextBox]) -> list[TextBox]:
+    """Cụm nét chữ model nhìn thấy nhưng không khoanh khung (SFX, chữ nhỏ ngoài bóng).
+
+    Chỉ giữ cụm gồm nhiều nét rời (chữ) và thưa (loại vệt sáng, mảng đặc).
+    """
+    strong = (mask > 0.6).astype(np.uint8)
+    for b in boxes:
+        strong[max(0, b.y1 - 10):b.y2 + 10, max(0, b.x1 - 10):b.x2 + 10] = 0
+    grown = cv2.dilate(strong, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(grown)
+    out = []
+    for i in range(1, n):
+        x, y, w, h, _ = st[i]
+        if max(w, h) < 15:
+            continue
+        sub = strong[y:y + h, x:x + w] * (lab[y:y + h, x:x + w] == i)
+        fill = sub.sum() / (w * h)
+        nc, _, cst, _ = cv2.connectedComponentsWithStats(sub)
+        parts = sum(1 for j in range(1, nc) if cst[j][4] >= 4)
+        if parts >= 2 and fill < 0.2:
+            out.append(TextBox(int(x), int(y), int(x + w), int(y + h), 0.5, "sfx"))
+    return out
 
 
 def _tiles(h: int, w: int) -> list[tuple[int, int]]:
