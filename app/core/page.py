@@ -24,10 +24,13 @@ class Region:
     text_rects: list[Box] = field(default_factory=list)  # các khung có thể đặt chữ (lòng bóng thoại)
     kind: str = "text"  # "text" | "sfx" | "manual" (vẽ tay) | "lasso"
     polygon: list[tuple[int, int]] | None = None  # đường khoanh lasso (toạ độ ảnh)
+    manual_rect: Box | None = None  # khung chữ người dùng tự kéo/căn chỉnh (ưu tiên hơn khung tự động)
 
     @property
     def text_rect(self) -> Box:
-        """Khung đặt chữ cho cỡ chữ lớn nhất với nội dung và kiểu chữ hiện tại."""
+        """Khung đặt chữ: khung người dùng tự chỉnh, không thì khung cho cỡ chữ lớn nhất."""
+        if self.manual_rect:
+            return self.manual_rect
         return best_rect(self.text, self.style, self.text_rects) if self.text_rects else self.box
 
     @property
@@ -54,7 +57,8 @@ class Page:
         return w, h
 
     def detect(self, detector: TextDetector, right_to_left: bool = True) -> None:
-        boxes, self.text_mask = detector.detect(self.original)
+        boxes, mask = detector.detect(self.original)
+        self.text_mask = np.maximum(mask, color_text_mask(self.original))
         boxes = sort_reading_order(boxes, right_to_left)
         self.regions = [r for r in self.regions if r.cleaned]
         self.regions += [Region((b.x1, b.y1, b.x2, b.y2), kind=b.kind) for b in boxes]
@@ -113,6 +117,7 @@ class Page:
         region.cleaned = False
         region.text = ""
         region.text_rects = []
+        region.manual_rect = None
 
     def render(self) -> QImage:
         rgb = cv2.cvtColor(self.working, cv2.COLOR_BGR2RGB)
@@ -129,6 +134,18 @@ class Page:
     def export(self, path: str) -> None:
         if not self.render().save(path):
             raise IOError(f"Không lưu được: {path}")
+
+
+def color_text_mask(img: np.ndarray) -> np.ndarray:
+    """Truyện đen trắng: điểm có màu (chữ tên truyện hồng/xanh, hoạ tiết trang trí) coi như chữ.
+
+    Truyện màu thì bỏ qua, không thì cả tranh trong khung chữ cũng bị xoá.
+    """
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    colored = (hsv[..., 1] > 50) & (hsv[..., 2] > 60)
+    if colored.mean() > 0.05:
+        return np.zeros(img.shape[:2], np.float32)
+    return colored.astype(np.float32)
 
 
 def _overlap(a: Box, b: Box) -> bool:

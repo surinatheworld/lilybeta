@@ -23,6 +23,8 @@ class TextStyle:
     stroke_width: float = 0.0
     line_spacing: float = 1.0
     padding: float = 0.06  # chừa lề theo tỉ lệ cạnh ngắn của khung
+    align: str = "center"  # "left" | "center" | "right"
+    rotation: float = 0.0  # độ, xoay quanh tâm khung chữ
 
     def copy(self) -> "TextStyle":
         return TextStyle(**asdict(self))
@@ -127,20 +129,33 @@ def best_rect(text: str, style: TextStyle, rects: list[tuple[int, int, int, int]
 
 
 def draw_text(p: QPainter, text: str, style: TextStyle, rect: QRectF) -> None:
-    """Vẽ chữ căn giữa (cả ngang lẫn dọc) trong `rect`, có viền nếu stroke_width > 0."""
+    """Vẽ chữ trong `rect` (căn giữa theo chiều dọc, căn ngang theo style.align), có viền nếu
+    stroke_width > 0, xoay quanh tâm khung nếu style.rotation khác 0."""
     if not text.strip():
         return
     font, lines, lh = layout(text, style, rect.width(), rect.height())
     fm = QFontMetricsF(font)
+    pad = min(rect.width(), rect.height()) * style.padding
     path = QPainterPath()
     top = rect.center().y() - len(lines) * lh / 2
     for i, line in enumerate(lines):
-        x = rect.center().x() - fm.horizontalAdvance(line) / 2
+        adv = fm.horizontalAdvance(line)
+        if style.align == "left":
+            x = rect.left() + pad
+        elif style.align == "right":
+            x = rect.right() - pad - adv
+        else:
+            x = rect.center().x() - adv / 2
         baseline = top + i * lh + (lh - fm.height()) / 2 + fm.ascent()
         path.addText(QPointF(x, baseline), font, line)
 
     p.save()
     p.setRenderHint(QPainter.Antialiasing, True)
+    if style.rotation:
+        c = rect.center()
+        p.translate(c)
+        p.rotate(style.rotation)
+        p.translate(-c)
     if style.stroke_width > 0:
         pen = QPen(QColor(style.stroke_color), style.stroke_width * 2)
         pen.setJoinStyle(Qt.RoundJoin)

@@ -15,7 +15,8 @@ def build_text_mask(text_mask: np.ndarray, box: tuple[int, int, int, int]) -> np
     x1, y1 = max(0, box[0] - FURIGANA_PAD), max(0, box[1] - FURIGANA_PAD)
     x2, y2 = min(w, box[2] + FURIGANA_PAD), min(h, box[3] + FURIGANA_PAD)
     out = np.zeros((h, w), np.uint8)
-    out[y1:y2, x1:x2] = (text_mask[y1:y2, x1:x2] > 0.3).astype(np.uint8) * 255
+    # Ngưỡng thấp: chữ màu, chữ nhỏ (vd dòng tiếng Anh trên bìa) chỉ được model đánh dấu mờ.
+    out[y1:y2, x1:x2] = (text_mask[y1:y2, x1:x2] > 0.15).astype(np.uint8) * 255
     if out[y1:y2, x1:x2].sum() == 0:
         bx1, by1, bx2, by2 = box
         out[by1:by2, bx1:bx2] = 255  # model không ra nét chữ: xoá cả khung
