@@ -1,12 +1,15 @@
 """Cửa sổ chính: mở ảnh → nhận diện chữ → chọn vùng + câu dịch → chọn font → xử lý."""
 from __future__ import annotations
 
+import json
 import os
+from dataclasses import asdict
 
 from PySide6.QtCore import QSettings, Qt, QThread, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QInputDialog,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -23,6 +26,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QToolBar,
@@ -131,21 +135,30 @@ class MainWindow(QMainWindow):
         self.worker: DetectWorker | None = None
         self.clean_worker: CleanWorker | None = None
         self.page: Page | None = None
-        self.selected = -1
+        self.selected = -1  # vùng chính (bấm sau cùng)
+        self.selection: list[int] = []  # các vùng đang chọn (chọn nhiều bằng Ctrl/Shift + bấm)
         self.lines: list[str] = []
         self.used_lines: set[int] = set()
+        self._suggested_text: str | None = None  # câu dịch tự điền sẵn (chưa phải người dùng chọn)
         self._loading_ui = False
 
         self.view = ImageView()
-        self.view.regionClicked.connect(self.select_region)
+        self.view.regionClicked.connect(self._region_clicked)
+        self.view.textRectChanged.connect(self._text_rect_dragged)
         self.view.regionDrawn.connect(self.add_region)
         self.view.lassoDrawn.connect(self.add_lasso)
 
         splitter = QSplitter()
         splitter.addWidget(self.view)
-        splitter.addWidget(self._build_panel())
+        # Bảng bên phải dài nên cho cuộn, để các ô không bị ép dẹt trên màn hình thấp.
+        scroll = QScrollArea()
+        scroll.setWidget(self._build_panel())
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumWidth(420)
+        splitter.addWidget(scroll)
         splitter.setStretchFactor(0, 1)
-        splitter.setSizes([1000, 400])
+        splitter.setSizes([1000, 460])
         self.setCentralWidget(splitter)
         self._build_toolbar()
         self._load_style_settings()
@@ -234,6 +247,7 @@ class MainWindow(QMainWindow):
         dl.addWidget(self.lbl_docs)
         self.list_lines = QListWidget()
         self.list_lines.setWordWrap(True)
+        self.list_lines.setMinimumHeight(160)
         self.list_lines.itemClicked.connect(self._line_clicked)
         self.list_lines.itemDoubleClicked.connect(self._line_double_clicked)
         dl.addWidget(self.list_lines)
@@ -249,7 +263,32 @@ class MainWindow(QMainWindow):
         self.font_box = QFontComboBox()
         self.font_box.setEditable(True)
         self.font_box.currentFontChanged.connect(self._style_changed)
-        fl.addRow("Font", self.font_box)
+        self.font_box.currentFontChanged.connect(self._update_star)
+        self.btn_star = QPushButton("☆")
+        self.btn_star.setFixedWidth(32)
+        self.btn_star.setToolTip("Thêm/bỏ font này khỏi danh sách yêu thích")
+        self.btn_star.clicked.connect(self._toggle_favorite)
+        frow = QHBoxLayout()
+        frow.addWidget(self.font_box, 1)
+        frow.addWidget(self.btn_star)
+        fl.addRow("Font", frow)
+        self.fav_box = QComboBox()
+        self.fav_box.setToolTip("Font yêu thích: chọn để dùng ngay (áp cho mọi vùng đang chọn)")
+        self.fav_box.activated.connect(self._favorite_picked)
+        fl.addRow("Yêu thích", self.fav_box)
+        self.preset_box = QComboBox()
+        self.preset_box.setToolTip("Bộ kiểu đã lưu (font + cỡ + màu + viền…): chọn để áp cho mọi vùng đang chọn")
+        self.preset_box.activated.connect(self._preset_picked)
+        btn_save_preset = QPushButton("Lưu")
+        btn_save_preset.setToolTip("Lưu kiểu chữ hiện tại thành một bộ kiểu có tên (vd Thoại, Hét, SFX)")
+        btn_save_preset.clicked.connect(self._save_preset)
+        btn_del_preset = QPushButton("Xoá")
+        btn_del_preset.clicked.connect(self._delete_preset)
+        prow = QHBoxLayout()
+        prow.addWidget(self.preset_box, 1)
+        prow.addWidget(btn_save_preset)
+        prow.addWidget(btn_del_preset)
+        fl.addRow("Bộ kiểu", prow)
         self.size_box = QSpinBox()
         self.size_box.setRange(0, 300)
         self.size_box.setSpecialValueText("Tự động")
@@ -313,11 +352,48 @@ class MainWindow(QMainWindow):
         fl.addRow(self.lbl_warn)
         lay.addWidget(g_font)
 
+        g_adjust = QGroupBox("Căn chỉnh chữ")
+        al = QVBoxLayout(g_adjust)
+        hint = QLabel("Chọn 1 vùng đã xử lý: kéo khung tím để di chuyển chữ, kéo góc để đổi cỡ khung; "
+                      "phím mũi tên nhích 1px (Shift: 10px).")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#888;")
+        al.addWidget(hint)
+        arow = QHBoxLayout()
+        self.align_buttons = {}
+        for key, label in (("left", "⯇ Trái"), ("center", "≡ Giữa"), ("right", "Phải ⯈")):
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.clicked.connect(lambda _=False, k=key: self._set_align(k))
+            arow.addWidget(b)
+            self.align_buttons[key] = b
+        al.addLayout(arow)
+        rrow = QHBoxLayout()
+        rrow.addWidget(QLabel("Xoay"))
+        self.rotate_box = QDoubleSpinBox()
+        self.rotate_box.setRange(-180, 180)
+        self.rotate_box.setSingleStep(1)
+        self.rotate_box.setSuffix("°")
+        self.rotate_box.valueChanged.connect(self._style_changed)
+        rrow.addWidget(self.rotate_box, 1)
+        btn_auto = QPushButton("Tự động lại")
+        btn_auto.setToolTip("Bỏ vị trí/cỡ khung chữ đã chỉnh tay, để tool tự đặt lại")
+        btn_auto.clicked.connect(self._reset_text_rect)
+        rrow.addWidget(btn_auto)
+        al.addLayout(rrow)
+        lay.addWidget(g_adjust)
+        self._load_favorites()
+        self._load_presets()
+
         QShortcut(QKeySequence("Ctrl+Return"), self, self.process_selected)
         QShortcut(QKeySequence("Ctrl+Enter"), self, self.process_selected)
         QShortcut(QKeySequence("Ctrl+Z"), self, self.reset_selected)
         QShortcut(QKeySequence(Qt.Key_Delete), self.view, self.delete_selected)
         QShortcut(QKeySequence(Qt.Key_Tab), self.view, lambda: self._step_region(1))
+        QShortcut(QKeySequence("Ctrl+A"), self.view, self.select_all)
+        for key, dx, dy in ((Qt.Key_Left, -1, 0), (Qt.Key_Right, 1, 0), (Qt.Key_Up, 0, -1), (Qt.Key_Down, 0, 1)):
+            QShortcut(QKeySequence(key), self.view, lambda dx=dx, dy=dy: self._nudge(dx, dy))
+            QShortcut(QKeySequence(Qt.SHIFT | key), self.view, lambda dx=dx, dy=dy: self._nudge(dx * 10, dy * 10))
         return panel
 
     # --- kiểu chữ ------------------------------------------------------------
@@ -332,6 +408,8 @@ class MainWindow(QMainWindow):
             stroke_color=self.btn_stroke.color,
             stroke_width=self.stroke_box.value(),
             line_spacing=self.spacing_box.value(),
+            align=next((k for k, b in self.align_buttons.items() if b.isChecked()), "center"),
+            rotation=self.rotate_box.value(),
         )
 
     def _apply_style_to_ui(self, s: TextStyle):
@@ -345,7 +423,11 @@ class MainWindow(QMainWindow):
         self.btn_stroke.set_color(s.stroke_color)
         self.stroke_box.setValue(s.stroke_width)
         self.spacing_box.setValue(s.line_spacing)
+        for k, b in self.align_buttons.items():
+            b.setChecked(k == s.align)
+        self.rotate_box.setValue(s.rotation)
         self._loading_ui = False
+        self._update_star()
 
     def _load_style_settings(self):
         s = TextStyle()
@@ -366,11 +448,115 @@ class MainWindow(QMainWindow):
         style = self.current_style()
         self._save_style_settings(style)
         self._update_warning()
-        # Vùng đã xử lý thì đổi kiểu là thấy ngay.
+        # Vùng đã xử lý thì đổi kiểu là thấy ngay – áp cho mọi vùng đang chọn.
+        changed = False
+        for r in self.selected_regions:
+            if r.cleaned:
+                r.style = style.copy()
+                changed = True
+        if changed:
+            self.refresh()
+
+    def _set_align(self, key: str):
+        for k, b in self.align_buttons.items():
+            b.setChecked(k == key)
+        self._style_changed()
+
+    # --- font yêu thích & bộ kiểu ------------------------------------------------
+    def _favorites(self) -> list[str]:
+        v = self.settings.value("fonts/favorites", [])
+        return [v] if isinstance(v, str) else list(v or [])
+
+    def _load_favorites(self):
+        favs = self._favorites()
+        self.fav_box.clear()
+        self.fav_box.addItem(f"★ {len(favs)} font yêu thích" if favs else "Chưa có – bấm ☆ cạnh ô Font", None)
+        for f in favs:
+            self.fav_box.addItem(f, f)
+        self._update_star()
+
+    def _update_star(self, *_):
+        on = self.font_box.currentFont().family() in self._favorites()
+        self.btn_star.setText("★" if on else "☆")
+
+    def _toggle_favorite(self):
+        fam = self.font_box.currentFont().family()
+        favs = self._favorites()
+        if fam in favs:
+            favs.remove(fam)
+        else:
+            favs.append(fam)
+        self.settings.setValue("fonts/favorites", favs)
+        self._load_favorites()
+
+    def _favorite_picked(self, i: int):
+        fam = self.fav_box.itemData(i)
+        if fam:
+            self.font_box.setCurrentFont(QFont(fam))  # kích hoạt _style_changed → áp cho vùng đang chọn
+        self.fav_box.setCurrentIndex(0)
+
+    def _presets(self) -> dict:
+        try:
+            return json.loads(self.settings.value("styles/presets", "{}"))
+        except ValueError:
+            return {}
+
+    def _load_presets(self):
+        presets = self._presets()
+        self.preset_box.clear()
+        self.preset_box.addItem("Chọn bộ kiểu…" if presets else "Chưa có – bấm Lưu", None)
+        for name in presets:
+            self.preset_box.addItem(name, name)
+
+    def _save_preset(self):
+        name, ok = QInputDialog.getText(self, "Lưu bộ kiểu", "Tên bộ kiểu (vd Thoại, Hét, Suy nghĩ, SFX):")
+        name = name.strip()
+        if not ok or not name:
+            return
+        presets = self._presets()
+        presets[name] = asdict(self.current_style())
+        self.settings.setValue("styles/presets", json.dumps(presets, ensure_ascii=False))
+        self._load_presets()
+        self.statusBar().showMessage(f"Đã lưu bộ kiểu “{name}”.", 4000)
+
+    def _delete_preset(self):
+        name = self.preset_box.currentData()
+        if not name:
+            return
+        presets = self._presets()
+        presets.pop(name, None)
+        self.settings.setValue("styles/presets", json.dumps(presets, ensure_ascii=False))
+        self._load_presets()
+
+    def _preset_picked(self, i: int):
+        name = self.preset_box.itemData(i)
+        data = self._presets().get(name) if name else None
+        if not data:
+            return
+        style = TextStyle(**{k: v for k, v in data.items() if k in vars(TextStyle())})
+        self._apply_style_to_ui(style)
+        self._style_changed()
+        self.statusBar().showMessage(f"Đã áp bộ kiểu “{name}” cho {len(self.selection)} vùng đang chọn.", 4000)
+
+    # --- căn chỉnh khung chữ --------------------------------------------------------
+    def _text_rect_dragged(self, rect):
         r = self.region
         if r is not None and r.cleaned:
-            r.style = style
+            r.manual_rect = tuple(int(v) for v in rect)
             self.refresh()
+
+    def _nudge(self, dx: int, dy: int):
+        r = self.region
+        if r is None or not r.done:
+            return
+        x1, y1, x2, y2 = r.text_rect
+        r.manual_rect = (x1 + dx, y1 + dy, x2 + dx, y2 + dy)
+        self.refresh()
+
+    def _reset_text_rect(self):
+        for r in self.selected_regions:
+            r.manual_rect = None
+        self.refresh()
 
     @property
     def engine(self) -> str:
@@ -559,8 +745,35 @@ class MainWindow(QMainWindow):
             return self.page.regions[self.selected]
         return None
 
-    def select_region(self, idx: int):
+    @property
+    def selected_regions(self) -> list[Region]:
+        if not self.page:
+            return []
+        return [self.page.regions[i] for i in self.selection if 0 <= i < len(self.page.regions)]
+
+    def _region_clicked(self, idx: int, mods: int):
+        if mods & int(Qt.ControlModifier.value):
+            sel = list(self.selection)
+            if idx in sel:
+                sel.remove(idx)
+                primary = sel[-1] if sel else -1
+            else:
+                sel.append(idx)
+                primary = idx
+            self.select_region(primary, sel)
+        elif mods & int(Qt.ShiftModifier.value) and self.selected >= 0:
+            a, b = sorted((self.selected, idx))
+            self.select_region(idx, list(range(a, b + 1)))
+        else:
+            self.select_region(idx)
+
+    def select_all(self):
+        if self.page and self.page.regions:
+            self.select_region(self.selected if self.selected >= 0 else 0, list(range(len(self.page.regions))))
+
+    def select_region(self, idx: int, selection: list[int] | None = None):
         self.selected = idx
+        self.selection = selection if selection is not None else ([idx] if idx >= 0 else [])
         r = self.region
         self._loading_ui = True
         if r is None:
@@ -569,19 +782,33 @@ class MainWindow(QMainWindow):
         else:
             state = "đã xử lý" if r.done else ("đã xoá chữ" if r.cleaned else "chưa xử lý")
             kind = {"sfx": " · SFX (tự nhận diện)", "manual": " · vẽ tay", "lasso": " · lasso"}.get(r.kind, "")
-            self.lbl_region.setText(f"Vùng #{idx + 1} / {len(self.page.regions)}{kind} – {state}")
+            text = f"Vùng #{idx + 1} / {len(self.page.regions)}{kind} – {state}"
+            if len(self.selection) > 1:
+                nums = ", ".join(f"#{i + 1}" for i in sorted(self.selection))
+                text = (f"Đang chọn {len(self.selection)} vùng: {nums}. Đổi font/kiểu sẽ áp cho tất cả; "
+                        f"Xử lý sẽ làm lần lượt từng vùng (vùng chưa có chữ tự nhận câu dịch kế tiếp).\n"
+                        f"Ô bên dưới là chữ của vùng #{idx + 1}.")
+            self.lbl_region.setText(text)
             text = r.text
+            self._suggested_text = None
             if not text:
                 nxt = self._next_unused_line()
                 if nxt is not None:
-                    text = self.lines[nxt]
+                    text = self._suggested_text = self.lines[nxt]
                     self._highlight_line(nxt)
             self.txt.setPlainText(text)
         self._loading_ui = False
         if r is not None and r.cleaned:
             self._apply_style_to_ui(r.style)
         self._update_warning()
-        self.view.set_regions(self.page.regions if self.page else [], self.selected)
+        self._draw_overlays()
+
+    def _draw_overlays(self):
+        if self.page is None:
+            return
+        r = self.region
+        edit = r.text_rect if (r is not None and r.done and len(self.selection) == 1) else None
+        self.view.set_regions(self.page.regions, self.selection, edit)
 
     def add_region(self, box):
         if self.page is None:
@@ -613,6 +840,9 @@ class MainWindow(QMainWindow):
         if r is None:
             QMessageBox.information(self, "Chưa chọn vùng", "Hãy bấm chọn một khung chữ trên ảnh trước.")
             return
+        if len(self.selection) > 1:
+            self._process_many()
+            return
         r.text = self.txt.toPlainText()
         r.style = self.current_style()
 
@@ -626,9 +856,64 @@ class MainWindow(QMainWindow):
 
         self._clean_then(r, after)
 
+    def _process_many(self):
+        """Xử lý lần lượt mọi vùng đang chọn với cùng kiểu chữ; vùng chưa có chữ nhận câu dịch kế tiếp."""
+        style = self.current_style()
+        primary = self.region
+        typed = self.txt.toPlainText()
+        # Câu chỉ là gợi ý tự điền thì bỏ qua, để chia câu dịch theo đúng thứ tự đọc.
+        if typed.strip() and typed != self._suggested_text:
+            primary.text = typed
+            line = self._line_of_text(typed)
+            if line is not None:
+                self.used_lines.add(line)
+        queue = []
+        for i in sorted(self.selection):
+            reg = self.page.regions[i]
+            if not reg.text.strip():
+                nxt = self._next_unused_line()
+                if nxt is not None:
+                    reg.text = self.lines[nxt]
+                    self.used_lines.add(nxt)
+            line = self._line_of_text(reg.text)
+            if line is not None:
+                self.used_lines.add(line)
+            reg.style = style.copy()
+            queue.append(i)
+        self._fill_lines()
+        selection = list(self.selection)
+
+        def step():
+            if not queue:
+                self.refresh()
+                self.select_region(self.selected, selection)
+                self.statusBar().showMessage(f"Đã xử lý {len(selection)} vùng.", 5000)
+                return
+            i = queue.pop(0)
+            self.selected = i
+            self._clean_then(self.page.regions[i], step)
+
+        step()
+
     def clean_selected(self):
         r = self.region
         if r is None:
+            return
+        if len(self.selection) > 1:
+            queue = sorted(self.selection)
+            selection = list(self.selection)
+
+            def step():
+                if not queue:
+                    self.refresh()
+                    self.select_region(self.selected, selection)
+                    return
+                i = queue.pop(0)
+                self.selected = i
+                self.page.regions[i].text = ""
+                self._clean_then(self.page.regions[i], step)
+
+            step()
             return
         def after():
             r.text = ""
@@ -638,24 +923,24 @@ class MainWindow(QMainWindow):
         self._clean_then(r, after)
 
     def reset_selected(self):
-        r = self.region
-        if r is None:
+        if self.region is None:
             return
-        line = self._line_of_text(r.text)
-        if line is not None:
-            self.used_lines.discard(line)
-            self._fill_lines()
-        self.page.reset(r)
+        for r in self.selected_regions:
+            line = self._line_of_text(r.text)
+            if line is not None:
+                self.used_lines.discard(line)
+            self.page.reset(r)
+        self._fill_lines()
         self.refresh()
-        self.select_region(self.selected)
+        self.select_region(self.selected, list(self.selection))
 
     def delete_selected(self):
-        r = self.region
-        if r is None:
+        if self.region is None:
             return
-        self.page.remove_region(r)
+        for i in sorted(self.selection, reverse=True):
+            self.page.remove_region(self.page.regions[i])
         self.refresh()
-        self.select_region(min(self.selected, len(self.page.regions) - 1))
+        self.select_region(min(min(self.selection), len(self.page.regions) - 1))
 
     def _goto_next_pending(self):
         regions = self.page.regions
@@ -703,7 +988,7 @@ class MainWindow(QMainWindow):
         if self.page is None:
             return
         self.view.set_image(self.page.render())
-        self.view.set_regions(self.page.regions, self.selected)
+        self._draw_overlays()
 
     def export_image(self):
         if self.page is None:

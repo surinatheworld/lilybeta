@@ -1,4 +1,5 @@
-"""Khung xem ảnh: zoom, kéo, hiển thị vùng chữ, vẽ vùng mới (khung chữ nhật hoặc lasso)."""
+"""Khung xem ảnh: zoom, kéo, hiển thị vùng chữ, vẽ vùng mới (khung chữ nhật hoặc lasso),
+chọn nhiều vùng và kéo/đổi cỡ khung chữ để tự căn chỉnh."""
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
@@ -17,16 +18,19 @@ COLOR_PENDING = QColor(230, 60, 60)
 COLOR_SFX = QColor(245, 150, 20)
 COLOR_DONE = QColor(40, 170, 80)
 COLOR_SELECTED = QColor(30, 120, 255)
+COLOR_EDIT = QColor(200, 40, 200)
 
 TOOL_RECT = "rect"
 TOOL_LASSO = "lasso"
 CLICK_TOLERANCE = 5  # px màn hình: kéo ít hơn thế coi là bấm chọn
+HANDLE = 9  # px màn hình: cỡ tay nắm ở góc khung chữ
 
 
 class ImageView(QGraphicsView):
-    regionClicked = Signal(int)
+    regionClicked = Signal(int, int)  # chỉ số vùng, phím bổ trợ (Ctrl/Shift) dạng int
     regionDrawn = Signal(tuple)
     lassoDrawn = Signal(list)
+    textRectChanged = Signal(tuple)  # khung chữ mới (x1, y1, x2, y2) sau khi kéo/đổi cỡ
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -40,11 +44,19 @@ class ImageView(QGraphicsView):
         self._overlays: list = []
         self._press_pos = None  # vị trí bấm chuột (toạ độ màn hình)
         self._press_region: int | None = None
+        self._press_mods = 0
         self._points: list[QPointF] = []
         self._preview = None
         self._pan_from = None
         self.show_boxes = True
         self.tool = TOOL_RECT
+        # Khung chữ đang chỉnh (vùng chính đã xử lý)
+        self._edit_rect: QRectF | None = None
+        self._edit_item: QGraphicsRectItem | None = None
+        self._edit_mode: str | None = None  # "move" | "tl" | "tr" | "bl" | "br"
+        self._edit_start: QPointF | None = None
+        self._edit_orig: QRectF | None = None
+        self._handles: list = []
 
     # --- ảnh & vùng -------------------------------------------------------
     def set_image(self, img: QImage, fit: bool = False) -> None:
@@ -66,18 +78,26 @@ class ImageView(QGraphicsView):
         self.tool = tool
         self.viewport().setCursor(Qt.CrossCursor)
 
-    def set_regions(self, regions, selected: int) -> None:
+    def set_regions(self, regions, selection: list[int], edit_rect=None) -> None:
+        """Vẽ các khung; `selection` = các vùng đang chọn; `edit_rect` = khung chữ cho phép kéo chỉnh."""
         for item in self._overlays:
             self.scene().removeItem(item)
         self._overlays.clear()
-        if not self.show_boxes:
-            return
+        self._edit_item = None
+        self._edit_rect = QRectF(*edit_rect[:2], edit_rect[2] - edit_rect[0], edit_rect[3] - edit_rect[1]) \
+            if edit_rect else None
+        if self.show_boxes:
+            self._draw_regions(regions, set(selection))
+        if self._edit_rect is not None:
+            self._draw_edit_frame()
+
+    def _draw_regions(self, regions, selected: set[int]) -> None:
         font = QFont()
         font.setPixelSize(18)
         font.setBold(True)
         for i, r in enumerate(regions):
             x1, y1, x2, y2 = r.box
-            if i == selected:
+            if i in selected:
                 color = COLOR_SELECTED
             elif r.done:
                 color = COLOR_DONE
@@ -87,13 +107,13 @@ class ImageView(QGraphicsView):
                 shape = QGraphicsPolygonItem(QPolygonF([QPointF(x, y) for x, y in r.polygon]))
             else:
                 shape = QGraphicsRectItem(QRectF(x1, y1, x2 - x1, y2 - y1))
-            pen = QPen(color, 3 if i == selected else 2)
+            pen = QPen(color, 3 if i in selected else 2)
             if r.kind == "sfx" and not r.done:
                 pen.setStyle(Qt.DashLine)
             pen.setCosmetic(True)
             shape.setPen(pen)
             fill = QColor(color)
-            fill.setAlpha(45 if i == selected else 18)
+            fill.setAlpha(45 if i in selected else 18)
             shape.setBrush(QBrush(fill))
             shape.setData(0, i)
             shape.setCursor(Qt.PointingHandCursor)
@@ -113,6 +133,47 @@ class ImageView(QGraphicsView):
             bg.setData(0, i)
             self.scene().addItem(bg)
             self._overlays += [shape, bg]
+
+    def _draw_edit_frame(self) -> None:
+        r = self._edit_rect
+        frame = QGraphicsRectItem(r)
+        pen = QPen(COLOR_EDIT, 1.5, Qt.DashLine)
+        pen.setCosmetic(True)
+        frame.setPen(pen)
+        frame.setZValue(10)
+        self.scene().addItem(frame)
+        self._overlays.append(frame)
+        self._edit_item = frame
+        self._handles = []
+        for pt in self._corners(r):
+            # Giữ nguyên cỡ trên màn hình dù phóng to/thu nhỏ.
+            h = QGraphicsRectItem(QRectF(-HANDLE / 2, -HANDLE / 2, HANDLE, HANDLE))
+            h.setFlag(QGraphicsRectItem.ItemIgnoresTransformations)
+            h.setPos(pt)
+            h.setBrush(QBrush(Qt.white))
+            hp = QPen(COLOR_EDIT, 1.5)
+            hp.setCosmetic(True)
+            h.setPen(hp)
+            h.setZValue(11)
+            self.scene().addItem(h)
+            self._overlays.append(h)
+            self._handles.append(h)
+
+    @staticmethod
+    def _corners(r: QRectF):
+        return (r.topLeft(), r.topRight(), r.bottomLeft(), r.bottomRight())
+
+    def _edit_hit(self, scene_pos: QPointF) -> str | None:
+        """Bấm trúng tay nắm góc / bên trong khung chữ đang chỉnh?"""
+        r = self._edit_rect
+        if r is None:
+            return None
+        tol = HANDLE / max(self.transform().m11(), 1e-6)
+        corners = {"tl": r.topLeft(), "tr": r.topRight(), "bl": r.bottomLeft(), "br": r.bottomRight()}
+        for name, pt in corners.items():
+            if abs(scene_pos.x() - pt.x()) <= tol and abs(scene_pos.y() - pt.y()) <= tol:
+                return name
+        return "move" if r.contains(scene_pos) else None
 
     # --- chuột --------------------------------------------------------------
     def wheelEvent(self, e):
@@ -138,10 +199,17 @@ class ImageView(QGraphicsView):
             self.viewport().setCursor(Qt.ClosedHandCursor)
             return
         if e.button() == Qt.LeftButton:
+            pos = self.mapToScene(e.position().toPoint())
+            mods = e.modifiers()
+            hit = None if mods & (Qt.ControlModifier | Qt.ShiftModifier) else self._edit_hit(pos)
+            if hit:
+                self._edit_mode, self._edit_start, self._edit_orig = hit, pos, QRectF(self._edit_rect)
+                return
             # Bấm rồi thả tại chỗ = chọn vùng; bấm rồi kéo = vẽ vùng mới (kể cả đè lên vùng cũ).
             self._press_pos = e.position()
             self._press_region = self._region_at(e.position().toPoint())
-            self._points = [self.mapToScene(e.position().toPoint())]
+            self._press_mods = int(mods.value) if hasattr(mods, "value") else int(mods)
+            self._points = [pos]
             return
         super().mousePressEvent(e)
 
@@ -152,10 +220,13 @@ class ImageView(QGraphicsView):
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(d.x()))
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(d.y()))
             return
+        pos = self.mapToScene(e.position().toPoint())
+        if self._edit_mode is not None:
+            self._drag_edit(pos)
+            return
         if self._press_pos is not None:
             if self._preview is None and (e.position() - self._press_pos).manhattanLength() < CLICK_TOLERANCE:
                 return
-            pos = self.mapToScene(e.position().toPoint())
             if self.tool == TOOL_LASSO:
                 if (pos - self._points[-1]).manhattanLength() >= 2 / max(self.transform().m11(), 1e-6):
                     self._points.append(pos)
@@ -167,7 +238,32 @@ class ImageView(QGraphicsView):
             else:
                 self._ensure_preview(QGraphicsRectItem).setRect(QRectF(self._points[0], pos).normalized())
             return
+        # Đổi con trỏ khi rê qua khung chữ đang chỉnh.
+        hit = self._edit_hit(pos)
+        cursors = {"move": Qt.SizeAllCursor, "tl": Qt.SizeFDiagCursor, "br": Qt.SizeFDiagCursor,
+                   "tr": Qt.SizeBDiagCursor, "bl": Qt.SizeBDiagCursor}
+        self.viewport().setCursor(cursors.get(hit, Qt.CrossCursor))
         super().mouseMoveEvent(e)
+
+    def _drag_edit(self, pos: QPointF) -> None:
+        d = pos - self._edit_start
+        r = QRectF(self._edit_orig)
+        if self._edit_mode == "move":
+            r.translate(d)
+        else:
+            if "l" in self._edit_mode:
+                r.setLeft(min(r.left() + d.x(), r.right() - 10))
+            if "r" in self._edit_mode:
+                r.setRight(max(r.right() + d.x(), r.left() + 10))
+            if "t" in self._edit_mode:
+                r.setTop(min(r.top() + d.y(), r.bottom() - 10))
+            if "b" in self._edit_mode:
+                r.setBottom(max(r.bottom() + d.y(), r.top() + 10))
+        self._edit_rect = r
+        if self._edit_item is not None:
+            self._edit_item.setRect(r)
+            for h, pt in zip(self._handles, self._corners(r)):
+                h.setPos(pt)
 
     def _ensure_preview(self, cls):
         if self._preview is None:
@@ -186,19 +282,24 @@ class ImageView(QGraphicsView):
             self._pan_from = None
             self.viewport().setCursor(Qt.CrossCursor)
             return
+        if self._edit_mode is not None:
+            self._edit_mode = None
+            r = self._edit_rect
+            if r != self._edit_orig:
+                self.textRectChanged.emit((int(r.left()), int(r.top()), int(r.right()), int(r.bottom())))
+            return
         if self._press_pos is None:
             return super().mouseReleaseEvent(e)
         preview, self._preview = self._preview, None
         self._press_pos = None
         if preview is None:
             if self._press_region is not None:
-                self.regionClicked.emit(self._press_region)
+                self.regionClicked.emit(self._press_region, self._press_mods)
             return
         self.scene().removeItem(preview)
         if self.tool == TOOL_LASSO:
             pts = [(int(p.x()), int(p.y())) for p in self._points]
-            poly = QPolygonF(self._points)
-            br = poly.boundingRect()
+            br = QPolygonF(self._points).boundingRect()
             if len(pts) >= 3 and br.width() > 6 and br.height() > 6:
                 self.lassoDrawn.emit(pts)
         else:
