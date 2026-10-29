@@ -6,6 +6,7 @@ import os
 from PySide6.QtCore import QSettings, Qt, QThread, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core import lama
 from ..core.detect import TextDetector
 from ..core.docs import load_lines
 from ..core.page import Page, Region
@@ -57,6 +59,19 @@ class DetectWorker(QThread):
             self.finished_ok.emit()
         except Exception as e:  # noqa: BLE001 - báo lỗi cho người dùng
             self.failed.emit(str(e))
+
+
+class LamaLoader(QThread):
+    """Nạp sẵn model AI vẽ nền ở luồng nền (mất ~30-40 giây)."""
+
+    done = Signal(str)
+
+    def run(self):
+        try:
+            lama.get_session()
+            self.done.emit("")
+        except Exception as e:  # noqa: BLE001
+            self.done.emit(str(e))
 
 
 class ColorButton(QPushButton):
@@ -248,6 +263,15 @@ class MainWindow(QMainWindow):
                                    "(chữ Nhật dọc thường có khung hẹp và cao).")
         self.chk_bubble.toggled.connect(self._bubble_toggled)
         fl.addRow("", self.chk_bubble)
+        self.chk_ai = QCheckBox("Vẽ lại nền bằng AI (LaMa) – đẹp hơn ở nền tranh, SFX")
+        self.chk_ai.setToolTip("Bóng thoại trắng vẫn tô màu nền như thường (nhanh). AI chỉ dùng cho nền có hoạ tiết, "
+                               "mỗi vùng mất vài giây; lần đầu cần nạp model ~30 giây.")
+        self.chk_ai.setChecked(self.settings.value("use_ai", True) in (True, "true"))
+        self.chk_ai.toggled.connect(self._ai_toggled)
+        fl.addRow("", self.chk_ai)
+        self.lbl_ai = QLabel()
+        self.lbl_ai.setStyleSheet("color:#888;")
+        fl.addRow(self.lbl_ai)
         self.lbl_warn = QLabel()
         self.lbl_warn.setStyleSheet("color:#d9534f;")
         self.lbl_warn.setWordWrap(True)
@@ -313,10 +337,49 @@ class MainWindow(QMainWindow):
             r.style = style
             self.refresh()
 
+    def _ai_toggled(self, on: bool):
+        self.settings.setValue("use_ai", on)
+        if self.page:
+            self.page.use_ai = on
+        if on:
+            self._preload_lama()
+
+    def _preload_lama(self):
+        if lama.is_ready() or getattr(self, "_lama_loader", None) is not None:
+            return
+        self._lama_loader = LamaLoader(self)
+        self._lama_loader.done.connect(self._lama_loaded)
+        self._lama_loader.start()
+        self.lbl_ai.setText("⏳ Đang nạp AI vẽ nền (lần đầu ~30 giây)…")
+
+    def _lama_loaded(self, err: str):
+        self._lama_loader = None
+        if err:
+            self.lbl_ai.setText("⚠ Không nạp được AI vẽ nền, dùng cách thường.")
+            self.chk_ai.setChecked(False)
+            QMessageBox.warning(self, "AI vẽ nền", err)
+        else:
+            self.lbl_ai.setText("✓ AI vẽ nền sẵn sàng")
+
+    def _clean(self, r: Region, fit_bubble: bool):
+        """Xoá chữ + vẽ lại nền; có thể mất vài giây khi dùng AI nên hiện trạng thái chờ."""
+        self.page.use_ai = self.chk_ai.isChecked()
+        if not r.cleaned:
+            msg = "Đang xoá chữ…" if lama.is_ready() or not self.page.use_ai else "Đang chờ nạp AI vẽ nền…"
+            self.statusBar().showMessage(msg)
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            QApplication.processEvents()
+        try:
+            self.page.clean(r, fit_bubble=fit_bubble)
+        finally:
+            if QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
+            self.statusBar().clearMessage()
+
     def _bubble_toggled(self, on: bool):
         r = self.region
         if r is not None and r.cleaned:
-            self.page.clean(r, fit_bubble=on)
+            self._clean(r, fit_bubble=on)
             self.refresh()
 
     def _update_warning(self):
@@ -342,6 +405,9 @@ class MainWindow(QMainWindow):
         self.view.set_image(self.page.render(), fit=True)
         self.refresh()
         self.run_detect()
+        self.page.use_ai = self.chk_ai.isChecked()
+        if self.page.use_ai:
+            self._preload_lama()
 
     def open_docs(self):
         path, _ = QFileDialog.getOpenFileName(self, "Mở bản dịch", self.settings.value("dir/docs", ""), DOCS_FILTER)
@@ -467,7 +533,7 @@ class MainWindow(QMainWindow):
             return
         r.text = self.txt.toPlainText()
         r.style = self.current_style()
-        self.page.clean(r, fit_bubble=self.chk_bubble.isChecked())
+        self._clean(r, fit_bubble=self.chk_bubble.isChecked())
         line = self._line_of_text(r.text)
         if line is not None:
             self.used_lines.add(line)
@@ -479,7 +545,7 @@ class MainWindow(QMainWindow):
         r = self.region
         if r is None:
             return
-        self.page.clean(r, fit_bubble=self.chk_bubble.isChecked())
+        self._clean(r, fit_bubble=self.chk_bubble.isChecked())
         r.text = ""
         self.refresh()
         self.select_region(self.selected)
