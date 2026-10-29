@@ -46,7 +46,7 @@ class Page:
         self.working = img.copy()
         self.text_mask = np.zeros(img.shape[:2], np.float32)
         self.regions: list[Region] = []
-        self.use_ai = True  # vẽ lại nền có hoạ tiết bằng LaMa
+        self.inpainter = None  # hàm inpaint(img, mask) bằng AI cho nền có hoạ tiết; None = OpenCV
 
     @property
     def size(self) -> tuple[int, int]:
@@ -84,7 +84,7 @@ class Page:
         return m
 
     def _clean_pixels(self, region: Region) -> None:
-        clean_region(self.working, self.text_mask, region.box, self.area_mask(region), self.use_ai)
+        clean_region(self.working, self.text_mask, region.box, self.area_mask(region), self.inpainter)
 
     def remove_region(self, region: Region) -> None:
         self.reset(region)

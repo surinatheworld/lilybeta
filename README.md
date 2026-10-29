@@ -28,7 +28,13 @@ python -m venv .venv
 5. **Chọn font** trong danh sách font của máy, cỡ chữ (*Tự động* = tự co vừa bóng), đậm/nghiêng/in hoa, màu chữ, màu và độ dày viền. Font thiếu dấu tiếng Việt sẽ có cảnh báo đỏ.
 6. **Xử lý** (Ctrl+Enter): xoá chữ gốc, vẽ lại nền, chèn bản dịch. Tool tự chuyển sang vùng tiếp theo.
    - Bóng thoại trắng / nền trơn: tô lại màu nền (tức thì).
-   - Nền có hoạ tiết (tranh, lưới chấm, SFX đè lên tranh): vẽ lại bằng **AI LaMa** chạy trên máy, không cần mạng hay API (vài giây mỗi vùng). Model được nạp ngầm khi mở ảnh; tắt bằng ô *Vẽ lại nền bằng AI* nếu máy yếu.
+   - Nền có hoạ tiết (tranh, lưới chấm, SFX đè lên tranh): vẽ lại theo lựa chọn ở mục **Vẽ lại nền**:
+     - *Thường (OpenCV)*: nhanh, nền tranh hơi mờ.
+     - *AI LaMa* (mặc định): chạy trên máy, miễn phí, không cần mạng (vài giây mỗi vùng, model nạp ngầm khi mở ảnh).
+     - *AI Google Gemini* / *AI OpenAI (ChatGPT)*: bấm **API key…** để nhập key và chọn model, có nút *Kiểm tra key*.
+       Chỉ gửi một ô ảnh nhỏ quanh chữ (không gửi cả trang), mỗi vùng = 1 lần gọi API, tính phí theo nhà cung cấp.
+       Gemini cần tài khoản đã bật thanh toán (gói miễn phí không dùng được model sửa ảnh).
+       Key được cất trong Windows Credential Manager, không ghi ra file.
 7. **Xuất ảnh** (Ctrl+S).
 
 Vùng đã xử lý vẫn sửa được: chọn lại rồi đổi chữ/font, ảnh cập nhật ngay. *Hoàn tác vùng* (Ctrl+Z) trả lại ảnh gốc ở vùng đó.
@@ -48,6 +54,7 @@ Vùng đã xử lý vẫn sửa được: chọn lại rồi đổi chữ/font, 
 - `app/core/detect.py` – nhận diện vùng chữ ([comic-text-detector](https://github.com/dmMaze/comic-text-detector), chạy bằng OpenCV DNN)
 - `app/core/clean.py` – xoá chữ, vẽ lại nền (tô màu nền / nền gradient / AI)
 - `app/core/lama.py` – vẽ lại nền bằng [LaMa](https://github.com/advimman/lama) (ONNX, onnxruntime)
+- `app/core/cloud.py` – vẽ lại nền bằng API Gemini / OpenAI; `app/core/secrets.py` – cất API key
 - `app/core/typeset.py` – dàn chữ, tự co cỡ, viền chữ
 - `app/core/docs.py` – đọc bản dịch `.docx` / `.txt`
 - `app/core/page.py` – trạng thái trang
