@@ -21,6 +21,7 @@ python -m venv .venv
 2. **Mở bản dịch** (Ctrl+D): file `.docx` hoặc `.txt`, mỗi đoạn là một câu. Dòng bắt đầu bằng `//` bị bỏ qua. Xuống dòng mềm (Shift+Enter trong Word) hoặc dấu `|` để ép xuống dòng trong bóng thoại.
 3. **Chọn vùng**: bấm vào khung trên ảnh.
    - Khung **đỏ**: chữ trong bóng thoại / hộp dẫn truyện. Bóng thoại đôi được tách thành từng nửa, mỗi nửa một câu.
+     Chữ màu trên truyện đen trắng (vd tên truyện trên trang bìa) cũng được xoá.
    - Khung **cam nét đứt** (nhãn `SFX`): cụm chữ lẻ tự tìm thấy (SFX, chữ nhỏ ngoài bóng). Không cần thì bấm *Xoá khung*.
    - Thiếu vùng thì tự vẽ: chọn công cụ **▭ Khung chữ nhật** (phím R) hoặc **➰ Lasso** (phím L) rồi kéo chuột.
      Lasso khoanh tự do quanh SFX/chữ vẽ tay: **toàn bộ phần khoanh sẽ bị xoá** rồi vẽ lại nền, bản dịch đặt trong vùng khoanh.
@@ -39,11 +40,30 @@ python -m venv .venv
 
 Vùng đã xử lý vẫn sửa được: chọn lại rồi đổi chữ/font, ảnh cập nhật ngay. *Hoàn tác vùng* (Ctrl+Z) trả lại ảnh gốc ở vùng đó.
 
+### Chọn nhiều vùng cùng lúc
+- **Ctrl + bấm** thêm/bỏ từng vùng, **Shift + bấm** chọn liền một dải, **Ctrl+A** chọn tất cả.
+- Đổi font, cỡ, màu, viền, bộ kiểu… → áp cho **mọi vùng đang chọn**.
+- **Xử lý** → làm lần lượt từng vùng; vùng chưa có chữ tự nhận câu dịch kế tiếp theo thứ tự đọc.
+- *Chỉ xoá chữ*, *Hoàn tác vùng*, *Xoá khung* cũng áp cho cả nhóm.
+
+### Tự căn chỉnh chữ
+Chọn **1** vùng đã xử lý → hiện khung tím quanh chữ:
+- Kéo bên trong khung để **di chuyển** chữ, kéo **góc** để đổi cỡ khung (chữ tự xuống dòng/co cỡ lại).
+- Phím mũi tên nhích 1px, Shift + mũi tên nhích 10px.
+- Mục **Căn chỉnh chữ**: căn trái / giữa / phải, **xoay** (độ), *Tự động lại* để bỏ chỉnh tay.
+
+### Font yêu thích & bộ kiểu
+- Bấm **☆** cạnh ô Font để thêm font vào danh sách **Yêu thích**; chọn trong danh sách để dùng ngay.
+- **Bộ kiểu**: bấm *Lưu* để lưu cả font + cỡ + màu + viền + căn lề thành tên (vd *Thoại*, *Hét*, *SFX*);
+  chọn bộ kiểu để áp cho mọi vùng đang chọn.
+
 | Phím | Tác dụng |
 |---|---|
 | Lăn chuột / Ctrl + lăn | Cuộn / phóng to-thu nhỏ |
 | Chuột phải hoặc giữa + kéo | Di chuyển ảnh |
 | R / L | Công cụ khung chữ nhật / lasso |
+| Ctrl / Shift + bấm, Ctrl+A | Chọn nhiều vùng / chọn dải / chọn tất cả |
+| Mũi tên (Shift) | Nhích khung chữ 1px (10px) |
 | Tab | Sang vùng tiếp theo |
 | Delete | Xoá khung đang chọn |
 | B | Ẩn/hiện khung |
