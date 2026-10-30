@@ -58,15 +58,15 @@ def region_mask(page, r) -> np.ndarray:
 
 
 def prepare(page, regions) -> Job:
-    """Cắt vùng gửi cho AI. Chỗ của các vùng này lấy lại ảnh gốc (bỏ lần xoá trước, nếu có)."""
-    mask = np.zeros(page.original.shape[:2], np.uint8)
+    """Cắt vùng gửi cho AI. Chỗ của các vùng này lấy lại ảnh nền gốc (bỏ lần xoá trước, nếu có)."""
+    mask = np.zeros(page.base.shape[:2], np.uint8)
     for r in regions:
         np.maximum(mask, region_mask(page, r), out=mask)
     box, _ = context_box(mask, RATIOS)
     if box is None:
         raise ValueError("Vùng chọn không có chữ để xoá.")
     src = page.working.copy()
-    src[mask > 0] = page.original[mask > 0]
+    src[mask > 0] = page.base[mask > 0]
     x1, y1, x2, y2 = box
     return Job(page, list(regions), box, mask, src[y1:y2, x1:x2].copy())
 
@@ -105,9 +105,9 @@ def apply(job: Job, result: np.ndarray, fit_bubble: bool = True) -> dict:
     keep = cv2.dilate(crop_mask, np.ones((15, 15), np.uint8)) == 0
     err = float(np.abs(aligned.astype(np.int16) - job.crop)[keep].mean()) if keep.any() else 0.0
     page = job.page
-    page.working[job.mask > 0] = page.original[job.mask > 0]
+    page.working[job.mask > 0] = page.base[job.mask > 0]
     blend_back(page.working, job.box, aligned, job.mask, feather=FEATHER)
     for r in job.regions:
-        r.cleaned = True
+        r.cleaned, r.needs_redraw = True, False
         page.clean(r, fit_bubble)  # đã xoá: chỉ tính lại khung đặt chữ
     return {"mismatch": err, "aligned": aligned is not out}

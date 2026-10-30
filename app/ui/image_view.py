@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 COLOR_PENDING = QColor(230, 60, 60)
 COLOR_SFX = QColor(245, 150, 20)
 COLOR_DONE = QColor(40, 170, 80)
+COLOR_REDRAW = QColor(235, 200, 0)  # đã đặt chữ, nền khó để người dùng tự redraw
 COLOR_SELECTED = QColor(30, 120, 255)
 COLOR_EDIT = QColor(200, 40, 200)
 
@@ -99,6 +100,8 @@ class ImageView(QGraphicsView):
             x1, y1, x2, y2 = r.box
             if i in selected:
                 color = COLOR_SELECTED
+            elif r.needs_redraw:
+                color = COLOR_REDRAW
             elif r.done:
                 color = COLOR_DONE
             else:
@@ -108,7 +111,7 @@ class ImageView(QGraphicsView):
             else:
                 shape = QGraphicsRectItem(QRectF(x1, y1, x2 - x1, y2 - y1))
             pen = QPen(color, 3 if i in selected else 2)
-            if r.kind == "sfx" and not r.done:
+            if (r.kind == "sfx" and not r.done) or r.needs_redraw:
                 pen.setStyle(Qt.DashLine)
             pen.setCosmetic(True)
             shape.setPen(pen)

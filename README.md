@@ -42,7 +42,20 @@ python -m venv .venv
 4. Kiểm tra từng trang (sửa tay nếu cần), rồi **Xuất PSD cả chương**: mỗi trang một file PSD gồm Background (raw),
    lớp "Xoá chữ" và **lớp chữ thật sửa được trong Photoshop** (máy có Photoshop). Không có Photoshop thì lớp chữ là ảnh.
 
-Không cần giao diện: `python tools/run_chapter.py <thư mục raw> <file docs> <thư mục PSD> --font "000 WildWords2 TB"`.
+Không cần giao diện: `python tools/run_chapter.py <thư mục raw> <file docs> <thư mục PSD> --font "000 WildWords2 TB"`
+(thêm `--engine simple` và/hoặc `--redrawn <thư mục>` cho hai cách bên dưới).
+
+### Nền khó: để lại tự redraw, hoặc nạp bản đã redraw
+Redraw tranh tự động chưa đẹp bằng tay, nên có hai cách chỉ để tool lo phần chắc ăn:
+- **Chỉ xoá chỗ đơn giản**: ở mục **Vẽ lại nền** chọn *Chỉ xoá chỗ đơn giản*. Tool xoá chữ trong bóng thoại / nền trơn /
+  nền chuyển màu, còn chữ đè lên tranh hoặc lưới chấm thì **giữ nguyên nền gốc** nhưng vẫn đặt bản dịch lên trên.
+  Những vùng này có **khung vàng nét đứt**, trang có `⚠N cần redraw` trong danh sách, và trong PSD lớp chữ tên
+  `REDRAW - …` để bạn tự redraw ngay dưới lớp chữ.
+- **Nạp bản redraw**: đã có ảnh xoá chữ/redraw sẵn (làm trong Photoshop, nhờ người khác, AI…) → bấm **Nạp bản redraw**.
+  Chế độ chương: chọn thư mục, ảnh tự ghép với trang theo số trong tên file (`001.png` ↔ `001.jpg`; cùng số ảnh thì
+  ghép theo thứ tự). Bản redraw phải cùng khung với raw (khác cỡ thì tự co). Chữ vẫn được nhận diện trên raw, bản dịch
+  type lên bản redraw; chỗ bản redraw còn sót chữ Nhật thì tool tự xoá như thường. PSD: Background = raw,
+  lớp "Xoá chữ" = bản redraw, rồi các lớp chữ.
 
 Đo trên chương 18.1 (10 trang, 48 câu, so với PSD typeset tay): tự điền đúng 48/48 câu, xoá hết chữ Nhật trong các
 vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. Công cụ đo: `tools/evaluate.py`.
@@ -68,6 +81,7 @@ vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. C
 6. **Xử lý** (Ctrl+Enter): xoá chữ gốc, vẽ lại nền, chèn bản dịch. Tool tự chuyển sang vùng tiếp theo.
    - Bóng thoại trắng / nền trơn: tô lại màu nền (tức thì).
    - Nền có hoạ tiết (tranh, lưới chấm, SFX đè lên tranh): vẽ lại theo lựa chọn ở mục **Vẽ lại nền**:
+     - *Chỉ xoá chỗ đơn giản*: không vẽ lại nền khó, để bạn tự redraw (xem mục trên).
      - *Thường (OpenCV)*: nhanh, nền tranh hơi mờ.
      - *AI LaMa* (mặc định): chạy trên máy, miễn phí, không cần mạng (vài giây mỗi vùng, model nạp ngầm khi mở ảnh).
      - *AI Google Gemini* / *AI OpenAI (ChatGPT)*: bấm **API key…** để nhập key và chọn model, có nút *Kiểm tra key*.
@@ -78,7 +92,8 @@ vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. C
        Key được cất trong Windows Credential Manager, không ghi ra file.
 7. **Xuất ảnh** (Ctrl+S).
 
-Vùng đã xử lý vẫn sửa được: chọn lại rồi đổi chữ/font, ảnh cập nhật ngay. *Hoàn tác vùng* (Ctrl+Z) trả lại ảnh gốc ở vùng đó.
+Vùng đã xử lý vẫn sửa được: chọn lại rồi đổi chữ/font, ảnh cập nhật ngay. *Hoàn tác vùng* (Ctrl+Z) trả lại ảnh gốc
+(hoặc bản redraw đã nạp) ở vùng đó.
 
 ### Redraw bằng ChatGPT / Gemini (dùng gói Plus/Pro trên web, không cần API)
 Chữ đè lên tranh / lưới chấm mà bản vẽ lại tự động chưa ưng:

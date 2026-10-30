@@ -55,7 +55,7 @@ def layer_specs(page) -> list[dict]:
             "indent_left": st.indent_left, "indent_right": st.indent_right, "indent_first": st.indent_first,
             "space_before": st.space_before, "space_after": st.space_after,
             "stroke": st.stroke_width, "stroke_color": st.stroke_color.lstrip("#"),
-            "rotation": st.rotation, "cx": (x1 + x2) / 2, "cy": (y1 + y2) / 2,
+            "rotation": st.rotation, "cx": (x1 + x2) / 2, "cy": (y1 + y2) / 2, "redraw": r.needs_redraw,
         })
     return specs
 
@@ -96,6 +96,8 @@ try {
     var t = lay.textItem;
     t.kind = TextType.PARAGRAPHTEXT;
     t.contents = L.contents;
+    // Nền khó tool để nguyên chữ gốc: đánh dấu tên lớp để biết chỗ cần tự redraw.
+    if (L.redraw) put(lay, "name", function () { return "REDRAW - " + L.contents.replace(/[\r\u0003]/g, " ").substr(0, 40); });
     t.font = L.font;
     t.size = new UnitValue(L.size, "px");
     t.useAutoLeading = L.auto_leading;
@@ -229,6 +231,6 @@ def export_without_photoshop(page, out_path: str) -> None:
         if len(xs) == 0:
             continue
         bx1, by1, bx2, by2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
-        name = _ascii_name(r.text.replace("\n", " "))
+        name = _ascii_name(("REDRAW - " if r.needs_redraw else "") + r.text.replace("\n", " "))
         psd.append(PixelLayer.frompil(Image.fromarray(arr[by1:by2, bx1:bx2]), psd, name, top=int(by1), left=int(bx1)))
     psd.save(out_path)
