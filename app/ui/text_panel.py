@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.typeset import TextStyle
+from ..core.typeset import SHAPES, TextStyle
 
 AUTO = "(Tự động)"
 SIZES = [6, 8, 9, 10, 11, 12, 14, 18, 24, 30, 36, 48, 60, 72]
@@ -326,6 +326,19 @@ class TextPanel(QTabWidget):
         g.addWidget(_icon_label("¶↓", "Cách sau đoạn"), 2, 2)
         g.addWidget(self.space_after, 2, 3)
         v.addLayout(g)
+        srow = QHBoxLayout()
+        srow.addWidget(QLabel("Dáng khối chữ"))
+        self.shape_box = QComboBox()
+        for key, label in SHAPES.items():
+            self.shape_box.addItem(label, key)
+        self.shape_box.setToolTip("Tự xuống dòng khi căn giữa:\n"
+                                  "• Bo tròn – dòng giữa dài, trên/dưới ngắn, theo đúng hình bóng thoại (vd 1·2·3·2·1 từ)\n"
+                                  "• Đều dòng – các dòng dài gần bằng nhau (hợp khung chữ nhật)\n"
+                                  "• Lấp đầy dòng – mỗi dòng chứa nhiều chữ nhất có thể\n"
+                                  "Không cắt đôi từ ghép (\"cảm ơn\", \"trân trọng\"…). Enter / | trong nội dung = tự ngắt tay.")
+        self.shape_box.currentIndexChanged.connect(self._emit)
+        srow.addWidget(self.shape_box, 1)
+        v.addLayout(srow)
         self.chk_hyphen = QCheckBox("Gạch nối (Hyphenate)")
         self.chk_hyphen.setToolTip("Ngắt từ quá dài sang dòng sau kèm dấu gạch nối")
         v.addWidget(self.chk_hyphen)
@@ -367,6 +380,7 @@ class TextPanel(QTabWidget):
             "space_before": self.space_before.value(),
             "space_after": self.space_after.value(),
             "hyphenate": self.chk_hyphen.isChecked(),
+            "shape": self.shape_box.currentData(),
         }
         d.update({k: b.isChecked() for k, b in self.toggles.items()})
         return d
@@ -396,4 +410,5 @@ class TextPanel(QTabWidget):
         self.space_before.setValue(s.space_before)
         self.space_after.setValue(s.space_after)
         self.chk_hyphen.setChecked(s.hyphenate)
+        self.shape_box.setCurrentIndex(max(0, self.shape_box.findData(s.shape)))
         self._loading = False

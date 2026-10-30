@@ -202,7 +202,7 @@ def split_region(page, region, lines: list[str]):
             box = (x1 + lo, y1 + int(ys.min()), x1 + hi, y1 + int(ys.max()) + 1)
         else:
             box = (x1 + int(xs.min()), y1 + lo, x1 + int(xs.max()) + 1, y1 + hi)
-        out.append(replace(region, box=box, text=line, text_rects=[], manual_rect=None))
+        out.append(replace(region, box=box, text=line, text_rects=[], text_shape=None, manual_rect=None))
     return out
 
 

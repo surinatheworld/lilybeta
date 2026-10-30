@@ -237,11 +237,19 @@ def _fit_surface(xs, ys, values):
 
 def text_area_candidates(img: np.ndarray, box: tuple[int, int, int, int],
                          area_mask: np.ndarray | None = None) -> list[tuple[int, int, int, int]]:
-    """Các khung có thể đặt bản dịch trong lòng bóng thoại chứa `box` (sau khi đã xoá chữ).
+    """Các khung có thể đặt bản dịch trong lòng bóng thoại chứa `box` (sau khi đã xoá chữ)."""
+    return text_area(img, box, area_mask)[0]
+
+
+def text_area(img: np.ndarray, box: tuple[int, int, int, int], area_mask: np.ndarray | None = None):
+    """Chỗ đặt bản dịch trong lòng bóng thoại chứa `box` (sau khi đã xoá chữ): (các khung chữ nhật, dáng bóng).
 
     Loang màu từ tâm khung để lấy lòng bóng, rồi liệt kê các hình chữ nhật nằm trọn trong đó.
     Nếu vùng loang không giống bóng thoại (tràn ra mép ảnh, quá lớn) thì dùng vùng lasso
     `area_mask` (nếu có), không thì chỉ dùng khung gốc.
+
+    Dáng bóng = (cx, cy, ((y, trái, phải), …)): tâm lòng bóng (bỏ đuôi bóng) và bề ngang lòng bóng ở từng hàng,
+    để dàn chữ theo đúng hình bóng (dòng giữa dài, trên/dưới ngắn). None nếu không lấy được lòng bóng.
     """
     h, w = img.shape[:2]
     x1, y1, x2, y2 = (int(v) for v in box)
@@ -257,11 +265,11 @@ def text_area_candidates(img: np.ndarray, box: tuple[int, int, int, int],
                  and n <= 0.3 * w * h and n <= 80 * box_area)
     if not is_bubble:
         if area_mask is None:
-            return [box]
+            return [box], None
         region = _fill_holes(area_mask)
         ys, xs = np.nonzero(region)
         if len(xs) == 0:
-            return [box]
+            return [box], None
     bx1, by1, bx2, by2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
 
     pad = 3
@@ -272,7 +280,39 @@ def text_area_candidates(img: np.ndarray, box: tuple[int, int, int, int],
         if r[2] - r[0] > 8 and r[3] - r[1] > 8:
             cands.append(r)
     # Khung chữ gốc có thể chòi ra ngoài lòng bóng (bóng đôi, bóng méo) nên chỉ dùng khi không còn cách khác.
-    return cands or [box]
+    return cands or [box], _bubble_shape(region[by1:by2, bx1:bx2], (bx1, by1), seed, pad)
+
+
+def _bubble_shape(region: np.ndarray, origin: tuple[int, int], seed: tuple[int, int], pad: int):
+    """(cx, cy, hàng) của lòng bóng: tâm tính sau khi gọt đuôi bóng / chỗ thắt; mỗi hàng là đoạn liền chứa cột tâm."""
+    h, w = region.shape
+    if h < 12 or w < 12:
+        return None
+    # Gọt các phần mảnh (đuôi bóng, chỗ nối bóng đôi) để tâm nằm giữa thân bóng, không bị kéo về phía đuôi.
+    k = max(3, min(h, w) // 4) | 1
+    core = cv2.morphologyEx(region.astype(np.uint8), cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    n, labels = cv2.connectedComponents(core)
+    if n < 2:
+        return None
+    sx, sy = seed[0] - origin[0], seed[1] - origin[1]
+    label = labels[int(np.clip(sy, 0, h - 1)), int(np.clip(sx, 0, w - 1))]
+    if label == 0:  # tâm chữ gốc rơi vào phần bị gọt: lấy mảng thân lớn nhất
+        label = 1 + int(np.argmax(np.bincount(labels[labels > 0].ravel())[1:]))
+    ys, xs = np.nonzero(labels == label)
+    cx, cy = float(xs.mean()), float(ys.mean())
+    col = int(round(cx))
+    if not region[int(round(cy)), col]:
+        return None
+    rows = []
+    for y in range(h):
+        if not region[y, col]:
+            continue
+        line = region[y]
+        left = col - int(np.argmin(line[col::-1])) + 1 if not line[:col + 1].all() else 0
+        right = col + int(np.argmin(line[col:])) if not line[col:].all() else w
+        if right - left > 2 * pad:
+            rows.append((int(origin[1] + y), int(origin[0] + left + pad), int(origin[0] + right - pad)))
+    return (round(float(origin[0] + cx), 1), round(float(origin[1] + cy), 1), tuple(rows)) if rows else None
 
 
 def _fill_holes(mask: np.ndarray) -> np.ndarray:

@@ -189,6 +189,14 @@ vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. C
      hàng nút: giả đậm, giả nghiêng, IN HOA, chữ hoa nhỏ, chỉ số trên/dưới, gạch chân, gạch ngang; khử răng cưa.
    - Thẻ **Đoạn**: căn trái/giữa/phải, dàn đều (dòng cuối trái/giữa/phải, dàn đều tất cả), thụt lề trái/phải/dòng đầu,
      khoảng cách trước/sau đoạn, gạch nối. Enter hoặc `|` trong nội dung = sang đoạn mới.
+   - **Dáng khối chữ** (khi căn giữa, tự xuống dòng):
+     - *Bo tròn* (mặc định): chữ dàn theo đúng hình lòng bóng – mỗi dòng rộng bằng bóng ở độ cao của nó, dòng giữa
+       dài, trên/dưới ngắn (9 từ trong bóng tròn → 1·2·3·2·1), khối chữ đặt chính giữa thân bóng (không bị đuôi bóng
+       kéo lệch). Vì tận dụng cả bóng nên chữ thường to hơn kiểu khung chữ nhật.
+     - *Đều dòng*: các dòng dài gần bằng nhau – tự dùng cho khung ô vuông (bộ font Gái Băng).
+     - *Lấp đầy dòng*: cách cũ, mỗi dòng nhét nhiều chữ nhất.
+     Không cắt đôi từ ghép thông dụng ("cảm ơn", "trân trọng", "kiểm soát"…), ưu tiên xuống dòng sau dấu phẩy/chấm;
+     khi bóng hẹp, chữ được nhỏ đi tối đa 15% để khỏi ngắt xấu. Muốn tự ngắt thì dùng Enter / `|`.
    - Mục **Hiệu ứng**: viền chữ (Stroke) – màu và độ dày. Font thiếu dấu tiếng Việt sẽ có cảnh báo đỏ.
 6. **Xử lý** (Ctrl+Enter): xoá chữ gốc, vẽ lại nền, chèn bản dịch. Tool tự chuyển sang vùng tiếp theo.
    - Bóng thoại trắng / nền trơn: tô lại màu nền (tức thì).
@@ -271,7 +279,8 @@ Chọn **1** vùng đã xử lý → hiện khung tím quanh chữ:
 - `app/core/clean.py` – xoá chữ, vẽ lại nền (tô màu nền / nền gradient / AI)
 - `app/core/lama.py` – vẽ lại nền bằng [LaMa](https://github.com/advimman/lama) (ONNX, onnxruntime)
 - `app/core/cloud.py` – vẽ lại nền bằng API Gemini / OpenAI; `app/core/secrets.py` – cất API key
-- `app/core/typeset.py` – dàn chữ, tự co cỡ, viền chữ
+- `app/core/typeset.py` – dàn chữ, tự co cỡ, xuống dòng bo tròn theo dáng bóng, viền chữ
+- `app/core/vi_words.py` – từ ghép tiếng Việt thông dụng (không xuống dòng ở giữa)
 - `app/core/docs.py` – đọc bản dịch `.docx` / `.txt`
 - `app/core/page.py` – trạng thái trang (ảnh, vùng chữ)
 - `app/core/document.py` – layer, ghép ảnh, vùng chọn, cọ, lịch sử hoàn tác

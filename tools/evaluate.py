@@ -150,10 +150,9 @@ def evaluate(raw_dir, psd_dir, out_dir, pages=None, engine="lama", order_fix=Non
             ref0 = refs[js[0]]
             r.text = "\n".join(refs[j]["text"] for j in js)
             r.style = TextStyle(family=family_for(ref0["font"], families))
-            from app.core.typeset import _layout
-            from dataclasses import astuple
+            from app.core.typeset import layout
             x1, y1, x2, y2 = r.text_rect
-            _, size, _ = _layout(r.text, astuple(r.effective_style), x2 - x1, y2 - y1)
+            size = layout(r.text, r.effective_style, x2 - x1, y2 - y1)[0].size
             if len(js) == 1:
                 size_err.append(size / ref0["size"])
                 pos_err.append(math.dist(center(r.text_rect), center(ref0["bbox"])))
