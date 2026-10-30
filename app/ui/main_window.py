@@ -5,7 +5,7 @@ import json
 import os
 from dataclasses import asdict
 
-from PySide6.QtCore import QSettings, Qt, QThread, Signal
+from PySide6.QtCore import QSettings, QSize, Qt, QThread, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
-    QFontComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -28,8 +27,8 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
-    QSpinBox,
-    QSplitter,
+    QStackedWidget,
+    QTabWidget,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -39,6 +38,7 @@ from ..core import cloud, lama, secrets
 from ..core.detect import TextDetector
 from ..core.assign import apply_plan, assign_lines
 from ..core.chapter import Chapter
+from ..core.document import Stroke, doc_for
 from ..core.clean import skip_hard, small_only
 from ..core.docs import load_lines, load_pages, page_number
 from ..core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available
@@ -47,7 +47,25 @@ from ..core.typeset import TextStyle, missing_chars
 from ..core import manual_ai
 from .ai_bridge import AiBridgeDialog
 from .api_dialog import PROVIDERS, ApiDialog, model_for
-from .image_view import TOOL_LASSO, TOOL_RECT, ImageView
+from .image_view import (
+    PAINT_TOOLS,
+    TOOL_BRUSH,
+    TOOL_CLONE,
+    TOOL_ERASER,
+    TOOL_HAND,
+    TOOL_HEAL,
+    TOOL_LASSO,
+    TOOL_LASSO_SEL,
+    TOOL_MARQUEE,
+    TOOL_MOVE,
+    TOOL_RECT,
+    TOOL_TEXT,
+    TOOL_WAND,
+    TOOL_ZOOM,
+    ImageView,
+)
+from .panels import ColorPair, HistoryPanel, LayersPanel, SelectionModes, check, labeled, spin
+from .theme import glyph_icon
 from .text_panel import TextPanel
 
 IMAGE_FILTER = "Ảnh (*.png *.jpg *.jpeg *.webp *.bmp)"
@@ -135,6 +153,26 @@ ENGINES = [
 ]
 LOCAL_AI = ("auto", "lama")  # các lựa chọn dùng LaMa trên máy
 
+# Hộp công cụ: (công cụ, ký tự icon, mô tả, phím tắt)
+TOOLS = [
+    (TOOL_MOVE, "✥", "Move – kéo khung chữ để di chuyển chữ", "V"),
+    (TOOL_MARQUEE, "⬚", "Rectangular Marquee – vùng chọn chữ nhật", "M"),
+    (TOOL_LASSO_SEL, "➰", "Lasso – vùng chọn tự do", "L"),
+    (TOOL_WAND, "✦", "Magic Wand – chọn vùng cùng màu", "W"),
+    (TOOL_HEAL, "✚", "Spot Healing – tô lên chỗ cần xoá, AI vẽ lại khi nhả chuột", "J"),
+    (TOOL_BRUSH, "✎", "Brush – cọ (màu trước)", "B"),
+    (TOOL_CLONE, "⎘", "Clone Stamp – Alt+bấm lấy điểm mẫu rồi tô", "S"),
+    (TOOL_ERASER, "⌫", "Eraser – tẩy (trên layer Redraw: trả về ảnh raw)", "E"),
+    (TOOL_TEXT, "T", "Type – bấm vào bóng thoại để gõ chữ, kéo để tạo khung đoạn văn", "T"),
+    (TOOL_RECT, "▣", "Khung chữ – vẽ khung để xoá chữ gốc & đặt bản dịch", "K"),
+    (TOOL_LASSO, "◌", "Khung chữ lasso – khoanh tự do quanh chữ/SFX", "Shift+K"),
+    (TOOL_HAND, "✋", "Hand – kéo ảnh (hoặc giữ Space)", "H"),
+    (TOOL_ZOOM, "⌕", "Zoom – bấm phóng to, Alt+bấm thu nhỏ", "Z"),
+]
+TOOL_NAMES = {TOOL_BRUSH: "Brush", TOOL_ERASER: "Eraser", TOOL_CLONE: "Clone Stamp", TOOL_HEAL: "Spot Healing"}
+PAINT_DEFAULTS = {TOOL_BRUSH: [20, 80, 100], TOOL_ERASER: [40, 80, 100], TOOL_CLONE: [40, 60, 100],
+                  TOOL_HEAL: [30, 80, 100]}  # cỡ, độ cứng %, độ mờ %
+
 
 class ColorButton(QPushButton):
     changed = Signal(str)
@@ -182,93 +220,352 @@ class MainWindow(QMainWindow):
         self._suggested_text: str | None = None  # câu dịch tự điền sẵn (chưa phải người dùng chọn)
         self._loading_ui = False
 
+        self.doc = None  # tài liệu nhiều layer của trang đang mở
+        self.stroke: Stroke | None = None
+        self.clone_src: tuple[float, float] | None = None
+        self.clone_offset: tuple[int, int] | None = None
+        self.paint_opts = {k: list(v) for k, v in PAINT_DEFAULTS.items()}
+        self._busy = False
+
         self.view = ImageView()
         self.view.regionClicked.connect(self._region_clicked)
         self.view.textRectChanged.connect(self._text_rect_dragged)
         self.view.regionDrawn.connect(self.add_region)
         self.view.lassoDrawn.connect(self.add_lasso)
+        self.view.selectionMade.connect(self._selection_made)
+        self.view.strokeBegan.connect(self._stroke_began)
+        self.view.strokeMoved.connect(self._stroke_to)
+        self.view.strokeEnded.connect(self._stroke_ended)
+        self.view.cloneSourceSet.connect(self._clone_source)
+        self.view.textClicked.connect(self._text_clicked)
+        self.view.textBoxDrawn.connect(self._text_box_drawn)
+        self.view.zoomChanged.connect(lambda z: self.lbl_zoom.setText(f"{z * 100:.0f}%"))
+        self.view.cursorMoved.connect(lambda x, y: self.lbl_pos.setText(f"X {x}  Y {y}"))
+        self.setCentralWidget(self.view)
 
-        splitter = QSplitter()
-        splitter.addWidget(self.view)
-        # Bảng bên phải dài nên cho cuộn, để các ô không bị ép dẹt trên màn hình thấp.
-        scroll = QScrollArea()
-        scroll.setWidget(self._build_panel())
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setMinimumWidth(420)
-        splitter.addWidget(scroll)
-        splitter.setStretchFactor(0, 1)
-        splitter.setSizes([1000, 460])
-        self.setCentralWidget(splitter)
-        self._build_toolbar()
+        lily, textp = self._build_panel()
+        self.layers_panel = LayersPanel()
+        self.layers_panel.activated.connect(self._layer_activated)
+        self.layers_panel.visibility.connect(self._layer_visibility)
+        self.layers_panel.renamed.connect(self._layer_renamed)
+        self.layers_panel.opacityChanged.connect(self._layer_opacity)
+        self.layers_panel.blendChanged.connect(self._layer_blend)
+        self.layers_panel.action.connect(self.layer_action)
+        self.history_panel = HistoryPanel()
+        self.history_panel.jump.connect(self._history_jump)
         self.page_list = QListWidget()
         self.page_list.currentRowChanged.connect(self._page_row_changed)
-        self.page_dock = QDockWidget("Trang", self)
-        self.page_dock.setWidget(self.page_list)
-        self.page_dock.setFeatures(QDockWidget.DockWidgetMovable)
-        self.addDockWidget(Qt.LeftDockWidgetArea, self.page_dock)
-        self.page_dock.hide()
+
+        def dock(title, widget, name, scroll=False):
+            if scroll:
+                area = QScrollArea()
+                area.setWidget(widget)
+                area.setWidgetResizable(True)
+                area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+                widget = area
+            d = QDockWidget(title, self)
+            d.setObjectName(name)
+            d.setWidget(widget)
+            d.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable
+                          | QDockWidget.DockWidgetClosable)
+            d.setTitleBarWidget(QWidget())  # chỉ hiện tab tên panel (kéo tab để sắp xếp; bật/tắt ở menu Cửa sổ)
+            return d
+
+        self.d_lily = dock("Lilyzono – dịch truyện", lily, "lily", scroll=True)
+        self.d_text = dock("Character / Paragraph", textp, "text", scroll=True)
+        self.d_layers = dock("Layers", self.layers_panel, "layers")
+        self.d_history = dock("History", self.history_panel, "history")
+        self.page_dock = dock("Trang", self.page_list, "pages")
+        for d in (self.d_lily, self.d_text, self.d_layers, self.d_history, self.page_dock):
+            d.setMinimumWidth(330)
+        self.setTabPosition(Qt.AllDockWidgetAreas, QTabWidget.North)
+        self.setDockOptions(QMainWindow.AnimatedDocks | QMainWindow.AllowTabbedDocks | QMainWindow.GroupedDragging)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.d_lily)
+        self.splitDockWidget(self.d_lily, self.d_layers, Qt.Vertical)
+        self.tabifyDockWidget(self.d_lily, self.d_text)
+        self.tabifyDockWidget(self.d_layers, self.d_history)
+        self.tabifyDockWidget(self.d_layers, self.page_dock)
+        self.d_lily.raise_()
+        self.d_layers.raise_()
+        self.resizeDocks([self.d_lily, self.d_layers], [560, 300], Qt.Vertical)
+        self.resizeDocks([self.d_lily], [400], Qt.Horizontal)
+
+        self._build_menus()
+        self._build_toolbox()
+        self._build_options()
+        self.lbl_pos, self.lbl_size, self.lbl_zoom = QLabel(), QLabel(), QLabel()
+        for w in (self.lbl_pos, self.lbl_size, self.lbl_zoom):
+            w.setMinimumWidth(90)
+            self.statusBar().addPermanentWidget(w)
         self._load_style_settings()
         self._update_ai_label()
-        self.statusBar().showMessage("Mở ảnh raw (Ctrl+O) hoặc kéo thả ảnh vào cửa sổ.")
+        self.set_tool(self.settings.value("tool", TOOL_MOVE))
+        self.statusBar().showMessage("Mở ảnh raw (Ctrl+O), cả chương (Ctrl+Shift+O) hoặc kéo thả ảnh vào cửa sổ.")
 
     # --- dựng giao diện ----------------------------------------------------
-    def _build_toolbar(self):
+    def _action(self, menu, text, slot, shortcut=None, checkable=False, checked=False, tip=None):
+        a = QAction(text, self)
+        a.triggered.connect(slot)
+        if shortcut:
+            keys = shortcut if isinstance(shortcut, (list, tuple)) else [shortcut]
+            a.setShortcuts([QKeySequence(k) for k in keys])
+        if checkable:
+            a.setCheckable(True)
+            a.setChecked(checked)
+        if tip:
+            a.setStatusTip(tip)
+            a.setToolTip(tip)
+        menu.addAction(a)
+        return a
+
+    def _build_menus(self):
+        mb = self.menuBar()
+        A = self._action
+        m = mb.addMenu("&Tệp")
+        A(m, "Mở ảnh…", self.open_image, "Ctrl+O")
+        A(m, "Mở chương (thư mục ảnh)…", self.open_chapter, "Ctrl+Shift+O")
+        A(m, "Mở bản dịch (.docx / .txt)…", self.open_docs, "Ctrl+Alt+D")
+        A(m, "Upload bản redraw…", self.open_redrawn, "Ctrl+Shift+U",
+          tip="Ảnh đã xoá chữ/redraw sẵn thành layer Redraw (trên raw, dưới chữ)")
+        m.addSeparator()
+        A(m, "Lưu PSD…", self.export_psd_page, "Ctrl+S")
+        A(m, "Xuất JPEG…", self.export_image, ["Ctrl+Alt+Shift+W", "Ctrl+Shift+S"])
+        self.act_export_all = A(m, "Xuất cả chương (PSD / JPEG)…", self.export_psd_chapter)
+        m.addSeparator()
+        A(m, "Thoát", self.close, "Ctrl+Q")
+
+        m = mb.addMenu("&Sửa")
+        A(m, "Hoàn tác", self.undo, "Ctrl+Z")
+        A(m, "Làm lại", self.redo, ["Ctrl+Shift+Z", "Ctrl+Y"])
+        A(m, "Lùi một bước", self.undo, "Ctrl+Alt+Z")
+        m.addSeparator()
+        A(m, "Tô vùng chọn (Fill)…", self.fill_dialog, ["Shift+F5", "Shift+Backspace"])
+        A(m, "Content-Aware Fill (AI LaMa)", lambda: self.content_aware())
+        A(m, "Tô màu trước", lambda: self.fill_color(True), "Alt+Backspace")
+        A(m, "Tô màu nền", lambda: self.fill_color(False), "Ctrl+Backspace")
+        A(m, "Xoá (Delete)", self.delete_key, "Delete")
+        m.addSeparator()
+        A(m, "API key AI (Gemini / OpenAI)…", self.open_api_dialog)
+
+        m = mb.addMenu("&Layer")
+        A(m, "Layer mới", lambda: self.layer_action("new"), "Ctrl+Shift+N")
+        A(m, "Nhân đôi layer", lambda: self.layer_action("dup"), "Ctrl+J")
+        A(m, "Xoá layer", lambda: self.layer_action("delete"))
+        m.addSeparator()
+        A(m, "Đưa lên", lambda: self.layer_action("up"), "Ctrl+]")
+        A(m, "Đưa xuống", lambda: self.layer_action("down"), "Ctrl+[")
+        A(m, "Gộp xuống", lambda: self.layer_action("merge"), "Ctrl+E")
+
+        m = mb.addMenu("&Chọn")
+        A(m, "Chọn tất cả", self.select_all_pixels, "Ctrl+A")
+        A(m, "Bỏ chọn", self.deselect, "Ctrl+D")
+        A(m, "Đảo vùng chọn", self.invert_selection, "Ctrl+Shift+I")
+        m.addSeparator()
+        A(m, "Làm mềm (Feather)…", self.feather_dialog, "Shift+F6")
+        A(m, "Mở rộng…", lambda: self.grow_dialog(1))
+        A(m, "Thu hẹp…", lambda: self.grow_dialog(-1))
+        m.addSeparator()
+        A(m, "Vùng chọn từ khung chữ đang chọn", self.selection_from_regions)
+        A(m, "Tạo khung chữ từ vùng chọn", self.region_from_selection)
+
+        m = mb.addMenu("C&hữ")
+        self.act_detect = A(m, "Nhận diện chữ", self.run_detect, "F5")
+        A(m, "Xử lý khung đang chọn (xoá chữ + đặt bản dịch)", self.process_selected, ["Ctrl+Return", "Ctrl+Enter"])
+        A(m, "Chỉ xoá chữ", self.clean_selected)
+        A(m, "Hoàn tác khung (trả ảnh gốc, bỏ chữ)", self.reset_selected)
+        A(m, "Redraw bằng ChatGPT / Gemini…", self.open_ai_bridge, "Ctrl+Shift+R")
+        m.addSeparator()
+        A(m, "Chọn mọi khung chữ", self.select_all, "Ctrl+Alt+A")
+        A(m, "Chọn mọi khung đã có bản dịch", self.select_translated, "Ctrl+Shift+A")
+        A(m, "Khung tiếp theo", lambda: self._step_region(1), "Tab")
+        A(m, "Tự điền bản dịch cho trang này", self._auto_fill)
+        m.addSeparator()
+        self.act_process_all = A(m, "Xử lý cả chương", self.process_chapter)
+
+        m = mb.addMenu("&Xem")
+        A(m, "Phóng to", lambda: self.view.zoom_by(1.25), ["Ctrl+=", "Ctrl++"])
+        A(m, "Thu nhỏ", lambda: self.view.zoom_by(0.8), "Ctrl+-")
+        A(m, "Vừa màn hình", self.view.fit_page, "Ctrl+0")
+        A(m, "Vừa chiều ngang", self.view.fit_width, "Ctrl+Alt+0")
+        A(m, "100%", lambda: self.view.zoom_to(1.0), "Ctrl+1")
+        m.addSeparator()
+        self.act_boxes = A(m, "Hiện khung chữ", self.toggle_boxes, "Ctrl+H", checkable=True, checked=True)
+
+        m = mb.addMenu("Cửa &sổ")
+        for d in (self.d_layers, self.d_history, self.d_lily, self.d_text, self.page_dock):
+            m.addAction(d.toggleViewAction())
+
+        m = mb.addMenu("Trợ &giúp")
+        A(m, "Phím tắt", self.show_shortcuts, "F1")
+
+    def _build_toolbox(self):
         tb = QToolBar("Công cụ")
+        tb.setObjectName("tools")
+        tb.setOrientation(Qt.Vertical)
         tb.setMovable(False)
-        self.addToolBar(tb)
-
-        def act(text, slot, shortcut=None):
-            a = QAction(text, self)
-            a.triggered.connect(slot)
-            if shortcut:
-                a.setShortcut(QKeySequence(shortcut))
+        tb.setIconSize(QSize(22, 22))
+        self.addToolBar(Qt.LeftToolBarArea, tb)
+        group = QActionGroup(self)
+        self.tool_actions = {}
+        for tool, glyph, tip, key in TOOLS:
+            icon = glyph_icon(glyph, 22, font="Times New Roman", bold=True) if glyph == "T" else glyph_icon(glyph, 22)
+            a = QAction(icon, f"{tip} ({key})", self)
+            a.setCheckable(True)
+            a.setShortcut(QKeySequence(key))
+            a.triggered.connect(lambda _=False, t=tool: self.set_tool(t))
+            group.addAction(a)
             tb.addAction(a)
-            return a
-
-        act("Mở chương", self.open_chapter, "Ctrl+Shift+O").setToolTip(
-            "Mở cả thư mục ảnh raw của một chương")
-        act("Mở ảnh", self.open_image, "Ctrl+O")
-        act("Mở bản dịch", self.open_docs, "Ctrl+D")
-        act("Upload bản redraw", self.open_redrawn).setToolTip(
-            "Nạp ảnh đã xoá chữ/redraw sẵn (Photoshop, AI…): thành lớp Redraw nằm trên raw, dưới lớp chữ. "
-            "Chế độ chương: chọn thư mục, ảnh được ghép với trang theo số trong tên file")
+            self.tool_actions[tool] = a
         tb.addSeparator()
+        self.colors = ColorPair()
+        tb.addWidget(self.colors)
+        for key, slot in (("D", self.colors.reset), ("X", self.colors.swap),
+                          ("[", lambda: self._brush_key(-1)), ("]", lambda: self._brush_key(1))):
+            QShortcut(QKeySequence(key), self, slot)
+
+    def _build_options(self):
+        ob = QToolBar("Tuỳ chọn công cụ")
+        ob.setMovable(False)
+        self.addToolBar(Qt.TopToolBarArea, ob)
+        self.opt_icon = QLabel()
+        ob.addWidget(self.opt_icon)
+        self.opt_stack = QStackedWidget()
+        ob.addWidget(self.opt_stack)
+        self._opt_pages = {}
+
+        def page(*widgets):
+            w = QWidget()
+            lay = QHBoxLayout(w)
+            lay.setContentsMargins(4, 0, 4, 0)
+            for x in widgets:
+                if x == "|":
+                    sep = QLabel("│")
+                    sep.setStyleSheet("color:#555;")
+                    lay.addWidget(sep)
+                else:
+                    lay.addWidget(x)
+            lay.addStretch(1)
+            self.opt_stack.addWidget(w)
+            return self.opt_stack.count() - 1
+
+        def button(text, slot, tip=None):
+            b = QPushButton(text)
+            b.clicked.connect(slot)
+            if tip:
+                b.setToolTip(tip)
+            return b
+
+        def hint(text):
+            lab = QLabel(text)
+            lab.setStyleSheet("color:#8f8f8f;")
+            return lab
+
+        # Move
+        self.opt_boxes = check("Hiện khung chữ (Ctrl+H)", True)
+        self.opt_boxes.toggled.connect(lambda on: (self.act_boxes.setChecked(on), self.toggle_boxes()))
+        i_move = page(self.opt_boxes, "|", hint("Bấm khung để chọn · kéo khung tím để di chuyển chữ, góc để đổi cỡ · "
+                                                "mũi tên: nhích 1px (Shift: 10px)"))
+        # Vùng chọn
+        self.sel_modes = [SelectionModes(), SelectionModes()]
+        for sm in self.sel_modes:
+            sm.changed.connect(self._sel_mode_changed)
+        self.opt_feather = spin(0, 250, 0, " px")
+        i_sel = page(self.sel_modes[0], "|", labeled("Feather:", self.opt_feather), "|",
+                     button("Content-Aware Fill", lambda: self.content_aware(), "Vẽ lại phần trong vùng chọn bằng AI LaMa"),
+                     button("Tô…", self.fill_dialog), button("Tạo khung chữ", self.region_from_selection,
+                                                            "Biến vùng chọn thành khung chữ để xoá chữ & đặt bản dịch"))
+        self.opt_tol = spin(0, 255, 32)
+        self.opt_contig = check("Liền kề", True)
+        self.opt_sample = check("Lấy mẫu mọi layer", True)
+        i_wand = page(self.sel_modes[1], "|", labeled("Dung sai:", self.opt_tol), self.opt_contig, self.opt_sample, "|",
+                      button("Content-Aware Fill", lambda: self.content_aware()))
+        # Cọ / tẩy / clone / healing
+        self.opt_size = spin(1, 1000, 20, " px")
+        self.opt_hard = spin(0, 100, 80, " %")
+        self.opt_opacity = spin(1, 100, 100, " %")
+        for w in (self.opt_size, self.opt_hard, self.opt_opacity):
+            w.valueChanged.connect(self._paint_opts_changed)
+        self.opt_paint_hint = hint("")
+        i_paint = page(labeled("Cỡ:", self.opt_size), labeled("Độ cứng:", self.opt_hard),
+                       labeled("Opacity:", self.opt_opacity), "|", self.opt_paint_hint)
+        # Chữ
+        i_text = page(hint("Bấm vào bóng thoại để tạo chữ rồi gõ ở ô nội dung (panel Lilyzono) · kéo chuột để tạo "
+                           "khung đoạn văn · font/cỡ/căn lề ở panel Character / Paragraph"), "|",
+                      button("Xử lý (Ctrl+Enter)", self.process_selected))
+        # Khung chữ
+        i_region = page(button("Nhận diện chữ (F5)", self.run_detect), button("Xử lý (Ctrl+Enter)", self.process_selected),
+                        button("Chỉ xoá chữ", self.clean_selected), "|",
+                        hint("Kéo để vẽ khung (lasso: khoanh tự do – toàn bộ phần khoanh bị xoá) · bấm để chọn khung"))
+        # Hand / Zoom
+        i_view = page(button("100%", lambda: self.view.zoom_to(1.0)), button("Vừa màn hình", self.view.fit_page),
+                      button("Vừa chiều ngang", self.view.fit_width))
+        self._opt_pages = {TOOL_MOVE: i_move, TOOL_MARQUEE: i_sel, TOOL_LASSO_SEL: i_sel, TOOL_WAND: i_wand,
+                           TOOL_TEXT: i_text, TOOL_RECT: i_region, TOOL_LASSO: i_region, TOOL_HAND: i_view,
+                           TOOL_ZOOM: i_view, **{t: i_paint for t in PAINT_TOOLS}}
+
+    def set_tool(self, tool: str):
+        if tool not in self.tool_actions:
+            tool = TOOL_MOVE
+        self.view.set_tool(tool)
+        self.tool_actions[tool].setChecked(True)
+        self.settings.setValue("tool", tool)
+        self.opt_stack.setCurrentIndex(self._opt_pages[tool])
+        glyph = next(g for t, g, _, _ in TOOLS if t == tool)
+        self.opt_icon.setPixmap(glyph_icon(glyph, 20).pixmap(20, 20))
+        if tool in PAINT_TOOLS:
+            size, hard, op = self.paint_opts[tool]
+            for w, v in ((self.opt_size, size), (self.opt_hard, hard), (self.opt_opacity, op)):
+                w.blockSignals(True)
+                w.setValue(v)
+                w.blockSignals(False)
+            self.view.set_brush_size(size)
+            self.opt_paint_hint.setText({
+                TOOL_BRUSH: "Vẽ màu trước lên layer đang chọn · [ ]: đổi cỡ",
+                TOOL_ERASER: "Layer Redraw: tẩy = trả về ảnh raw · layer ảnh: xoá thành trong suốt",
+                TOOL_CLONE: "Alt+bấm để lấy điểm mẫu, rồi tô (giữ khoảng cách mẫu giữa các nét)",
+                TOOL_HEAL: "Tô kín chỗ cần xoá (chữ, SFX…), nhả chuột: AI LaMa vẽ lại theo nền xung quanh",
+            }[tool])
+
+    def _paint_opts_changed(self, *_):
+        tool = self.view.tool
+        if tool in PAINT_TOOLS:
+            self.paint_opts[tool] = [self.opt_size.value(), self.opt_hard.value(), self.opt_opacity.value()]
+            self.view.set_brush_size(self.opt_size.value())
+
+    def _brush_key(self, d: int):
+        if self.view.tool in PAINT_TOOLS:
+            v = self.opt_size.value()
+            self.opt_size.setValue(max(1, v + d * max(1, round(v * 0.1))))
+
+    def _sel_mode_changed(self, mode: str):
+        self.view.sel_mode = mode
+        for sm in self.sel_modes:
+            sm.set_mode(mode)
+
+    def show_shortcuts(self):
+        rows = [f"{key}\t{tip}" for _, _, tip, key in TOOLS] + [
+            "Space (giữ)\tKéo ảnh", "Ctrl / Alt + lăn chuột\tPhóng to / thu nhỏ", "Ctrl+0 / Ctrl+1\tVừa màn hình / 100%",
+            "[ ]\tĐổi cỡ cọ", "D / X\tMàu mặc định / đổi chỗ màu", "Ctrl+Z / Ctrl+Shift+Z\tHoàn tác / làm lại",
+            "Ctrl+A / Ctrl+D / Ctrl+Shift+I\tChọn tất cả / bỏ chọn / đảo", "Shift / Alt khi chọn\tCộng / trừ vùng chọn",
+            "Shift+F5\tTô vùng chọn (có Content-Aware)", "Delete\tXoá điểm trong vùng chọn (không có vùng chọn: xoá khung)",
+            "Alt+Backspace / Ctrl+Backspace\tTô màu trước / màu nền", "Ctrl+Shift+N / Ctrl+J / Ctrl+E\tLayer mới / nhân đôi / gộp",
+            "Ctrl+] / Ctrl+[\tĐưa layer lên / xuống", "F5\tNhận diện chữ", "Ctrl+Enter\tXử lý khung đang chọn",
+            "Tab\tKhung tiếp theo", "Ctrl+Shift+A\tChọn mọi khung có bản dịch", "Ctrl+S\tLưu PSD",
+            "Ctrl+Alt+Shift+W\tXuất JPEG"]
+        QMessageBox.information(self, "Phím tắt", "\n".join(rows))
+
+    def _build_panel(self) -> tuple[QWidget, QWidget]:
+        """Panel Lilyzono (khung chữ, bản dịch) và panel Character / Paragraph (kiểu chữ, hiệu ứng, vẽ nền)."""
+        panel = QWidget()
+        lay = QVBoxLayout(panel)
         self.direction = QComboBox()
         self.direction.addItems(["Tiếng Nhật (manga): phải → trái", "Tiếng Anh / manhwa: trái → phải"])
         self.direction.setCurrentIndex(int(self.settings.value("direction", 0)))
         self.direction.currentIndexChanged.connect(lambda i: self.settings.setValue("direction", i))
-        tb.addWidget(self.direction)
-        self.act_detect = act("Nhận diện chữ", self.run_detect, "F5")
-        self.act_boxes = act("Hiện khung", self.toggle_boxes, "B")
-        self.act_boxes.setCheckable(True)
-        self.act_boxes.setChecked(True)
-        act("Vừa khung", self.view.fit_width, "Ctrl+0")
-        tb.addSeparator()
-        # Công cụ vẽ vùng mới: kéo chuột trên ảnh.
-        tools = QActionGroup(self)
-        self.act_rect = act("▭ Khung chữ nhật", lambda: self.view.set_tool(TOOL_RECT), "R")
-        self.act_lasso = act("➰ Lasso", lambda: self.view.set_tool(TOOL_LASSO), "L")
-        for a, tip in ((self.act_rect, "Kéo chuột để vẽ khung chữ nhật (R)"),
-                       (self.act_lasso, "Kéo chuột để khoanh tự do quanh chữ/SFX; toàn bộ phần khoanh sẽ bị xoá (L)")):
-            a.setCheckable(True)
-            a.setToolTip(tip)
-            tools.addAction(a)
-        self.act_rect.setChecked(True)
-        self.view.set_tool(TOOL_RECT)
-        tb.addSeparator()
-        act("Xuất JPEG", self.export_image, "Ctrl+S")
-        act("Xuất PSD", self.export_psd_page, "Ctrl+Shift+S").setToolTip(
-            "Xuất trang này ra PSD có lớp (có Photoshop: lớp chữ sửa được)")
-        tb.addSeparator()
-        self.act_process_all = act("Xử lý cả chương", self.process_chapter)
-        self.act_process_all.setToolTip("Nhận diện, tự điền câu dịch theo trang, xoá chữ và đặt chữ cho mọi trang")
-        self.act_export_all = act("Xuất cả chương", self.export_psd_chapter)
-        self.act_export_all.setToolTip("Xuất mọi trang đã mở ra PSD (raw / Redraw / lớp chữ) và/hoặc JPEG")
-
-    def _build_panel(self) -> QWidget:
-        panel = QWidget()
-        lay = QVBoxLayout(panel)
+        drow = QHBoxLayout()
+        drow.addWidget(QLabel("Raw:"))
+        drow.addWidget(self.direction, 1)
+        lay.addLayout(drow)
 
         # Vùng chữ đang chọn
         g_region = QGroupBox("Vùng chữ")
@@ -293,8 +590,12 @@ class MainWindow(QMainWindow):
         btn_reset.clicked.connect(self.reset_selected)
         btn_del = QPushButton("Xoá khung")
         btn_del.clicked.connect(self.delete_selected)
-        for b in (self.btn_process, btn_clean, btn_reset, btn_del):
-            row.addWidget(b)
+        row.addWidget(self.btn_process, 1)
+        row.addWidget(btn_clean)
+        rl.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(btn_reset)
+        row.addWidget(btn_del)
         rl.addLayout(row)
         btn_ai = QPushButton("Redraw bằng ChatGPT / Gemini…  (Ctrl+Shift+R)")
         btn_ai.setToolTip("Cắt sẵn vùng quanh chữ để dán vào ChatGPT/Gemini (gói Plus/Pro trên web), "
@@ -325,6 +626,8 @@ class MainWindow(QMainWindow):
         dl.addWidget(hint)
         lay.addWidget(g_docs, 1)
 
+        panel2 = QWidget()
+        tlay = QVBoxLayout(panel2)
         # Chữ: bảng Ký tự / Đoạn kiểu Photoshop
         g_text = QGroupBox("Chữ (Character / Paragraph)")
         tl = QVBoxLayout(g_text)
@@ -339,7 +642,7 @@ class MainWindow(QMainWindow):
         self.lbl_warn.setStyleSheet("color:#d9534f;")
         self.lbl_warn.setWordWrap(True)
         tl.addWidget(self.lbl_warn)
-        lay.addWidget(g_text)
+        tlay.addWidget(g_text)
 
         # Hiệu ứng, bộ kiểu, vị trí
         g_font = QGroupBox("Hiệu ứng, bộ kiểu & vị trí")
@@ -412,22 +715,15 @@ class MainWindow(QMainWindow):
         self.lbl_ai = QLabel()
         self.lbl_ai.setStyleSheet("color:#888;")
         fl.addRow(self.lbl_ai)
-        lay.addWidget(g_font)
+        tlay.addWidget(g_font)
+        tlay.addStretch(1)
         self._load_favorites()
         self._load_presets()
 
-        QShortcut(QKeySequence("Ctrl+Return"), self, self.process_selected)
-        QShortcut(QKeySequence("Ctrl+Enter"), self, self.process_selected)
-        QShortcut(QKeySequence("Ctrl+Z"), self, self.reset_selected)
-        QShortcut(QKeySequence("Ctrl+Shift+R"), self, self.open_ai_bridge)
-        QShortcut(QKeySequence("Ctrl+Shift+A"), self, self.select_translated)
-        QShortcut(QKeySequence(Qt.Key_Delete), self.view, self.delete_selected)
-        QShortcut(QKeySequence(Qt.Key_Tab), self.view, lambda: self._step_region(1))
-        QShortcut(QKeySequence("Ctrl+A"), self.view, self.select_all)
         for key, dx, dy in ((Qt.Key_Left, -1, 0), (Qt.Key_Right, 1, 0), (Qt.Key_Up, 0, -1), (Qt.Key_Down, 0, 1)):
             QShortcut(QKeySequence(key), self.view, lambda dx=dx, dy=dy: self._nudge(dx, dy))
             QShortcut(QKeySequence(Qt.SHIFT | key), self.view, lambda dx=dx, dy=dy: self._nudge(dx * 10, dy * 10))
-        return panel
+        return panel, panel2
 
     # --- kiểu chữ ------------------------------------------------------------
     def current_style(self) -> TextStyle:
@@ -468,10 +764,14 @@ class MainWindow(QMainWindow):
         self._update_warning()
         # Vùng đã xử lý thì đổi kiểu là thấy ngay – áp cho mọi vùng đang chọn.
         changed = False
+        if self.doc is not None:
+            self.doc.begin("Đổi kiểu chữ", merge="style")
         for r in self.selected_regions:
             if r.cleaned or r.text.strip():
                 r.style = style.copy()
                 changed = changed or r.cleaned
+        if self.doc is not None:
+            self.doc.end()
         if changed:
             self.refresh()
 
@@ -555,7 +855,8 @@ class MainWindow(QMainWindow):
     def _text_rect_dragged(self, rect):
         r = self.region
         if r is not None and r.cleaned:
-            r.manual_rect = tuple(int(v) for v in rect)
+            with self.doc.step("Di chuyển chữ"):
+                r.manual_rect = tuple(int(v) for v in rect)
             self.refresh()
 
     def _nudge(self, dx: int, dy: int):
@@ -563,12 +864,16 @@ class MainWindow(QMainWindow):
         if r is None or not r.done:
             return
         x1, y1, x2, y2 = r.text_rect
-        r.manual_rect = (x1 + dx, y1 + dy, x2 + dx, y2 + dy)
+        with self.doc.step("Nhích chữ", merge=f"nudge:{r.uid}"):
+            r.manual_rect = (x1 + dx, y1 + dy, x2 + dx, y2 + dy)
         self.refresh()
 
     def _reset_text_rect(self):
-        for r in self.selected_regions:
-            r.manual_rect = None
+        if self.doc is None:
+            return
+        with self.doc.step("Tự đặt lại vị trí chữ"):
+            for r in self.selected_regions:
+                r.manual_rect = None
         self.refresh()
 
     @property
@@ -632,8 +937,9 @@ class MainWindow(QMainWindow):
         """Xoá chữ (1 vùng hoặc danh sách vùng) ở luồng nền, xong thì gọi `after()`.
         Trong lúc chờ khoá thao tác để không sửa trang song song."""
         if all(x.cleaned for x in (r if isinstance(r, list) else [r])):
-            for x in (r if isinstance(r, list) else [r]):
-                self.page.clean(x, fit_bubble=self.chk_bubble.isChecked())
+            with self.doc.step("Xử lý"):
+                for x in (r if isinstance(r, list) else [r]):
+                    self.page.clean(x, fit_bubble=self.chk_bubble.isChecked())
             after()
             return
         if self.clean_worker is not None:
@@ -651,11 +957,14 @@ class MainWindow(QMainWindow):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         fit = self.chk_bubble.isChecked()
         regions = r if isinstance(r, list) else [r]
+        doc = self.doc
+        doc.begin("Xử lý", ["redraw"])
         self.clean_worker = CleanWorker(self, lambda: self.page.clean_many(regions, fit))
         self.clean_worker.failed.connect(lambda msg: QMessageBox.warning(self, "Lỗi khi xoá chữ", msg))
 
         def finished():
             self.clean_worker = None
+            doc.end()
             QApplication.restoreOverrideCursor()
             self.centralWidget().setEnabled(True)
             self.statusBar().clearMessage()
@@ -674,7 +983,8 @@ class MainWindow(QMainWindow):
     def _bubble_toggled(self, on: bool):
         r = self.region
         if r is not None and r.cleaned:
-            self.page.clean(r, fit_bubble=on)
+            with self.doc.step("Đặt chữ theo lòng bóng"):
+                self.page.clean(r, fit_bubble=on)
             self.refresh()
 
     def _update_warning(self):
@@ -704,7 +1014,10 @@ class MainWindow(QMainWindow):
         name = os.path.basename(page.path)
         self.setWindowTitle(f"Lilyzono – {name}" + (f" ({os.path.basename(self.chapter.folder)})" if self.chapter else ""))
         self.selected, self.selection = -1, []
-        self.view.set_image(self.page.render(), fit=True)
+        self.doc = doc_for(page)
+        self.view.set_image(self.doc.render(), fit=True)
+        w, h = page.size
+        self.lbl_size.setText(f"{w} × {h} px")
         self._lines_for_page()
         self.refresh()
         if page.detected:
@@ -791,7 +1104,8 @@ class MainWindow(QMainWindow):
             return
         free = [r for r in self.page.regions if not r.text.strip()]
         plan = assign_lines(self.page, free, self.lines)
-        apply_plan(self.page, plan, self.current_style())
+        with doc_for(self.page).step("Tự điền bản dịch"):
+            apply_plan(self.page, plan, self.current_style())
         if self.chapter:
             self.chapter.filled.add(self.page.path)
         self._sync_used_lines()
@@ -856,6 +1170,7 @@ class MainWindow(QMainWindow):
             return
         self.act_detect.setEnabled(False)
         self.statusBar().showMessage("Đang nhận diện chữ…")
+        doc_for(self.page).begin("Nhận diện chữ", ["redraw"])
         self.worker = DetectWorker(self, self.page, self.direction.currentIndex() == 0, self._auto_clean_args())
         self.worker.finished_ok.connect(self._detect_done)
         self.worker.failed.connect(self._detect_failed)
@@ -870,6 +1185,8 @@ class MainWindow(QMainWindow):
 
     def _detect_done(self):
         self.act_detect.setEnabled(True)
+        if self.worker is not None:
+            doc_for(self.worker.page).end()
         n = len(self.page.regions)
         k = self.worker.cleaned if self.worker else 0
         self.statusBar().showMessage(f"Tìm thấy {n} vùng chữ, đã tự xoá chữ {k} bóng thoại / SFX nhỏ. "
@@ -880,6 +1197,8 @@ class MainWindow(QMainWindow):
 
     def _detect_failed(self, msg: str):
         self.act_detect.setEnabled(True)
+        if self.worker is not None:
+            doc_for(self.worker.page).end()
         self.statusBar().showMessage("Nhận diện lỗi.")
         QMessageBox.warning(self, "Lỗi nhận diện", msg)
 
@@ -953,6 +1272,11 @@ class MainWindow(QMainWindow):
         self._loading_ui = False
         if r is not None and r.cleaned:
             self._apply_style_to_ui(r.style)
+        if r is not None and self.doc is not None:
+            L = self.doc.text_layer(r)
+            if L is not None and self.doc.active is not L:
+                self.doc.active = L
+                self.layers_panel.set_doc(self.doc)
         self._update_warning()
         self._draw_overlays()
 
@@ -966,13 +1290,15 @@ class MainWindow(QMainWindow):
     def add_region(self, box):
         if self.page is None:
             return
-        self.page.add_region(box)
+        with self.doc.step("Khung chữ"):
+            self.page.add_region(box)
         self.select_region(len(self.page.regions) - 1)
 
     def add_lasso(self, points):
         if self.page is None:
             return
-        self.page.add_lasso(points)
+        with self.doc.step("Khung chữ lasso"):
+            self.page.add_lasso(points)
         self.select_region(len(self.page.regions) - 1)
 
     def _step_region(self, d: int):
@@ -985,9 +1311,10 @@ class MainWindow(QMainWindow):
         self._update_warning()
         r = self.region
         if r is not None and r.cleaned:
-            if not r.text.strip():
-                r.style = self.current_style()  # khung mới gõ chữ: dùng font/kiểu đang chọn
-            r.text = self.txt.toPlainText()
+            with self.doc.step("Gõ chữ", merge=f"text:{r.uid}"):
+                if not r.text.strip():
+                    r.style = self.current_style()  # khung mới gõ chữ: dùng font/kiểu đang chọn
+                r.text = self.txt.toPlainText()
             self.refresh()
 
     def process_selected(self):
@@ -1075,6 +1402,9 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Đã dán kết quả AI cho {len(regs)} vùng.", 8000)
 
         self._ai_dialog = AiBridgeDialog(job, self.chk_bubble.isChecked(), self)
+        page = self.page
+        self._ai_dialog.about_to_apply.connect(lambda: doc_for(page).begin("Redraw bằng AI", ["redraw"]))
+        self._ai_dialog.applied.connect(lambda _res: doc_for(page).end())
         self._ai_dialog.applied.connect(applied)
         self._ai_dialog.show()
         self._ai_dialog.copy_image()
@@ -1109,11 +1439,12 @@ class MainWindow(QMainWindow):
     def reset_selected(self):
         if self.region is None:
             return
-        for r in self.selected_regions:
-            line = self._line_of_text(r.text)
-            if line is not None:
-                self.used_lines.discard(line)
-            self.page.reset(r)
+        with self.doc.step("Hoàn tác khung", ["redraw"]):
+            for r in self.selected_regions:
+                line = self._line_of_text(r.text)
+                if line is not None:
+                    self.used_lines.discard(line)
+                self.page.reset(r)
         self._fill_lines()
         self.refresh()
         self.select_region(self.selected, list(self.selection))
@@ -1121,8 +1452,9 @@ class MainWindow(QMainWindow):
     def delete_selected(self):
         if self.region is None:
             return
-        for i in sorted(self.selection, reverse=True):
-            self.page.remove_region(self.page.regions[i])
+        with self.doc.step("Xoá khung chữ", ["redraw"]):
+            for i in sorted(self.selection, reverse=True):
+                self.page.remove_region(self.page.regions[i])
         self.refresh()
         self.select_region(min(min(self.selection), len(self.page.regions) - 1))
 
@@ -1172,14 +1504,335 @@ class MainWindow(QMainWindow):
     # --- hiển thị & xuất -----------------------------------------------------
     def toggle_boxes(self):
         self.view.show_boxes = self.act_boxes.isChecked()
+        self.opt_boxes.blockSignals(True)
+        self.opt_boxes.setChecked(self.view.show_boxes)
+        self.opt_boxes.blockSignals(False)
         self.refresh()
 
     def refresh(self):
         if self.page is None:
             return
-        self.view.set_image(self.page.render())
+        self.doc = doc_for(self.page)
+        self.doc.sync()
+        self.view.set_image(self.doc.render())
         self._draw_overlays()
         self._update_page_list()
+        self.layers_panel.set_doc(self.doc)
+        self.history_panel.set_doc(self.doc, "Mở " + os.path.basename(self.page.path))
+        self.view.set_selection_outline(self.doc.selection_outline())
+
+    # --- hoàn tác ----------------------------------------------------------------------
+    def undo(self):
+        if self.doc is not None and self.stroke is None and self.doc.undo():
+            self._after_history()
+
+    def redo(self):
+        if self.doc is not None and self.stroke is None and self.doc.redo():
+            self._after_history()
+
+    def _history_jump(self, index: int):
+        if self.doc is not None and self.stroke is None:
+            self.doc.goto(index)
+            self._after_history()
+
+    def _after_history(self):
+        n = len(self.page.regions)
+        sel = [i for i in self.selection if i < n]
+        self.refresh()
+        self.select_region(self.selected if self.selected < n else (sel[0] if sel else -1), sel or None)
+
+    # --- vùng chọn ---------------------------------------------------------------------
+    def _selection_made(self, kind: str, data, mode: str):
+        if self.doc is None:
+            return
+        names = {"rect": "Rectangular Marquee", "poly": "Lasso", "wand": "Magic Wand", "none": "Bỏ chọn"}
+        with self.doc.step(names[kind]):
+            if kind == "none":
+                self.doc.deselect()
+            elif kind == "rect":
+                self.doc.select_rect(data, mode, self.opt_feather.value())
+            elif kind == "poly":
+                self.doc.select_polygon(data, mode, self.opt_feather.value())
+            else:
+                self.doc.select_wand(*data, self.opt_tol.value(), self.opt_contig.isChecked(),
+                                     self.opt_sample.isChecked(), mode)
+        self._after_selection()
+
+    def _after_selection(self):
+        self.view.set_selection_outline(self.doc.selection_outline())
+        self.history_panel.set_doc(self.doc, "Mở " + os.path.basename(self.page.path))
+        bb = self.doc.selection_bbox()
+        if bb:
+            self.statusBar().showMessage(f"Vùng chọn {bb[2] - bb[0]} × {bb[3] - bb[1]} px", 4000)
+
+    def _select_op(self, name: str, fn):
+        if self.doc is None:
+            return
+        with self.doc.step(name):
+            fn()
+        self._after_selection()
+
+    def select_all_pixels(self):
+        self._select_op("Chọn tất cả", lambda: self.doc.select_all())
+
+    def deselect(self):
+        self._select_op("Bỏ chọn", lambda: self.doc.deselect())
+
+    def invert_selection(self):
+        self._select_op("Đảo vùng chọn", lambda: self.doc.invert_selection())
+
+    def feather_dialog(self):
+        if self.doc is None or self.doc.selection is None:
+            return
+        r, ok = QInputDialog.getInt(self, "Làm mềm vùng chọn", "Bán kính (px):", 5, 1, 250)
+        if ok:
+            self._select_op("Feather", lambda: self.doc.feather_selection(r))
+
+    def grow_dialog(self, sign: int):
+        if self.doc is None or self.doc.selection is None:
+            return
+        px, ok = QInputDialog.getInt(self, "Mở rộng" if sign > 0 else "Thu hẹp", "Số px:", 3, 1, 200)
+        if ok:
+            self._select_op("Mở rộng vùng chọn" if sign > 0 else "Thu hẹp vùng chọn",
+                            lambda: self.doc.grow_selection(sign * px))
+
+    def selection_from_regions(self):
+        if self.doc is None or not self.selected_regions:
+            return
+        import numpy as np
+
+        w, h = self.page.size
+        m = np.zeros((h, w), np.uint8)
+        for r in self.selected_regions:
+            area = self.page.area_mask(r)
+            if area is not None:
+                np.maximum(m, area, out=m)
+            else:
+                x1, y1, x2, y2 = r.box
+                m[y1:y2, x1:x2] = 255
+        self._select_op("Vùng chọn từ khung chữ", lambda: self.doc.set_selection(m))
+
+    def region_from_selection(self):
+        if self.doc is None or self.doc.selection is None:
+            QMessageBox.information(self, "Tạo khung chữ", "Hãy tạo vùng chọn trước (M, L hoặc W).")
+            return
+        outline = max(self.doc.selection_outline(), key=len, default=None)
+        if outline is None or len(outline) < 3:
+            return
+        self.add_lasso([(int(x), int(y)) for x, y in outline])
+
+    # --- thao tác điểm ảnh -------------------------------------------------------------
+    def _paint_layer(self):
+        if self.doc is None:
+            return None
+        L = self.doc.active
+        if not L.paintable:
+            why = "đang khoá" if L.locked else "là layer chữ"
+            self.statusBar().showMessage(f"Layer “{L.name}” {why}: chọn layer Redraw hoặc một layer ảnh "
+                                         "(Ctrl+Shift+N) để vẽ.", 6000)
+            return None
+        return L
+
+    def _bgr(self, fg: bool = True):
+        c = self.colors.fg if fg else self.colors.bg
+        return c.blue(), c.green(), c.red()
+
+    def delete_key(self):
+        if self.doc is not None and self.doc.selection is not None:
+            L = self._paint_layer()
+            if L is not None:
+                with self.doc.step("Xoá", [L]):
+                    self.doc.clear_selection_pixels(L)
+                self.refresh()
+        else:
+            self.delete_selected()
+
+    def fill_color(self, fg: bool = True, bgr=None):
+        L = self._paint_layer()
+        if L is None:
+            return
+        with self.doc.step("Tô màu", [L]):
+            self.doc.fill_selection(L, bgr or self._bgr(fg))
+        self.refresh()
+
+    def fill_dialog(self):
+        if self.doc is None:
+            return
+        items = ["Content-Aware (AI LaMa vẽ lại theo nền)", "Màu trước", "Màu nền", "Trắng", "Đen"]
+        item, ok = QInputDialog.getItem(self, "Tô (Fill)", "Nội dung:", items, 0, False)
+        if not ok:
+            return
+        i = items.index(item)
+        if i == 0:
+            self.content_aware()
+        else:
+            self.fill_color(bgr={1: self._bgr(True), 2: self._bgr(False), 3: (255, 255, 255), 4: (0, 0, 0)}[i])
+
+    def content_aware(self, mask=None, name: str = "Content-Aware Fill"):
+        if self.doc is None or self._busy:
+            return
+        if mask is None and self.doc.selection is None:
+            QMessageBox.information(self, "Content-Aware Fill", "Hãy khoanh vùng chọn quanh chỗ cần xoá trước "
+                                    "(M, L hoặc W), hoặc dùng Spot Healing (J).")
+            return
+        L = self._paint_layer()
+        if L is None:
+            return
+        doc = self.doc
+        doc.begin(name, [L])
+        self._busy = True
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        wait = " (đang nạp AI, lần đầu ~30 giây)" if not lama.is_ready() else ""
+        self.statusBar().showMessage(f"{name}: AI LaMa đang vẽ lại{wait}…")
+        worker = CleanWorker(self, lambda: doc.content_aware_fill(L, lama.inpaint, mask))
+        worker.failed.connect(lambda msg: QMessageBox.warning(self, name, msg))
+
+        def finished():
+            self._busy = False
+            doc.end()
+            QApplication.restoreOverrideCursor()
+            self.statusBar().showMessage(f"{name}: xong.", 4000)
+            self.refresh()
+
+        worker.finished.connect(finished)
+        self._ca_worker = worker
+        worker.start()
+
+    # --- cọ ----------------------------------------------------------------------------
+    def _clone_source(self, x: float, y: float):
+        self.clone_src, self.clone_offset = (x, y), None
+        self.statusBar().showMessage(f"Đã lấy điểm mẫu ({int(x)}, {int(y)}). Tô để sao chép.", 4000)
+
+    def _stroke_began(self, x: float, y: float, mods: int):
+        if self._busy:
+            return
+        L = self._paint_layer()
+        if L is None:
+            return
+        tool = self.view.tool
+        offset = None
+        if tool == TOOL_CLONE:
+            if self.clone_src is None:
+                self.statusBar().showMessage("Clone Stamp: Alt+bấm vào chỗ muốn lấy mẫu trước.", 5000)
+                return
+            if self.clone_offset is None:  # nét đầu sau khi lấy mẫu: cố định khoảng cách mẫu ↔ nét
+                self.clone_offset = (int(round(self.clone_src[0] - x)), int(round(self.clone_src[1] - y)))
+            offset = self.clone_offset
+        size, hard, op = self.paint_opts[tool]
+        self.doc.begin(TOOL_NAMES[tool], [L])
+        self.stroke = Stroke(self.doc, L, tool, size, hard / 100, op / 100, self._bgr(True), offset)
+        self._stroke_to(x, y)
+
+    def _stroke_to(self, x: float, y: float):
+        s = self.stroke
+        if s is None:
+            return
+        box = s.to(x, y)
+        if box and s.tool != TOOL_HEAL:
+            self.view.update_patch(box[0], box[1], self.doc.render_box(box))
+
+    def _stroke_ended(self):
+        s, self.stroke = self.stroke, None
+        if s is None:
+            return
+        self.doc.end()
+        if s.tool == TOOL_HEAL:
+            self.content_aware(mask=s.heal_mask(), name="Spot Healing")
+        else:
+            self.refresh()
+
+    # --- công cụ chữ ---------------------------------------------------------------------
+    def _text_clicked(self, x: float, y: float):
+        """Bấm vào chỗ trống bằng công cụ chữ: tạo khung chữ theo lòng bóng thoại tại đó (không xoá gì)."""
+        if self.page is None:
+            return
+        from ..core.clean import text_area_candidates
+
+        x, y = int(x), int(y)
+        cands = text_area_candidates(self.page.working, (x - 3, y - 3, x + 3, y + 3))
+        box = max(cands, key=lambda c: (c[2] - c[0]) * (c[3] - c[1]))
+        if (box[2] - box[0]) * (box[3] - box[1]) < 900:  # không phải bóng thoại: khung mặc định quanh điểm bấm
+            w, h = self.page.size
+            box = (max(0, x - 110), max(0, y - 45), min(w, x + 110), min(h, y + 45))
+        self._text_box_drawn(box)
+
+    def _text_box_drawn(self, box):
+        if self.page is None:
+            return
+        with self.doc.step("Tạo khung chữ"):
+            r = self.page.add_region(box)
+            r.cleaned = True  # khung gõ chữ thuần: không xoá gì bên dưới
+            r.manual_rect = tuple(box)
+            r.style = self.current_style()
+            r.auto_cap = self.page.auto_cap
+            r.text_rects = [tuple(box)]
+        self.refresh()
+        self.select_region(len(self.page.regions) - 1)
+        self.d_lily.raise_()
+        self.txt.setFocus()
+        self.statusBar().showMessage("Gõ bản dịch vào ô nội dung (panel Lilyzono) – chữ hiện ngay trên ảnh.", 5000)
+
+    # --- layer ---------------------------------------------------------------------------
+    def _layer_activated(self, L):
+        if self.doc is None:
+            return
+        self.doc.active = L
+        r = self.doc.region_of(L)
+        if r is not None and r in self.page.regions:
+            self.select_region(self.page.regions.index(r))
+        self.layers_panel.set_doc(self.doc)
+
+    def _layer_visibility(self, L, visible: bool):
+        with self.doc.step("Ẩn/hiện layer"):
+            L.visible = visible
+        self.refresh()
+
+    def _layer_renamed(self, L, name: str):
+        with self.doc.step("Đổi tên layer"):
+            L.name, L.custom_name = name, True
+        self.refresh()
+
+    def _layer_opacity(self, v: float):
+        if self.doc is None:
+            return
+        with self.doc.step("Opacity", merge=f"opacity:{self.doc.active.id}"):
+            self.doc.active.opacity = v
+        self.view.set_image(self.doc.render())
+        self.history_panel.set_doc(self.doc, "Mở " + os.path.basename(self.page.path))
+
+    def _layer_blend(self, blend: str):
+        if self.doc is None:
+            return
+        with self.doc.step("Blend mode"):
+            self.doc.active.blend = blend
+        self.refresh()
+
+    def layer_action(self, key: str):
+        doc = self.doc
+        if doc is None:
+            return
+        L = doc.active
+        if key == "new":
+            with doc.step("Layer mới"):
+                doc.add_pixel_layer()
+        elif key == "dup":
+            with doc.step("Nhân đôi layer"):
+                if doc.duplicate_layer(L) is None:
+                    self.statusBar().showMessage("Layer chữ: nhân đôi bằng cách tạo khung chữ mới.", 4000)
+        elif key == "delete":
+            with doc.step("Xoá layer"):
+                if not doc.delete_layer(L):
+                    self.statusBar().showMessage("Không xoá được layer Background / Redraw (ẩn đi nếu không cần).", 5000)
+        elif key in ("up", "down"):
+            with doc.step("Đổi thứ tự layer"):
+                doc.move_layer(L, 1 if key == "up" else -1)
+        elif key == "merge":
+            i = doc.layers.index(L)
+            below = doc.layers[i - 1] if i > 0 else None
+            with doc.step("Gộp xuống", [L, below] if below is not None and below.kind in ("pixel", "redraw") else [L]):
+                if not doc.merge_down(L):
+                    self.statusBar().showMessage("Chỉ gộp được layer ảnh xuống layer ảnh / Redraw ngay dưới.", 5000)
+        self.refresh()
 
     # --- cả chương / PSD ----------------------------------------------------------------
     def _run_batch(self, title: str, job, done_msg: str, extra=None):
@@ -1225,6 +1878,8 @@ class MainWindow(QMainWindow):
                 report(f"trang {i + 1}/{len(ch.paths)} ({os.path.basename(path)})…")
                 page = ch.page(path)
                 page.inpainter = inpainter
+                doc = doc_for(page)
+                doc.begin("Xử lý cả chương", ["redraw"])
                 if not page.detected:
                     page.detect(self.detector, rtl)
                     page.inpainter, small, _ = auto
@@ -1234,6 +1889,7 @@ class MainWindow(QMainWindow):
                     ch.auto_fill(path, style)
                 regs = [r for r in page.regions if r.text.strip() and not r.cleaned]
                 page.clean_many(regs, fit)
+                doc.end()
 
         def summary():
             hard = sum(r.needs_redraw for pg in ch.pages.values() for r in pg.regions)
@@ -1254,6 +1910,8 @@ class MainWindow(QMainWindow):
             if not folder:
                 return
             self.settings.setValue("dir/redrawn", folder)
+            for pg in self.chapter.pages.values():
+                doc_for(pg).begin("Upload bản redraw", ["redraw"])
             try:
                 matched = self.chapter.load_redrawn(folder)
             except Exception as e:  # noqa: BLE001
@@ -1271,6 +1929,7 @@ class MainWindow(QMainWindow):
             if not path:
                 return
             self.settings.setValue("dir/redrawn", os.path.dirname(path))
+            doc_for(self.page).begin("Upload bản redraw", ["redraw"])
             try:
                 self.page.set_redrawn(path)
             except Exception as e:  # noqa: BLE001
@@ -1294,6 +1953,7 @@ class MainWindow(QMainWindow):
                 report(f"{i + 1}/{len(pages)}…")
                 page.inpainter = inpainter
                 page.clean_many([r for r in page.regions if r.text.strip()], fit)
+                doc_for(page).end()
 
         self._run_batch("Đang đặt chữ lên bản redraw:", job, msg + " Câu dịch đã có được đặt lại trên nền mới.")
 
@@ -1304,7 +1964,7 @@ class MainWindow(QMainWindow):
                 report(f"{i + 1}/{len(pages)} ({os.path.basename(page.path)})…")
                 base = os.path.join(out_dir, os.path.splitext(os.path.basename(page.path))[0])
                 if jpeg:
-                    page.export(base + ".jpg")
+                    doc_for(page).export(base + ".jpg")
                 if not psd:
                     continue
                 if exporter:
@@ -1359,7 +2019,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            self.page.export(path)
+            self.doc.export(path)
             self.statusBar().showMessage(f"Đã lưu: {path}")
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "Lỗi", str(e))

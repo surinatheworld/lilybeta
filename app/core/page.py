@@ -1,6 +1,7 @@
 """Trạng thái một trang: ảnh gốc, ảnh đã xoá chữ và các vùng chữ."""
 from __future__ import annotations
 
+import itertools
 import os
 from dataclasses import dataclass, field, replace
 
@@ -15,6 +16,11 @@ from .typeset import TextStyle, best_rect, draw_text
 
 Box = tuple[int, int, int, int]
 AUTO_CAP_FRAC = 0.031
+_region_ids = itertools.count(1)
+
+
+def new_uid() -> int:
+    return next(_region_ids)
 
 
 @dataclass
@@ -29,6 +35,7 @@ class Region:
     auto_cap: float = 0.0  # cỡ chữ chuẩn của trang (do Page đặt)
     manual_rect: Box | None = None  # khung chữ người dùng tự kéo/căn chỉnh (ưu tiên hơn khung tự động)
     needs_redraw: bool = False  # nền khó, tool để nguyên chữ gốc cho người dùng tự redraw
+    uid: int = field(default_factory=new_uid)  # định danh bền (layer chữ, lịch sử hoàn tác trỏ tới vùng qua uid)
 
     @property
     def text_rect(self) -> Box:
@@ -59,6 +66,8 @@ class Page:
         self.original = img
         self.redrawn: np.ndarray | None = None  # bản đã redraw (xoá chữ) nạp từ ngoài, cùng cỡ ảnh gốc
         self.working = img.copy()
+        # Điểm người dùng tự vẽ trên layer Redraw (cọ, clone…): thuộc layer Redraw dù trùng màu ảnh gốc.
+        self.paint_mask = np.zeros(img.shape[:2], np.uint8)
         self.text_mask = np.zeros(img.shape[:2], np.float32)
         self.regions: list[Region] = []
         self.detected = False
@@ -95,6 +104,7 @@ class Page:
                 img = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA if rw > w else cv2.INTER_CUBIC)
             self.redrawn = img
         self.working = self.base.copy()
+        self.paint_mask[:] = 0
         for r in self.regions:
             r.cleaned = r.needs_redraw = False
             r.text_rects = []

@@ -22,9 +22,9 @@ ANTIALIAS = {"none": "NONE", "sharp": "SHARP", "crisp": "CRISP", "strong": "STRO
 
 
 def clean_layer(page) -> np.ndarray:
-    """Ảnh BGRA: chỉ những điểm tool đã xoá/vẽ lại (khác ảnh gốc), còn lại trong suốt."""
+    """Ảnh BGRA của layer Redraw: những điểm đã xoá/vẽ lại (khác ảnh gốc) hoặc người dùng tự vẽ, còn lại trong suốt."""
     diff = np.abs(page.working.astype(np.int16) - page.original).max(axis=2) > 2
-    diff = cv2.dilate(diff.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    diff = (cv2.dilate(diff.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0) | (page.paint_mask > 0)
     out = cv2.cvtColor(page.working, cv2.COLOR_BGR2BGRA)
     out[..., 3] = np.where(diff, 255, 0).astype(np.uint8)
     return out
@@ -32,32 +32,56 @@ def clean_layer(page) -> np.ndarray:
 
 def layer_specs(page) -> list[dict]:
     """Thông số từng lớp chữ (toạ độ px của ảnh)."""
-    specs = []
-    for r in page.regions:
-        if not (r.cleaned and r.text.strip()):
+    return [text_spec(r) for r in page.regions if r.cleaned and r.text.strip()]
+
+
+BLEND_PS = {"normal": "NORMAL", "multiply": "MULTIPLY", "screen": "SCREEN", "darken": "DARKEN", "lighten": "LIGHTEN"}
+
+
+def doc_layers(doc, tmp: str) -> list[dict]:
+    """Các layer trên Background theo đúng thứ tự (dưới → trên): ảnh (ghi ra PNG trong `tmp`) và chữ."""
+    out = []
+    for i, L in enumerate(doc.layers[1:]):
+        base = {"name": L.name, "visible": L.visible, "opacity": round(L.opacity * 100), "blend": BLEND_PS[L.blend]}
+        if L.kind == "text":
+            r = doc.region_of(L)
+            if r is None or not r.text.strip():
+                continue
+            out.append({**text_spec(r), **base, "type": "text", "custom_name": L.custom_name})
             continue
-        st = r.effective_style
-        x1, y1, x2, y2 = r.text_rect
-        b = text_block(r.text, st, (x1, y1, x2, y2))
-        just = JUSTIFY[st.justify] if st.justify else JUSTIFY[(st.align, "")]
-        specs.append({
-            "contents": b["contents"], "font": postscript_name(st.family, st.style_name), "size": b["size"],
-            "leading": b["leading"], "auto_leading": st.leading <= 0, "left": b["left"], "width": b["width"],
-            "first_baseline": b["first_baseline"], "ascent": b["ascent"], "block_height": b["block_height"],
-            "justification": just, "color": st.color.lstrip("#"), "tracking": st.tracking,
-            "hscale": st.hscale, "vscale": st.vscale, "baseline_shift": st.baseline_shift,
-            "faux_bold": st.bold, "faux_italic": st.italic,
-            "caps": "ALLCAPS" if st.uppercase else ("SMALLCAPS" if st.small_caps else "NORMAL"),
-            "underline": st.underline, "strike": st.strike,
-            "baseline": "SUPERSCRIPT" if st.superscript else ("SUBSCRIPT" if st.subscript else "NORMAL"),
-            "kerning": "METRICSKERN" if st.kerning != "none" else "MANUAL",
-            "antialias": ANTIALIAS.get(st.antialias, "SMOOTH"), "hyphenate": st.hyphenate,
-            "indent_left": st.indent_left, "indent_right": st.indent_right, "indent_first": st.indent_first,
-            "space_before": st.space_before, "space_after": st.space_after,
-            "stroke": st.stroke_width, "stroke_color": st.stroke_color.lstrip("#"),
-            "rotation": st.rotation, "cx": (x1 + x2) / 2, "cy": (y1 + y2) / 2, "redraw": r.needs_redraw,
-        })
-    return specs
+        bgra = clean_layer(doc.page) if L.kind == "redraw" else L.rgba
+        if not bgra[..., 3].any():  # layer trống (vd Redraw chưa vẽ gì): tạo layer rỗng để vẽ tiếp trong Photoshop
+            out.append({**base, "type": "empty"})
+            continue
+        png = os.path.join(tmp, f"layer{i}.png")
+        cv2.imencode(".png", bgra)[1].tofile(png)
+        out.append({**base, "type": "pixel", "png": png.replace("\\", "/")})
+    return out
+
+
+def text_spec(r) -> dict:
+    """Thông số lớp chữ của một vùng (toạ độ px của ảnh)."""
+    st = r.effective_style
+    x1, y1, x2, y2 = r.text_rect
+    b = text_block(r.text, st, (x1, y1, x2, y2))
+    just = JUSTIFY[st.justify] if st.justify else JUSTIFY[(st.align, "")]
+    return {
+        "contents": b["contents"], "font": postscript_name(st.family, st.style_name), "size": b["size"],
+        "leading": b["leading"], "auto_leading": st.leading <= 0, "left": b["left"], "width": b["width"],
+        "first_baseline": b["first_baseline"], "ascent": b["ascent"], "block_height": b["block_height"],
+        "justification": just, "color": st.color.lstrip("#"), "tracking": st.tracking,
+        "hscale": st.hscale, "vscale": st.vscale, "baseline_shift": st.baseline_shift,
+        "faux_bold": st.bold, "faux_italic": st.italic,
+        "caps": "ALLCAPS" if st.uppercase else ("SMALLCAPS" if st.small_caps else "NORMAL"),
+        "underline": st.underline, "strike": st.strike,
+        "baseline": "SUPERSCRIPT" if st.superscript else ("SUBSCRIPT" if st.subscript else "NORMAL"),
+        "kerning": "METRICSKERN" if st.kerning != "none" else "MANUAL",
+        "antialias": ANTIALIAS.get(st.antialias, "SMOOTH"), "hyphenate": st.hyphenate,
+        "indent_left": st.indent_left, "indent_right": st.indent_right, "indent_first": st.indent_first,
+        "space_before": st.space_before, "space_after": st.space_after,
+        "stroke": st.stroke_width, "stroke_color": st.stroke_color.lstrip("#"),
+        "rotation": st.rotation, "cx": (x1 + x2) / 2, "cy": (y1 + y2) / 2, "redraw": r.needs_redraw,
+    }
 
 
 # ---------------------------------------------------------------- Photoshop ----
@@ -84,20 +108,39 @@ try {
   // 72 ppi: 1 pt = 1 px, để cỡ chữ / khung chữ đúng bằng số px tool đã tính.
   doc.resizeImage(undefined, undefined, 72, ResampleMethod.NONE);
   if (doc.layers.length == 1 && !doc.activeLayer.isBackgroundLayer) doc.activeLayer.name = "Background";
-  var cd = app.open(new File(D.clean));
-  cd.activeLayer.duplicate(doc, ElementPlacement.PLACEATBEGINNING);
-  cd.close(SaveOptions.DONOTSAVECHANGES);
-  app.activeDocument = doc;
-  doc.activeLayer.name = "Redraw";
+  if (!D.bg_visible) put(doc.layers[0], "visible", function () { return false; });
   for (var i = 0; i < D.layers.length; i++) {
     var L = D.layers[i];
-    var lay = doc.artLayers.add();
+    var lay;
+    if (L.type == "empty") {
+      lay = doc.artLayers.add();
+      lay.name = L.name;
+      lay.opacity = L.opacity;
+      put(lay, "blendMode", function () { return BlendMode[L.blend]; });
+      if (!L.visible) lay.visible = false;
+      continue;
+    }
+    if (L.type == "pixel") {
+      var pd = app.open(new File(L.png));
+      pd.activeLayer.duplicate(doc, ElementPlacement.PLACEATBEGINNING);
+      pd.close(SaveOptions.DONOTSAVECHANGES);
+      app.activeDocument = doc;
+      lay = doc.layers[0];
+      doc.activeLayer = lay;
+      lay.name = L.name;
+      lay.opacity = L.opacity;
+      put(lay, "blendMode", function () { return BlendMode[L.blend]; });
+      if (!L.visible) lay.visible = false;
+      continue;
+    }
+    lay = doc.artLayers.add();
     lay.kind = LayerKind.TEXT;
     var t = lay.textItem;
     t.kind = TextType.PARAGRAPHTEXT;
     t.contents = L.contents;
     // Nền khó tool để nguyên chữ gốc: đánh dấu tên lớp để biết chỗ cần tự redraw.
-    if (L.redraw) put(lay, "name", function () { return "REDRAW - " + L.contents.replace(/[\r\u0003]/g, " ").substr(0, 40); });
+    if (L.custom_name) lay.name = L.name;
+    else if (L.redraw) put(lay, "name", function () { return "REDRAW - " + L.contents.replace(/[\r\u0003]/g, " ").substr(0, 40); });
     t.font = L.font;
     t.size = new UnitValue(L.size, "px");
     t.useAutoLeading = L.auto_leading;
@@ -148,6 +191,8 @@ try {
       executeAction(cTID("setd"), d, DialogModes.NO);
     }
     if (L.rotation) lay.rotate(L.rotation, AnchorPosition.MIDDLECENTER);
+    if (L.opacity < 100) lay.opacity = L.opacity;
+    if (!L.visible) lay.visible = false;
   }
   var opts = new PhotoshopSaveOptions();
   opts.layers = true;
@@ -184,10 +229,12 @@ class PhotoshopExporter:
         self.tmp = tempfile.mkdtemp(prefix="lilyzono_")
 
     def export(self, page, out_path: str) -> None:
-        clean_png = os.path.join(self.tmp, "clean.png")
-        cv2.imencode(".png", clean_layer(page))[1].tofile(clean_png)
-        data = {"raw": os.path.abspath(page.path).replace("\\", "/"), "clean": clean_png.replace("\\", "/"),
-                "out": os.path.abspath(out_path).replace("\\", "/"), "layers": layer_specs(page)}
+        from .document import doc_for
+
+        doc = doc_for(page)
+        doc.sync()
+        data = {"raw": os.path.abspath(page.path).replace("\\", "/"), "bg_visible": doc.layers[0].visible,
+                "out": os.path.abspath(out_path).replace("\\", "/"), "layers": doc_layers(doc, self.tmp)}
         res = self.app.DoJavaScript(JSX % {"data": json.dumps(data, ensure_ascii=False)})
         if res != "ok" or not os.path.exists(out_path):
             raise RuntimeError(f"Photoshop không lưu được {out_path}: {res}")
@@ -211,13 +258,33 @@ def export_without_photoshop(page, out_path: str) -> None:
 
     from .typeset import draw_text
 
+    from psd_tools.constants import BlendMode
+
+    from .document import doc_for
+
+    doc = doc_for(page)
+    doc.sync()
     h, w = page.original.shape[:2]
     psd = PSDImage.new("RGB", (w, h))
-    psd.append(PixelLayer.frompil(Image.fromarray(cv2.cvtColor(page.original, cv2.COLOR_BGR2RGB)), psd, "Background"))
-    psd.append(PixelLayer.frompil(Image.fromarray(cv2.cvtColor(clean_layer(page), cv2.COLOR_BGRA2RGBA)), psd,
-                                  "Redraw"))
-    for r in page.regions:
-        if not (r.cleaned and r.text.strip()):
+    modes = {"normal": BlendMode.NORMAL, "multiply": BlendMode.MULTIPLY, "screen": BlendMode.SCREEN,
+             "darken": BlendMode.DARKEN, "lighten": BlendMode.LIGHTEN}
+
+    def add(rgba, name, layer, top=0, left=0):
+        lay = PixelLayer.frompil(Image.fromarray(rgba), psd, _ascii_name(name), top=int(top), left=int(left))
+        lay.visible = layer.visible
+        lay.opacity = round(layer.opacity * 255)
+        lay.blend_mode = modes.get(layer.blend, BlendMode.NORMAL)
+        psd.append(lay)
+
+    add(np.dstack([cv2.cvtColor(page.original, cv2.COLOR_BGR2RGB), np.full((h, w), 255, np.uint8)]), "Background",
+        doc.layers[0])
+    for L in doc.layers[1:]:
+        if L.kind in ("redraw", "pixel"):
+            bgra = clean_layer(page) if L.kind == "redraw" else L.rgba
+            add(cv2.cvtColor(bgra, cv2.COLOR_BGRA2RGBA), L.name, L)
+            continue
+        r = doc.region_of(L)
+        if r is None or not r.text.strip():
             continue
         img = QImage(w, h, QImage.Format_RGBA8888)
         img.fill(0)
@@ -231,6 +298,6 @@ def export_without_photoshop(page, out_path: str) -> None:
         if len(xs) == 0:
             continue
         bx1, by1, bx2, by2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
-        name = _ascii_name(("REDRAW - " if r.needs_redraw else "") + r.text.replace("\n", " "))
-        psd.append(PixelLayer.frompil(Image.fromarray(arr[by1:by2, bx1:bx2]), psd, name, top=int(by1), left=int(bx1)))
+        name = L.name if L.custom_name else ("REDRAW - " if r.needs_redraw else "") + r.text.replace("\n", " ")
+        add(arr[by1:by2, bx1:bx2], name, L, top=by1, left=bx1)
     psd.save(out_path)

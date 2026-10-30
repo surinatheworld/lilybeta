@@ -46,6 +46,7 @@ def from_qimage(img: QImage) -> np.ndarray:
 class AiBridgeDialog(QDialog):
     """Không chặn cửa sổ chính, để chuyển qua lại với trình duyệt."""
 
+    about_to_apply = Signal()  # ngay trước khi dán kết quả vào trang (để ghi bước hoàn tác)
     applied = Signal(dict)
 
     def __init__(self, job: manual_ai.Job, fit_bubble: bool, parent=None):
@@ -143,8 +144,9 @@ class AiBridgeDialog(QDialog):
 
     def use_result(self, img: np.ndarray):
         warn = manual_ai.aspect_warning(self.job, img)
+        self.about_to_apply.emit()
         res = manual_ai.apply(self.job, img, self.fit_bubble)
-        msg = "Đã dán kết quả. Không ưng thì bấm Hoàn tác vùng (Ctrl+Z) rồi thử lại."
+        msg = "Đã dán kết quả. Không ưng thì bấm Hoàn tác (Ctrl+Z) rồi thử lại."
         if res["mismatch"] > 25:
             warn = (warn + "\n" if warn else "") + ("Tranh quanh chữ khác ảnh gốc khá nhiều – AI có thể đã vẽ lại "
                                                     "cả bố cục; nên kiểm tra kỹ.")
