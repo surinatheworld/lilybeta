@@ -8,7 +8,7 @@ from .core.paths import app_dir
 
 
 def selftest() -> int:
-    """`EditManga.exe --selftest [ảnh]`: chạy thử các phần chính, ghi kết quả ra selftest.log cạnh exe."""
+    """`Lilyzono.exe --selftest [ảnh]`: chạy thử các phần chính, ghi kết quả ra selftest.log cạnh exe."""
     import time
     import traceback
 
@@ -64,7 +64,7 @@ def selftest() -> int:
             page = Page(args[0])
             page.detect(TextDetector())
             for r in page.regions[:2]:
-                r.text, r.style = "Chạy thử EditManga", TextStyle(family="Arial")
+                r.text, r.style = "Chạy thử Lilyzono", TextStyle(family="Arial")
             page.clean_many(page.regions[:2])
             out = os.path.join(app_dir(), "selftest.psd")
             PhotoshopExporter().export(page, out)

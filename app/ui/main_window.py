@@ -150,10 +150,14 @@ class ColorButton(QPushButton):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("EditManga – Tool type truyện")
+        self.setWindowTitle("Lilyzono – Tool type truyện")
         self.resize(1400, 900)
         self.setAcceptDrops(True)
-        self.settings = QSettings("EditManga", "EditManga")
+        self.settings = QSettings("Lilyzono", "Lilyzono")
+        if not self.settings.allKeys():  # lần đầu sau khi đổi tên: chép cài đặt cũ (font yêu thích, bộ kiểu…)
+            old = QSettings("EditManga", "EditManga")
+            for k in old.allKeys():
+                self.settings.setValue(k, old.value(k))
 
         self.detector: TextDetector | None = None
         self.worker: DetectWorker | None = None
@@ -672,7 +676,7 @@ class MainWindow(QMainWindow):
     def _show_page(self, page: Page):
         self.page = page
         name = os.path.basename(page.path)
-        self.setWindowTitle(f"EditManga – {name}" + (f" ({os.path.basename(self.chapter.folder)})" if self.chapter else ""))
+        self.setWindowTitle(f"Lilyzono – {name}" + (f" ({os.path.basename(self.chapter.folder)})" if self.chapter else ""))
         self.selected, self.selection = -1, []
         self.view.set_image(self.page.render(), fit=True)
         self._lines_for_page()
