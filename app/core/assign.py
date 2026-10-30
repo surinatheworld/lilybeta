@@ -194,6 +194,8 @@ def split_region(page, region, lines: list[str]):
 def apply_plan(page, plan, style=None) -> int:
     """Ghi câu dịch vào các vùng theo `plan`; vùng nhận nhiều câu thì tách thành từng khối nếu được.
     Trả về số vùng có chữ."""
+    from .page import new_uid
+
     n = 0
     for r, ls in plan:
         parts = split_region(page, r, ls) if len(ls) > 1 else None
@@ -201,6 +203,7 @@ def apply_plan(page, plan, style=None) -> int:
             i = page.regions.index(r)
             page.regions[i:i + 1] = parts
             for part in parts:
+                part.uid = new_uid()  # mỗi phần là một vùng (một layer chữ) riêng
                 if part.cleaned:  # bóng đã xoá chữ sẵn: tính lại khung đặt chữ cho từng phần
                     page.clean(part)
             targets = list(zip(parts, [[s] for s in ls]))

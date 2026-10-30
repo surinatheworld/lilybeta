@@ -24,10 +24,25 @@ python -m venv .venv
 .venv\Scripts\python -m app.main
 ```
 
+## Giao diện kiểu Photoshop
+
+Bố cục và thao tác quen thuộc của Photoshop 2023 (giao diện tối), chỉ gồm những gì cần cho dịch truyện:
+- **Menu** Tệp / Sửa / Layer / Chọn / Chữ / Xem / Cửa sổ; **hộp công cụ** bên trái; **thanh tuỳ chọn** phía trên đổi
+  theo công cụ (cỡ / độ cứng / opacity của cọ, chế độ vùng chọn, Feather, dung sai Magic Wand…).
+- **Panel** bên phải (kéo tab để sắp xếp, bật/tắt ở menu Cửa sổ): *Lilyzono – dịch truyện* (khung chữ, bản dịch),
+  *Character / Paragraph*, *Layers* (ẩn/hiện, đổi tên, opacity, blend mode, thứ tự, gộp), *History*, *Trang*.
+- **Layer**: Background (raw, khoá) → Redraw (chỗ đã xoá chữ / vẽ lại / bản redraw upload) → layer ảnh bạn tạo
+  thêm → mỗi bóng đã có bản dịch là một layer chữ. Lưu PSD giữ nguyên các layer này (thứ tự, ẩn/hiện, opacity, blend).
+- **Vùng chọn**: Marquee, Lasso, Magic Wand, cộng/trừ/giao, Feather, mở rộng/thu hẹp, đảo; *Content-Aware Fill*
+  vẽ lại phần trong vùng chọn bằng AI LaMa; *Tạo khung chữ* biến vùng chọn thành khung chữ.
+- **Redraw tay**: Brush, Eraser (trên Redraw: trả về raw), Clone Stamp, Spot Healing (tô lên chữ, nhả chuột là AI
+  vẽ lại); mọi nét đều bị giới hạn trong vùng chọn nếu có.
+- **Hoàn tác nhiều bước** cho mọi thao tác (gõ chữ, đổi font, nét cọ, xoá chữ, nhận diện…), bảng History như PS.
+
 ## Luồng làm việc: 3 lớp (raw → Redraw → chữ)
 
-1. **Mở ảnh raw** tiếng Nhật hoặc tiếng Anh (Ctrl+O, kéo thả, hoặc *Mở chương* cho cả thư mục). Chọn chiều đọc trên thanh
-   công cụ: *Tiếng Nhật (manga): phải → trái* / *Tiếng Anh / manhwa: trái → phải*.
+1. **Mở ảnh raw** tiếng Nhật hoặc tiếng Anh (Ctrl+O, kéo thả, hoặc *Mở chương* cho cả thư mục). Chọn chiều đọc ở ô *Raw* trong panel
+   Lilyzono: *Tiếng Nhật (manga): phải → trái* / *Tiếng Anh / manhwa: trái → phải*.
 2. Tool **tự nhận diện chữ và xoá ngay những chỗ chắc ăn**: chữ trong bóng thoại / hộp dẫn truyện sáng, khép kín, và SFX
    nhỏ (AI LaMa trên máy). Chữ đè lên tranh, SFX lớn, tên tác giả… **để nguyên** cho bạn redraw.
 3. **Lớp chữ**: bấm chọn khung rồi gõ bản dịch vào ô nội dung – chữ hiện ngay, tự co cỡ và căn giữa lòng bóng, dùng
@@ -36,14 +51,14 @@ python -m venv .venv
    (Ctrl+Enter) – chữ dịch nằm trên, nền gốc giữ nguyên, khung vàng nét đứt = cần redraw.
 4. **Upload bản redraw** (lớp 2): ảnh đã xoá chữ/redraw sẵn (Photoshop, nhờ người khác, AI…) nằm trên raw, dưới lớp
    chữ; chữ đã gõ được giữ và đặt lại lên nền mới. Chế độ chương: chọn thư mục, ghép theo số trang trong tên file.
-5. **Xuất JPEG** (Ctrl+S) hoặc **Xuất PSD**; cả chương: *Xuất cả chương* → PSD + JPEG / PSD / JPEG.
+5. **Lưu PSD** (Ctrl+S) hoặc **Xuất JPEG** (Ctrl+Alt+Shift+W); cả chương: *Xuất cả chương* → PSD + JPEG / PSD / JPEG.
    PSD gồm `Background` (raw), `Redraw` (bản redraw + phần tool đã xoá) và mỗi bóng một **lớp chữ thật sửa được**
    (máy có Photoshop; không có thì lớp chữ là ảnh).
 
 ## Cách dùng nhanh: type cả chương từ file bản dịch
 
 1. **Mở chương** (Ctrl+Shift+O): chọn thư mục ảnh raw (001.jpg, 002.jpg…). Danh sách trang hiện bên trái.
-2. **Mở bản dịch** (Ctrl+D): file `.docx`/`.txt` chia theo trang – dòng chỉ có số là tên trang, các dòng sau là câu dịch
+2. **Mở bản dịch** (Ctrl+Alt+D): file `.docx`/`.txt` chia theo trang – dòng chỉ có số là tên trang, các dòng sau là câu dịch
    của trang đó theo thứ tự đọc:
    ```
    1
@@ -78,13 +93,13 @@ vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. C
 
 ## Cách dùng chi tiết
 
-1. **Mở ảnh raw** (Ctrl+O hoặc kéo thả ảnh vào cửa sổ). Tool tự nhận diện chữ và khoanh các vùng, đánh số theo thứ tự đọc (chọn *Manga: phải → trái* hoặc *Manhwa: trái → phải* trên thanh công cụ).
-2. **Mở bản dịch** (Ctrl+D): file `.docx` hoặc `.txt`, mỗi đoạn là một câu. Dòng bắt đầu bằng `//` bị bỏ qua. Xuống dòng mềm (Shift+Enter trong Word) hoặc dấu `|` để ép xuống dòng trong bóng thoại.
+1. **Mở ảnh raw** (Ctrl+O hoặc kéo thả ảnh vào cửa sổ). Tool tự nhận diện chữ và khoanh các vùng, đánh số theo thứ tự đọc (chọn chiều đọc ở ô *Raw* trong panel Lilyzono).
+2. **Mở bản dịch** (Ctrl+Alt+D): file `.docx` hoặc `.txt`, mỗi đoạn là một câu. Dòng bắt đầu bằng `//` bị bỏ qua. Xuống dòng mềm (Shift+Enter trong Word) hoặc dấu `|` để ép xuống dòng trong bóng thoại.
 3. **Chọn vùng**: bấm vào khung trên ảnh.
    - Khung **đỏ**: chữ trong bóng thoại / hộp dẫn truyện. Bóng thoại đôi được tách thành từng nửa, mỗi nửa một câu.
      Chữ màu trên truyện đen trắng (vd tên truyện trên trang bìa) cũng được xoá.
    - Khung **cam nét đứt** (nhãn `SFX`): cụm chữ lẻ tự tìm thấy (SFX, chữ nhỏ ngoài bóng). Không cần thì bấm *Xoá khung*.
-   - Thiếu vùng thì tự vẽ: chọn công cụ **▭ Khung chữ nhật** (phím R) hoặc **➰ Lasso** (phím L) rồi kéo chuột.
+   - Thiếu vùng thì tự vẽ: chọn công cụ **Khung chữ** (phím K) hoặc **Khung chữ lasso** (Shift+K) rồi kéo chuột.
      Lasso khoanh tự do quanh SFX/chữ vẽ tay: **toàn bộ phần khoanh sẽ bị xoá** rồi vẽ lại nền, bản dịch đặt trong vùng khoanh.
 4. **Chọn câu dịch**: bấm một câu trong danh sách (bấm đúp = gán và xử lý luôn). Tool tự gợi ý câu chưa dùng tiếp theo.
 5. **Chỉnh chữ** ở bảng **Chữ (Character / Paragraph)** – bố cục theo Photoshop 2023 (đơn vị px ≈ pt ở 72 ppi):
@@ -107,9 +122,9 @@ vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. C
        Chọn nhiều vùng gần nhau rồi Xử lý → **gom chung 1 lần gọi API**. Tính phí theo nhà cung cấp.
        Gemini cần tài khoản đã bật thanh toán (gói miễn phí không dùng được model sửa ảnh).
        Key được cất trong Windows Credential Manager, không ghi ra file.
-7. **Xuất JPEG** (Ctrl+S) hoặc **Xuất PSD** (Ctrl+Shift+S).
+7. **Lưu PSD** (Ctrl+S) hoặc **Xuất JPEG** (Ctrl+Alt+Shift+W).
 
-Vùng đã xử lý vẫn sửa được: chọn lại rồi đổi chữ/font, ảnh cập nhật ngay. *Hoàn tác vùng* (Ctrl+Z) trả lại ảnh gốc
+Vùng đã xử lý vẫn sửa được: chọn lại rồi đổi chữ/font, ảnh cập nhật ngay. Ctrl+Z hoàn tác từng bước; *Hoàn tác vùng* trả lại ảnh gốc
 (hoặc bản redraw đã nạp) ở vùng đó.
 
 ### Redraw bằng ChatGPT / Gemini (dùng gói Plus/Pro trên web, không cần API)
@@ -119,7 +134,7 @@ Chữ đè lên tranh / lưới chấm mà bản vẽ lại tự động chưa �
 2. Dán (Ctrl+V) vào ChatGPT hoặc Gemini cùng lời nhắc (nút **Copy lời nhắc**).
 3. Chuột phải ảnh kết quả → *Copy image* (hoặc tải về) → bấm **Dán kết quả** (hoặc mở / kéo thả file vào hộp thoại).
    Tool tự co về đúng cỡ, căn khớp (AI hay lệch/co giãn nhẹ) và **chỉ thay phần chữ** (viền đỏ trong ảnh xem trước);
-   chữ dịch được đặt vào ngay. Không ưng: *Hoàn tác vùng* (Ctrl+Z) rồi thử lại.
+   chữ dịch được đặt vào ngay. Không ưng: Ctrl+Z rồi thử lại.
 
 ### Chọn nhiều vùng cùng lúc
 - **Ctrl + bấm** thêm/bỏ từng vùng, **Shift + bấm** chọn liền một dải, **Ctrl+A** chọn tất cả.
@@ -138,19 +153,31 @@ Chọn **1** vùng đã xử lý → hiện khung tím quanh chữ:
 - **Bộ kiểu**: bấm *Lưu* để lưu cả font + cỡ + màu + viền + căn lề thành tên (vd *Thoại*, *Hét*, *SFX*);
   chọn bộ kiểu để áp cho mọi vùng đang chọn.
 
+## Phím tắt (giống Photoshop)
+
 | Phím | Tác dụng |
 |---|---|
-| Lăn chuột / Ctrl + lăn | Cuộn / phóng to-thu nhỏ |
-| Chuột phải hoặc giữa + kéo | Di chuyển ảnh |
-| R / L | Công cụ khung chữ nhật / lasso |
-| Ctrl+Shift+R | Redraw vùng đang chọn qua ChatGPT / Gemini (copy–dán) |
-| Ctrl+Shift+A | Chọn mọi khung đã có bản dịch (đổi font hàng loạt) |
-| Ctrl / Shift + bấm, Ctrl+A | Chọn nhiều vùng / chọn dải / chọn tất cả |
+| V / M / L / W | Move / Rectangular Marquee / Lasso / Magic Wand |
+| J / B / S / E | Spot Healing (AI) / Brush / Clone Stamp (Alt+bấm lấy mẫu) / Eraser |
+| T | Type – bấm vào bóng thoại để gõ chữ, kéo để tạo khung đoạn văn |
+| K / Shift+K | Khung chữ chữ nhật / lasso (xoá chữ gốc & đặt bản dịch) |
+| H / Z, giữ Space | Hand / Zoom, kéo ảnh tạm thời |
+| [ ] · D · X | Đổi cỡ cọ · màu đen/trắng · đổi chỗ màu trước/nền |
+| Ctrl+Z / Ctrl+Shift+Z | Hoàn tác / làm lại nhiều bước (bảng History: bấm để nhảy tới bước bất kỳ) |
+| Ctrl+A / Ctrl+D / Ctrl+Shift+I | Chọn tất cả / bỏ chọn / đảo vùng chọn; giữ Shift: cộng, Alt: trừ |
+| Shift+F6 | Làm mềm vùng chọn (Feather) |
+| Shift+F5 | Tô vùng chọn: Content-Aware (AI LaMa) / màu trước / màu nền / trắng / đen |
+| Delete · Alt+Backspace · Ctrl+Backspace | Xoá trong vùng chọn (Redraw: trả về raw) · tô màu trước · tô màu nền |
+| Ctrl+Shift+N / Ctrl+J / Ctrl+E | Layer mới / nhân đôi / gộp xuống |
+| Ctrl+] / Ctrl+[ | Đưa layer lên / xuống |
+| Ctrl+0 / Ctrl+1 / Ctrl + lăn | Vừa màn hình / 100% / phóng to-thu nhỏ |
+| Ctrl+H | Ẩn/hiện khung chữ |
+| Ctrl+S / Ctrl+Alt+Shift+W | Lưu PSD / Xuất JPEG |
+| F5 · Ctrl+Enter · Tab | Nhận diện chữ · xử lý khung đang chọn · khung tiếp theo |
+| Ctrl+Shift+A / Ctrl+Alt+A | Chọn mọi khung có bản dịch / mọi khung |
+| Ctrl+Shift+R | Redraw khung đang chọn qua ChatGPT / Gemini (copy–dán) |
 | Mũi tên (Shift) | Nhích khung chữ 1px (10px) |
-| Tab | Sang vùng tiếp theo |
-| Delete | Xoá khung đang chọn |
-| B | Ẩn/hiện khung |
-| F5 | Nhận diện lại |
+| F1 | Bảng phím tắt |
 
 ## Cấu trúc
 
@@ -160,5 +187,7 @@ Chọn **1** vùng đã xử lý → hiện khung tím quanh chữ:
 - `app/core/cloud.py` – vẽ lại nền bằng API Gemini / OpenAI; `app/core/secrets.py` – cất API key
 - `app/core/typeset.py` – dàn chữ, tự co cỡ, viền chữ
 - `app/core/docs.py` – đọc bản dịch `.docx` / `.txt`
-- `app/core/page.py` – trạng thái trang
+- `app/core/page.py` – trạng thái trang (ảnh, vùng chữ)
+- `app/core/document.py` – layer, ghép ảnh, vùng chọn, cọ, lịch sử hoàn tác
+- `app/core/psd_export.py` – xuất PSD (lớp chữ thật qua Photoshop, hoặc lớp ảnh khi không có Photoshop)
 - `app/ui/` – giao diện PySide6

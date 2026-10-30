@@ -83,9 +83,10 @@ def main():
         sys.exit(selftest())
 
     from .ui.main_window import MainWindow
+    from .ui.theme import apply_dark
 
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")
+    apply_dark(app)
     icon = os.path.join(app_dir(), "assets", "icon.ico")
     if os.path.exists(icon):
         app.setWindowIcon(QIcon(icon))
