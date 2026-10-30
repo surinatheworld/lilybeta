@@ -80,6 +80,15 @@ vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. C
 
 Vùng đã xử lý vẫn sửa được: chọn lại rồi đổi chữ/font, ảnh cập nhật ngay. *Hoàn tác vùng* (Ctrl+Z) trả lại ảnh gốc ở vùng đó.
 
+### Redraw bằng ChatGPT / Gemini (dùng gói Plus/Pro trên web, không cần API)
+Chữ đè lên tranh / lưới chấm mà bản vẽ lại tự động chưa ưng:
+1. Chọn vùng (Ctrl+bấm để chọn nhiều vùng gần nhau) → **Redraw bằng ChatGPT / Gemini…** (Ctrl+Shift+R).
+   Tool cắt sẵn vùng đủ rộng quanh chữ (tỉ lệ 1:1 / 2:3 / 3:2 – đúng khung ảnh ChatGPT trả về) và copy vào clipboard.
+2. Dán (Ctrl+V) vào ChatGPT hoặc Gemini cùng lời nhắc (nút **Copy lời nhắc**).
+3. Chuột phải ảnh kết quả → *Copy image* (hoặc tải về) → bấm **Dán kết quả** (hoặc mở / kéo thả file vào hộp thoại).
+   Tool tự co về đúng cỡ, căn khớp (AI hay lệch/co giãn nhẹ) và **chỉ thay phần chữ** (viền đỏ trong ảnh xem trước);
+   chữ dịch được đặt vào ngay. Không ưng: *Hoàn tác vùng* (Ctrl+Z) rồi thử lại.
+
 ### Chọn nhiều vùng cùng lúc
 - **Ctrl + bấm** thêm/bỏ từng vùng, **Shift + bấm** chọn liền một dải, **Ctrl+A** chọn tất cả.
 - Đổi font, cỡ, màu, viền, bộ kiểu… → áp cho **mọi vùng đang chọn**.
@@ -102,6 +111,7 @@ Chọn **1** vùng đã xử lý → hiện khung tím quanh chữ:
 | Lăn chuột / Ctrl + lăn | Cuộn / phóng to-thu nhỏ |
 | Chuột phải hoặc giữa + kéo | Di chuyển ảnh |
 | R / L | Công cụ khung chữ nhật / lasso |
+| Ctrl+Shift+R | Redraw vùng đang chọn qua ChatGPT / Gemini (copy–dán) |
 | Ctrl / Shift + bấm, Ctrl+A | Chọn nhiều vùng / chọn dải / chọn tất cả |
 | Mũi tên (Shift) | Nhích khung chữ 1px (10px) |
 | Tab | Sang vùng tiếp theo |
