@@ -1,4 +1,5 @@
 @echo off
+setlocal
 rem Dong goi Lilyzono thanh dist\Lilyzono\Lilyzono.exe (khong can cai Python tren may chay).
 cd /d "%~dp0"
 if not exist .venv (
@@ -6,6 +7,8 @@ if not exist .venv (
 )
 .venv\Scripts\python -m pip install -r requirements.txt pyinstaller || goto :err
 
+rem Uu tien DLL he thong, tranh dong goi nham icuuc.dll/CRT tu ung dung khac trong PATH.
+set "PATH=%SystemRoot%\System32;%SystemRoot%;%PATH%"
 .venv\Scripts\python -m PyInstaller --noconfirm --clean --windowed ^
   --name Lilyzono ^
   --icon assets\icon.ico ^
