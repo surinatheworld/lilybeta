@@ -1642,11 +1642,13 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _auto_clean_args(self):
-        """Thông số tự xoá sau khi nhận diện: bóng thoại luôn xoá; SFX nhỏ xoá bằng AI trên máy (không tự gọi AI
-        trên mạng vì tốn phí)."""
+        """Tự xoá bóng thoại; để SFX nguyên vẹn cho tới khi được chọn để xử lý.
+
+        Những chi tiết tranh nhỏ có thể bị nhận nhầm thành SFX, nên không tự xoá chúng chỉ vì vừa mở ảnh.
+        """
         if self.engine in PROVIDERS or self.engine == "simple":
             return (skip_hard, False, self.chk_bubble.isChecked())
-        return (lama.inpaint if self.engine in LOCAL_AI else None, True, self.chk_bubble.isChecked())
+        return (lama.inpaint if self.engine in LOCAL_AI else None, False, self.chk_bubble.isChecked())
 
     def _detect_done(self, worker):
         doc_for(worker.page).end()
