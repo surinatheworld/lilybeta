@@ -73,6 +73,8 @@ class Document:
         self.index = 0  # số bước đang có hiệu lực (history[:index])
         self._pending: tuple[_Step, list] | None = None
         self._text_cache: dict[int, tuple] = {}
+        self.editing_uid: int | None = None  # chữ đang gõ trực tiếp trên ảnh: không vẽ (ô gõ hiện thay)
+        self.saved_index = 0  # vị trí trong lịch sử lúc lưu / mở gần nhất
         self.sync()
 
     @property
@@ -196,7 +198,7 @@ class Document:
             if not L.visible or L.opacity <= 0:
                 continue
             if L.kind == "text":
-                if text:
+                if text and L.uid != self.editing_uid:
                     self._paint_text(out, (x1, y1, x2, y2), L)
                 continue
             if L.kind == "redraw":
@@ -296,6 +298,37 @@ class Document:
         sa = cv2.resize(a, (tw, th), interpolation=cv2.INTER_AREA)[..., None]
         bg = _checker(0, 0, tw, th, cell=4)
         return np.clip(bg + (small - bg) * sa, 0, 255).astype(np.uint8)
+
+    # ------------------------------------------------- Move / Free Transform
+    def content_bbox(self, layer: Layer) -> Box | None:
+        """Khung bao phần có điểm ảnh của layer ảnh (hoặc vùng chọn nếu có)."""
+        if self.selection is not None:
+            return self.selection_bbox()
+        if layer.kind != "pixel":
+            return None
+        ys, xs = np.nonzero(layer.rgba[..., 3])
+        if not len(xs):
+            return None
+        return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+
+    def transform_pixels(self, layer: Layer, src: np.ndarray, sel: np.ndarray | None, matrix: np.ndarray,
+                         smooth: bool = True) -> np.ndarray | None:
+        """Biến đổi (dời / co giãn / xoay theo ma trận 2x3) layer ảnh, hoặc chỉ phần trong vùng chọn, tính lại từ bản
+        gốc `src`; phần còn lại giữ nguyên. Trả về vùng chọn sau biến đổi (None nếu không có vùng chọn)."""
+        h, w = src.shape[:2]
+        a = src[..., 3].astype(np.float32) / 255
+        part_a = a * (sel.astype(np.float32) / 255) if sel is not None else a
+        rest_a = a - part_a
+        flags = cv2.INTER_LINEAR if smooth else cv2.INTER_NEAREST
+        prem = src[..., :3].astype(np.float32) * part_a[..., None]  # nhân sẵn alpha để mép không bị viền màu lạ
+        wp = cv2.warpAffine(prem, matrix, (w, h), flags=flags, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        wa = cv2.warpAffine(part_a, matrix, (w, h), flags=flags, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        out_a = wa + rest_a * (1 - wa)
+        rgb = (wp + src[..., :3].astype(np.float32) * (rest_a * (1 - wa))[..., None]) / np.maximum(out_a, 1e-6)[..., None]
+        layer.rgba[:] = np.dstack([np.clip(rgb, 0, 255), np.clip(out_a * 255, 0, 255)]).astype(np.uint8)
+        if sel is None:
+            return None
+        return cv2.warpAffine(sel, matrix, (w, h), flags=flags, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
     # -------------------------------------------------------------- vùng chọn
     def set_selection(self, mask: np.ndarray | None, mode: str = "new") -> None:
@@ -497,7 +530,13 @@ class Document:
         self.history.append(step)
         while len(self.history) > MAX_HISTORY:
             self.history.pop(0)
+            self.saved_index -= 1
         self.index = len(self.history)
+
+    @property
+    def dirty(self) -> bool:
+        """Có thay đổi chưa lưu."""
+        return self.index != self.saved_index
 
     @contextmanager
     def step(self, name: str, pixels=(), merge: str | None = None):
@@ -683,3 +722,16 @@ def _same_meta(a: dict, b: dict) -> bool:
     return (a["regions"] == b["regions"] and a["layers"] == b["layers"] and a["active"] is b["active"]
             and a["selection"] is b["selection"] and a["redrawn"] is b["redrawn"]
             and a["text_mask"] is b["text_mask"] and a["detected"] == b["detected"])
+
+
+def affine(src_box, dst_box, angle: float = 0.0) -> np.ndarray:
+    """Ma trận 2x3: khung `src_box` → khung `dst_box` (chưa xoay), rồi xoay `angle` độ (chiều kim đồng hồ trên màn
+    hình) quanh tâm khung mới."""
+    sx1, sy1, sx2, sy2 = src_box
+    dx1, dy1, dx2, dy2 = dst_box
+    kx = (dx2 - dx1) / max(1e-6, sx2 - sx1)
+    ky = (dy2 - dy1) / max(1e-6, sy2 - sy1)
+    scale = np.array([[kx, 0, dx1 - sx1 * kx], [0, ky, dy1 - sy1 * ky], [0, 0, 1]], np.float64)
+    cx, cy = (dx1 + dx2) / 2, (dy1 + dy2) / 2
+    rot = np.vstack([cv2.getRotationMatrix2D((cx, cy), -angle, 1.0), [0, 0, 1]])
+    return (rot @ scale)[:2]

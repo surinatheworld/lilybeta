@@ -80,6 +80,14 @@ def postscript_name(family: str, style: str = "") -> str:
     return _ps_cache[ck]
 
 
+def family_from_postscript(ps: str) -> tuple[str, str]:
+    """(họ font, kiểu) theo tên PostScript đọc từ PSD; không có trên máy thì ("", "")."""
+    for fam, sub, name in _all_faces():
+        if name and (name == ps or name.replace(" ", "-") == ps):
+            return fam, sub
+    return "", ""
+
+
 _faces: list[tuple[str, str, str]] | None = None
 
 

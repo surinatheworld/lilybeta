@@ -2,9 +2,12 @@
 khung chữ), hiển thị vùng chữ, vùng chọn ("kiến bò") và kéo/đổi cỡ khung chữ để tự căn chỉnh."""
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+import math
+
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QTransform
 from PySide6.QtWidgets import (
+    QFrame,
     QGraphicsEllipseItem,
     QGraphicsPathItem,
     QGraphicsPixmapItem,
@@ -13,6 +16,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
+    QTextEdit,
 )
 
 COLOR_PENDING = QColor(230, 60, 60)
@@ -62,6 +66,13 @@ class ImageView(QGraphicsView):
     textBoxDrawn = Signal(tuple)  # công cụ chữ kéo một khung đoạn văn
     zoomChanged = Signal(float)
     cursorMoved = Signal(int, int)
+    regionDoubleClicked = Signal(int)
+    textRotated = Signal(float)  # kéo tay nắm xoay của khung chữ: số độ xoay thêm
+    inlineTextChanged = Signal(str)  # gõ chữ trực tiếp trên ảnh
+    inlineEditFinished = Signal()
+    layerDragged = Signal(str, float, float)  # "begin" | "move" | "end", dx, dy (công cụ Move kéo layer ảnh)
+    transformChanged = Signal(tuple, float)  # Free Transform: khung mới (x1, y1, x2, y2), góc xoay
+    transformDone = Signal(bool)  # True = Enter (áp dụng), False = Esc (huỷ)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -119,6 +130,16 @@ class ImageView(QGraphicsView):
         self._heal_item = QGraphicsPathItem()
         self._heal_item.setZValue(15)
         self.scene().addItem(self._heal_item)
+        self._editor: QTextEdit | None = None  # ô gõ chữ trực tiếp trên ảnh
+        self._editor_rect = QRectF()
+        self._editor_px = 20.0
+        self._layer_drag: QPointF | None = None
+        self._rot_start: float | None = None
+        # Free Transform
+        self._tf: dict | None = None  # {"rect": QRectF (chưa xoay), "angle": độ}
+        self._tf_items: list = []
+        self._tf_mode: str | None = None
+        self._tf_start = None
 
     # --- ảnh & vùng -------------------------------------------------------
     def set_image(self, img: QImage, fit: bool = False) -> None:
@@ -168,6 +189,219 @@ class ImageView(QGraphicsView):
             self.scale(f, f)
             self.zoomChanged.emit(self.zoom)
             self._update_brush_cursor()
+            self._place_editor()
+
+    def scrollContentsBy(self, dx: int, dy: int) -> None:
+        super().scrollContentsBy(dx, dy)
+        self._place_editor()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._place_editor()
+
+    # --- gõ chữ trực tiếp trên ảnh ------------------------------------------------
+    def begin_text_edit(self, rect: tuple, text: str, font: QFont, font_px: float, color: str, align: str) -> None:
+        self.end_text_edit(emit=False)
+        ed = QTextEdit(self.viewport())
+        ed.setAcceptRichText(False)
+        ed.setFrameShape(QFrame.NoFrame)
+        ed.setPlainText(text)
+        bg = "rgba(255,255,255,190)" if QColor(color).lightness() < 150 else "rgba(0,0,0,170)"  # chữ sáng: nền tối
+        # Cỡ/font đặt qua stylesheet (theme chung đặt font-size cho mọi widget, setFont bị đè).
+        self._editor_css = (f"background: {bg}; color: {color}; border: 1px dashed #378ef0; "
+                            f"font-family: '{font.family()}'; font-weight: {700 if font.bold() else 400}; "
+                            f"font-style: {'italic' if font.italic() else 'normal'};")
+        ed.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        ed.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        ed.document().setDefaultTextOption(ed.document().defaultTextOption())
+        opt = ed.document().defaultTextOption()
+        opt.setAlignment({"left": Qt.AlignLeft, "right": Qt.AlignRight}.get(align, Qt.AlignHCenter))
+        ed.document().setDefaultTextOption(opt)
+        ed.setFont(font)
+        ed.textChanged.connect(lambda: (self._place_editor(), self.inlineTextChanged.emit(ed.toPlainText())))
+        ed.installEventFilter(self)
+        x1, y1, x2, y2 = rect
+        self._editor, self._editor_rect, self._editor_px = ed, QRectF(x1, y1, x2 - x1, y2 - y1), font_px
+        self._place_editor()
+        ed.show()
+        ed.setFocus()
+        ed.moveCursor(ed.textCursor().MoveOperation.End)
+
+    def update_text_edit(self, rect: tuple, font_px: float) -> None:
+        """Khung / cỡ chữ đổi theo nội dung (chữ dài ra thì tự co): ô gõ bám theo."""
+        x1, y1, x2, y2 = rect
+        self._editor_rect, self._editor_px = QRectF(x1, y1, x2 - x1, y2 - y1), font_px
+        self._place_editor()
+
+    def _place_editor(self) -> None:
+        ed = self._editor
+        if ed is None:
+            return
+        px = max(6, int(self._editor_px * self.zoom))
+        css = f"QTextEdit {{ {self._editor_css} font-size: {px}px; }}"
+        if ed.styleSheet() != css:
+            ed.setStyleSheet(css)
+        r = self.mapFromScene(self._editor_rect).boundingRect()
+        doc = ed.document()
+        doc.setTextWidth(r.width())
+        h = max(int(doc.size().height()) + 4, px + 8)
+        cy = r.center().y()
+        ed.setGeometry(r.left() - 2, int(cy - h / 2), r.width() + 4, h)  # căn giữa dọc như chữ thật
+
+    def end_text_edit(self, emit: bool = True) -> None:
+        ed, self._editor = self._editor, None
+        if ed is None:
+            return
+        ed.removeEventFilter(self)
+        ed.hide()
+        ed.deleteLater()
+        self.setFocus()
+        if emit:
+            self.inlineEditFinished.emit()
+
+    @property
+    def editing_text(self) -> bool:
+        return self._editor is not None
+
+    def eventFilter(self, obj, ev):
+        if obj is self._editor:
+            if ev.type() == QEvent.KeyPress and (
+                    ev.key() == Qt.Key_Escape
+                    or (ev.key() in (Qt.Key_Return, Qt.Key_Enter) and ev.modifiers() & Qt.ControlModifier)):
+                self.end_text_edit()  # Esc / Ctrl+Enter: xong (như Photoshop)
+                return True
+            if ev.type() == QEvent.FocusOut:
+                QTimer.singleShot(0, self._editor_focus_lost)
+        return super().eventFilter(obj, ev)
+
+    def _editor_focus_lost(self):
+        if self._editor is not None and not self._editor.hasFocus():
+            self.end_text_edit()
+
+    # --- Free Transform ------------------------------------------------------------
+    def begin_transform(self, rect: tuple) -> None:
+        x1, y1, x2, y2 = rect
+        self._tf = {"rect": QRectF(x1, y1, x2 - x1, y2 - y1), "angle": 0.0}
+        self._draw_tf()
+
+    def end_transform(self) -> None:
+        self._tf, self._tf_mode = None, None
+        for it in self._tf_items:
+            self.scene().removeItem(it)
+        self._tf_items = []
+        self._update_cursor()
+
+    @property
+    def transforming(self) -> bool:
+        return self._tf is not None
+
+    def _tf_xf(self) -> QTransform:
+        r, a = self._tf["rect"], self._tf["angle"]
+        c = r.center()
+        return QTransform().translate(c.x(), c.y()).rotate(a).translate(-c.x(), -c.y())
+
+    def _tf_handles(self) -> dict:
+        r = self._tf["rect"]
+        c = r.center()
+        return {"tl": r.topLeft(), "t": QPointF(c.x(), r.top()), "tr": r.topRight(), "r": QPointF(r.right(), c.y()),
+                "br": r.bottomRight(), "b": QPointF(c.x(), r.bottom()), "bl": r.bottomLeft(),
+                "l": QPointF(r.left(), c.y())}
+
+    def _draw_tf(self) -> None:
+        for it in self._tf_items:
+            self.scene().removeItem(it)
+        self._tf_items = []
+        xf = self._tf_xf()
+        frame = QGraphicsPolygonItem(xf.map(QPolygonF(self._tf["rect"])))
+        pen = QPen(QColor(55, 142, 240), 1)
+        pen.setCosmetic(True)
+        frame.setPen(pen)
+        frame.setZValue(40)
+        self.scene().addItem(frame)
+        self._tf_items.append(frame)
+        for pt in self._tf_handles().values():
+            h = QGraphicsRectItem(QRectF(-HANDLE / 2, -HANDLE / 2, HANDLE, HANDLE))
+            h.setFlag(QGraphicsRectItem.ItemIgnoresTransformations)
+            h.setPos(xf.map(pt))
+            h.setBrush(QBrush(Qt.white))
+            hp = QPen(QColor(55, 142, 240), 1)
+            hp.setCosmetic(True)
+            h.setPen(hp)
+            h.setZValue(41)
+            self.scene().addItem(h)
+            self._tf_items.append(h)
+
+    def _tf_hit(self, pos: QPointF) -> str | None:
+        inv, _ = self._tf_xf().inverted()
+        lp = inv.map(pos)
+        tol = HANDLE / max(self.zoom, 1e-6)
+        for name, pt in self._tf_handles().items():
+            if abs(lp.x() - pt.x()) <= tol and abs(lp.y() - pt.y()) <= tol:
+                return name
+        r = self._tf["rect"]
+        if r.contains(lp):
+            return "move"
+        if r.adjusted(-tol * 4, -tol * 4, tol * 4, tol * 4).contains(lp):
+            return "rot"
+        return None
+
+    def _tf_cursor(self, pos: QPointF):
+        hit = self._tf_hit(pos)
+        return {"move": Qt.SizeAllCursor, "rot": Qt.CrossCursor, None: Qt.ArrowCursor,
+                "t": Qt.SizeVerCursor, "b": Qt.SizeVerCursor, "l": Qt.SizeHorCursor, "r": Qt.SizeHorCursor,
+                "tl": Qt.SizeFDiagCursor, "br": Qt.SizeFDiagCursor}.get(hit, Qt.SizeBDiagCursor)
+
+    def _tf_press(self, pos: QPointF) -> None:
+        self._tf_mode = self._tf_hit(pos)
+        if self._tf_mode is None:
+            return
+        inv, _ = self._tf_xf().inverted()
+        self._tf_start = (pos, inv.map(pos), QRectF(self._tf["rect"]), self._tf["angle"])
+
+    def _tf_drag(self, pos: QPointF, mods) -> None:
+        start, lstart, r0, a0 = self._tf_start
+        mode = self._tf_mode
+        r = QRectF(r0)
+        if mode == "move":
+            r.translate(pos - start)
+        elif mode == "rot":
+            c = r0.center()
+            da = math.degrees(math.atan2(pos.y() - c.y(), pos.x() - c.x())
+                              - math.atan2(start.y() - c.y(), start.x() - c.x()))
+            a = a0 + da
+            if mods & Qt.ShiftModifier:
+                a = round(a / 15) * 15
+            self._tf["angle"] = a
+        else:
+            # Toạ độ trong khung chưa xoay (xoay quanh tâm khung lúc bắt đầu kéo)
+            c0 = r0.center()
+            inv = QTransform().translate(c0.x(), c0.y()).rotate(-a0).translate(-c0.x(), -c0.y())
+            lp = inv.map(pos)
+            d = lp - lstart
+            if "l" in mode:
+                r.setLeft(min(r0.left() + d.x(), r0.right() - 2))
+            if "r" in mode:
+                r.setRight(max(r0.right() + d.x(), r0.left() + 2))
+            if "t" in mode:
+                r.setTop(min(r0.top() + d.y(), r0.bottom() - 2))
+            if "b" in mode:
+                r.setBottom(max(r0.bottom() + d.y(), r0.top() + 2))
+            if len(mode) == 2 and not (mods & Qt.ShiftModifier):  # góc: giữ tỉ lệ (Shift: tự do), như PS 2023
+                k = max(r.width() / r0.width(), r.height() / r0.height())
+                w, h = r0.width() * k, r0.height() * k
+                ax = r0.right() if "l" in mode else r0.left()
+                ay = r0.bottom() if "t" in mode else r0.top()
+                r = QRectF(ax - w if "l" in mode else ax, ay - h if "t" in mode else ay, w, h)
+            # giữ tâm xoay đúng chỗ: tâm mới tính trong hệ đã xoay quanh tâm cũ
+            if a0:
+                xf0 = QTransform().translate(c0.x(), c0.y()).rotate(a0).translate(-c0.x(), -c0.y())
+                nc = xf0.map(r.center())
+                r.moveCenter(nc)
+        if mode != "rot":
+            self._tf["rect"] = r
+        self._draw_tf()
+        rr = self._tf["rect"]
+        self.transformChanged.emit((rr.left(), rr.top(), rr.right(), rr.bottom()), self._tf["angle"])
 
     def zoom_to(self, z: float) -> None:
         self.zoom_by(z / max(self.zoom, 1e-6))
@@ -314,10 +548,19 @@ class ImageView(QGraphicsView):
         for name, pt in corners.items():
             if abs(scene_pos.x() - pt.x()) <= tol and abs(scene_pos.y() - pt.y()) <= tol:
                 return name
-        return "move" if r.contains(scene_pos) else None
+        if r.contains(scene_pos):
+            return "move"
+        # Ngay ngoài góc khung: xoay chữ (như Free Transform của Photoshop).
+        for pt in corners.values():
+            if math.hypot(scene_pos.x() - pt.x(), scene_pos.y() - pt.y()) <= tol * 3:
+                return "rot"
+        return None
 
     # --- bàn phím --------------------------------------------------------------
     def keyPressEvent(self, e):
+        if self._tf is not None and e.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Escape):
+            self.transformDone.emit(e.key() != Qt.Key_Escape)
+            return
         if e.key() == Qt.Key_Space and not e.isAutoRepeat():
             self._space = True
             self._update_cursor()
@@ -378,6 +621,9 @@ class ImageView(QGraphicsView):
             return super().mousePressEvent(e)
         pos = self.mapToScene(e.position().toPoint())
         mods = e.modifiers()
+        if self._tf is not None:
+            self._tf_press(pos)
+            return
         if self.tool == TOOL_ZOOM:
             self.centerOn(pos)
             self.zoom_by(1 / 1.5 if mods & Qt.AltModifier else 1.5)
@@ -402,7 +648,7 @@ class ImageView(QGraphicsView):
         if hit:
             self._edit_mode, self._edit_start, self._edit_orig = hit, pos, QRectF(self._edit_rect)
             return
-        # Bấm rồi thả tại chỗ = chọn; bấm rồi kéo = vẽ (khung chữ, vùng chọn, khung đoạn văn).
+        # Bấm rồi thả tại chỗ = chọn; bấm rồi kéo = vẽ (khung chữ, vùng chọn, khung đoạn văn) / kéo layer (Move).
         self._press_pos = e.position()
         self._press_region = self._region_at(e.position().toPoint()) if self.tool in REGION_TOOLS else None
         self._press_mods = _mods(e)
@@ -427,10 +673,28 @@ class ImageView(QGraphicsView):
                 self._heal_item.setPath(path)
             self.strokeMoved.emit(pos.x(), pos.y())
             return
+        if self._tf is not None:
+            if self._tf_mode is not None:
+                self._tf_drag(pos, e.modifiers())
+            else:
+                self.viewport().setCursor(self._tf_cursor(pos))
+            return
         if self._edit_mode is not None:
             self._drag_edit(pos)
             return
-        if self._press_pos is not None and self.tool != TOOL_MOVE:
+        if self._layer_drag is not None:
+            d = pos - self._layer_drag
+            self.layerDragged.emit("move", round(d.x()), round(d.y()))
+            return
+        if self._press_pos is not None and self.tool == TOOL_MOVE:
+            if (e.position() - self._press_pos).manhattanLength() >= CLICK_TOLERANCE:
+                self._layer_drag = self._points[0]
+                self._press_pos = None
+                self.layerDragged.emit("begin", 0, 0)
+                d = pos - self._layer_drag
+                self.layerDragged.emit("move", round(d.x()), round(d.y()))
+            return
+        if self._press_pos is not None:
             if self._preview is None and (e.position() - self._press_pos).manhattanLength() < CLICK_TOLERANCE:
                 return
             if self.tool in (TOOL_LASSO, TOOL_LASSO_SEL):
@@ -448,7 +712,7 @@ class ImageView(QGraphicsView):
         hit = self._edit_hit(pos)
         if hit:
             cursors = {"move": Qt.SizeAllCursor, "tl": Qt.SizeFDiagCursor, "br": Qt.SizeFDiagCursor,
-                       "tr": Qt.SizeBDiagCursor, "bl": Qt.SizeBDiagCursor}
+                       "tr": Qt.SizeBDiagCursor, "bl": Qt.SizeBDiagCursor, "rot": Qt.CrossCursor}
             self.viewport().setCursor(cursors[hit])
         elif not self._space:
             self._update_cursor()
@@ -457,6 +721,12 @@ class ImageView(QGraphicsView):
     def _drag_edit(self, pos: QPointF) -> None:
         d = pos - self._edit_start
         r = QRectF(self._edit_orig)
+        if self._edit_mode == "rot":
+            c = r.center()
+            a0 = math.atan2(self._edit_start.y() - c.y(), self._edit_start.x() - c.x())
+            a1 = math.atan2(pos.y() - c.y(), pos.x() - c.x())
+            self._rot_start = math.degrees(a1 - a0)
+            return
         if self._edit_mode == "move":
             r.translate(d)
         else:
@@ -489,7 +759,18 @@ class ImageView(QGraphicsView):
             self.scene().addItem(self._preview)
         return self._preview
 
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.LeftButton and self._tf is None:
+            idx = self._region_at(e.position().toPoint())
+            if idx is not None:
+                self.regionDoubleClicked.emit(idx)
+                return
+        super().mouseDoubleClickEvent(e)
+
     def mouseReleaseEvent(self, e):
+        if self._tf is not None:
+            self._tf_mode = None
+            return
         if self._pan_from is not None:
             self._pan_from = None
             self._update_cursor()
@@ -500,10 +781,23 @@ class ImageView(QGraphicsView):
             self.strokeEnded.emit()
             return
         if self._edit_mode is not None:
-            self._edit_mode = None
+            mode, self._edit_mode = self._edit_mode, None
+            if mode == "rot":
+                deg, self._rot_start = self._rot_start, None
+                if deg:
+                    if e.modifiers() & Qt.ShiftModifier:
+                        deg = round(deg / 15) * 15
+                    self.textRotated.emit(((deg + 180) % 360) - 180)
+                return
             r = self._edit_rect
             if r != self._edit_orig:
                 self.textRectChanged.emit((int(r.left()), int(r.top()), int(r.right()), int(r.bottom())))
+            return
+        if self._layer_drag is not None:
+            pos = self.mapToScene(e.position().toPoint())
+            d = pos - self._layer_drag
+            self._layer_drag = None
+            self.layerDragged.emit("end", round(d.x()), round(d.y()))
             return
         if self._press_pos is None:
             return super().mouseReleaseEvent(e)
