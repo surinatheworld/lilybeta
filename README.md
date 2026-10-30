@@ -192,7 +192,8 @@ vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. C
    - **Dáng khối chữ** (khi căn giữa, tự xuống dòng):
      - *Bo tròn* (mặc định): chữ dàn theo đúng hình lòng bóng – mỗi dòng rộng bằng bóng ở độ cao của nó, dòng giữa
        dài, trên/dưới ngắn (9 từ trong bóng tròn → 1·2·3·2·1), khối chữ đặt chính giữa thân bóng (không bị đuôi bóng
-       kéo lệch). Vì tận dụng cả bóng nên chữ thường to hơn kiểu khung chữ nhật.
+       kéo lệch), căn giữa theo nét chữ thật – khoảng hở tới mép bóng bằng nhau 4 phía. Chữ chỉ phủ khoảng
+       70% bề ngang lòng bóng, chừa lề xung quanh.
      - *Đều dòng*: các dòng dài gần bằng nhau – tự dùng cho khung ô vuông (bộ font Gái Băng).
      - *Lấp đầy dòng*: cách cũ, mỗi dòng nhét nhiều chữ nhất.
      Không cắt đôi từ ghép thông dụng ("cảm ơn", "trân trọng", "kiểm soát"…), ưu tiên xuống dòng sau dấu phẩy/chấm;
