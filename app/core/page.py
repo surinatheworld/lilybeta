@@ -49,12 +49,13 @@ class Region:
 
     @property
     def text_rect(self) -> Box:
-        """Khung đặt chữ: khung người dùng tự chỉnh; không thì dàn theo dáng lòng bóng (chính giữa bóng, dòng giữa
-        dài, trên/dưới ngắn); không được nữa thì khung chữ nhật cho cỡ chữ lớn nhất."""
+        """Khung đặt chữ: khung người dùng tự chỉnh; không thì dàn theo dáng lòng bóng (đặt đúng chỗ chữ gốc rồi nở
+        dần ra, dòng giữa dài, trên/dưới ngắn); không được nữa thì khung chữ nhật cho cỡ chữ lớn nhất."""
         if self.manual_rect:
             return self.manual_rect
         if self.text_shape and self.text.strip():
-            rect = place_in_shape(self.text, self.effective_style, self.text_shape)
+            x1, y1, x2, y2 = self.box
+            rect = place_in_shape(self.text, self.effective_style, self.text_shape, ((x1 + x2) / 2, (y1 + y2) / 2))
             if rect:
                 return rect
         return best_rect(self.text, self.effective_style, self.text_rects) if self.text_rects else self.box
