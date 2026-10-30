@@ -30,6 +30,15 @@ def skip_hard(img: np.ndarray, mask: np.ndarray) -> None:
 
 skip_hard.skip = True
 
+
+def easy_only(img: np.ndarray, mask: np.ndarray) -> None:
+    """Luật "chỉ xoá chỗ dễ": chỉ bóng thoại / hộp sáng khép kín và nền trơn một màu; nền chuyển màu, tranh, lưới chấm
+    giữ nguyên (chữ dịch đặt đè lên bản gốc, đánh dấu cần redraw)."""
+
+
+easy_only.skip = True
+easy_only.easy_only = True
+
 SMALL_SFX_FRAC = 0.004  # SFX có khung ≤ 0,4% diện tích trang coi là nhỏ: AI trên máy vẽ lại được
 
 
@@ -104,8 +113,9 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
             _remove_leftover_strokes(img[ey1:ey2, ex1:ex2], (x1 - ex1, y1 - ey1, x2 - ex1, y2 - ey1), near=near,
                                      limit=(0, 0, ex2 - ex1, ey2 - ey1))
         return None
-    # Nền chuyển màu mượt (gradient): khớp mặt cong bậc 2 theo viền rồi tô lại.
-    if len(border) >= 30:
+    # Nền chuyển màu mượt (gradient): khớp mặt cong bậc 2 theo viền rồi tô lại. Chế độ "chỉ chỗ dễ" (easy_only)
+    # không vẽ lại nền kiểu này: chỉ bóng thoại và nền trơn một màu.
+    if len(border) >= 30 and not getattr(inpainter, "easy_only", False):
         ys, xs = np.nonzero(ring)
         coef, fitted = _fit_surface(xs, ys, border.astype(np.float32))
         if np.abs(fitted - border).mean() < 6:
