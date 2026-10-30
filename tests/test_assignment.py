@@ -16,6 +16,14 @@ class ReadingOrderTests(unittest.TestCase):
         self.assertEqual(sort_reading_order([left, below, right]), [right, left, below])
         self.assertEqual(sort_reading_order([left, below, right], False), [left, right, below])
 
+    def test_staggered_boxes_far_apart_are_separate_beats(self):
+        # 18.1 trang 3: bóng nhỏ "Dạ…" (phải, cao hơn) và bóng "Cháu cũng…" (trái, thấp hơn) cách nhau ~200px, giữa có
+        # SFX: đọc từ trên xuống như hai nhịp, không gộp hàng (gộp làm lệch ghép thoại cả trang).
+        small_right = TextBox(374, 423, 392, 488, 1)
+        far_left = TextBox(101, 458, 176, 573, 1)
+        self.assertEqual(sort_reading_order([far_left, small_right]), [small_right, far_left])
+        self.assertEqual(sort_reading_order([far_left, small_right], False), [small_right, far_left])
+
     def test_separate_rows_and_separate_panels_keep_their_order(self):
         top = TextBox(80, 70, 120, 120, 1)
         bottom = TextBox(260, 250, 300, 300, 1)
