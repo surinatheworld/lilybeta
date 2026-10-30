@@ -80,8 +80,10 @@ class CanvasImageItem(QGraphicsItem):
         self.update(dirty)
 
     def paint(self, painter, option, widget=None):
-        exposed = option.exposedRect.toAlignedRect().intersected(self.image.rect())
-        painter.drawImage(QRectF(exposed), self.image, QRectF(exposed))
+        # Keep one source rectangle and transform for every repaint. Cropping to
+        # exposedRect changes interpolation at fractional zoom/DPI and leaves
+        # dark seams behind moving overlays. Qt clips drawing to the dirty area.
+        painter.drawImage(QPointF(0, 0), self.image)
 
 
 class ImageView(QGraphicsView):
@@ -153,8 +155,7 @@ class ImageView(QGraphicsView):
         self._ant_timer.setInterval(120)
         # Con trỏ cọ (vòng tròn đúng cỡ) và nét Spot Healing đang tô
         self._brush_cursor = QGraphicsEllipseItem()
-        bp = QPen(QColor(255, 255, 255, 200), 1)
-        bp.setCosmetic(True)
+        bp = QPen(QColor(255, 255, 255, 200), 0)
         self._brush_cursor.setPen(bp)
         self._brush_cursor.setZValue(30)
         self._brush_cursor.hide()
@@ -437,8 +438,22 @@ class ImageView(QGraphicsView):
         self.zoom_by(z / max(self.zoom, 1e-6))
 
     def set_tool(self, tool: str) -> None:
+        if self._stroking:
+            self._finish_stroke()
         self.tool = tool
+        # Moving brush outlines expose a Qt raster repaint seam at fractional
+        # zoom / Windows display scaling. Repaint the visible canvas consistently
+        # for paint tools; the owned image buffer still receives small patches.
+        self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate if tool in PAINT_TOOLS
+                                   else QGraphicsView.MinimalViewportUpdate)
         self._update_cursor()
+
+    def _finish_stroke(self) -> None:
+        if not self._stroking:
+            return
+        self._stroking = False
+        self._heal_item.setPath(QPainterPath())
+        self.strokeEnded.emit()
 
     def set_brush_size(self, size: float) -> None:
         self.brush_size = size
@@ -460,9 +475,10 @@ class ImageView(QGraphicsView):
 
     def _update_brush_cursor(self, pos: QPointF | None = None) -> None:
         if pos is None:
-            pos = self._brush_cursor.rect().center()
+            pos = self._brush_cursor.pos()
         r = self.brush_size / 2
-        self._brush_cursor.setRect(QRectF(pos.x() - r, pos.y() - r, 2 * r, 2 * r))
+        self._brush_cursor.setRect(QRectF(-r, -r, 2 * r, 2 * r))
+        self._brush_cursor.setPos(pos)
 
     def set_selection_outline(self, contours) -> None:
         path = QPainterPath()
@@ -616,6 +632,13 @@ class ImageView(QGraphicsView):
         self._brush_cursor.hide()
         super().leaveEvent(e)
 
+    def focusOutEvent(self, e):
+        self._finish_stroke()
+        self._brush_cursor.hide()
+        self._space = False
+        self._pan_from = None
+        super().focusOutEvent(e)
+
     # --- chuột --------------------------------------------------------------
     def wheelEvent(self, e):
         # Lăn chuột = cuộn trang (tiện cho truyện dài); Ctrl/Alt + lăn = phóng to/thu nhỏ.
@@ -701,6 +724,11 @@ class ImageView(QGraphicsView):
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(d.y()))
             return
         if self._stroking:
+            if not e.buttons() & Qt.LeftButton:
+                # Recover when a release was delivered outside the viewport or
+                # lost during a focus change. Hover must never modify pixels.
+                self._finish_stroke()
+                return
             if self.tool == TOOL_HEAL:
                 path = self._heal_item.path()
                 path.lineTo(pos)
@@ -810,9 +838,8 @@ class ImageView(QGraphicsView):
             self._update_cursor()
             return
         if self._stroking:
-            self._stroking = False
-            self._heal_item.setPath(QPainterPath())
-            self.strokeEnded.emit()
+            if e.button() == Qt.LeftButton:
+                self._finish_stroke()
             return
         if self._edit_mode is not None:
             mode, self._edit_mode = self._edit_mode, None
