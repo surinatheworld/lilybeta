@@ -5,7 +5,7 @@ import json
 import os
 from dataclasses import asdict
 
-from PySide6.QtCore import QSettings, QSize, Qt, QThread, Signal
+from PySide6.QtCore import QSettings, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -37,13 +37,14 @@ from PySide6.QtWidgets import (
 from ..core import cloud, lama, secrets
 from ..core.detect import TextDetector
 from ..core.assign import apply_plan, assign_lines
+from ..core import project
 from ..core.chapter import Chapter
-from ..core.document import Stroke, doc_for
+from ..core.document import Stroke, affine, doc_for
 from ..core.clean import skip_hard, small_only
 from ..core.docs import load_lines, load_pages, page_number
 from ..core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available
 from ..core.page import Page, Region
-from ..core.typeset import TextStyle, missing_chars
+from ..core.typeset import TextStyle, layout, make_font, missing_chars
 from ..core import manual_ai
 from .ai_bridge import AiBridgeDialog
 from .api_dialog import PROVIDERS, ApiDialog, model_for
@@ -69,6 +70,8 @@ from .theme import glyph_icon
 from .text_panel import TextPanel
 
 IMAGE_FILTER = "Ảnh (*.png *.jpg *.jpeg *.webp *.bmp)"
+OPEN_FILTER = ("Ảnh, dự án Lilyzono, PSD (*.png *.jpg *.jpeg *.webp *.bmp *.lzp *.psd);;Ảnh (*.png *.jpg *.jpeg *.webp *.bmp)"
+               ";;Dự án Lilyzono (*.lzp);;Photoshop (*.psd)")
 DOCS_FILTER = "Bản dịch (*.docx *.txt)"
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 DOCS_EXTS = (".docx", ".txt")
@@ -221,6 +224,7 @@ class MainWindow(QMainWindow):
         self._loading_ui = False
 
         self.doc = None  # tài liệu nhiều layer của trang đang mở
+        self.project_path: str | None = None  # dự án .lzp đang mở / vừa lưu
         self.stroke: Stroke | None = None
         self.clone_src: tuple[float, float] | None = None
         self.clone_offset: tuple[int, int] | None = None
@@ -241,6 +245,15 @@ class MainWindow(QMainWindow):
         self.view.textBoxDrawn.connect(self._text_box_drawn)
         self.view.zoomChanged.connect(lambda z: self.lbl_zoom.setText(f"{z * 100:.0f}%"))
         self.view.cursorMoved.connect(lambda x, y: self.lbl_pos.setText(f"X {x}  Y {y}"))
+        self.view.regionDoubleClicked.connect(self._region_double_clicked)
+        self.view.textRotated.connect(self._text_rotated)
+        self.view.inlineTextChanged.connect(self._inline_text_changed)
+        self.view.inlineEditFinished.connect(self._inline_edit_finished)
+        self.view.layerDragged.connect(self._layer_dragged)
+        self.view.transformChanged.connect(self._transform_changed)
+        self.view.transformDone.connect(self._transform_done)
+        self._move = None  # (layer, ảnh gốc, vùng chọn gốc) khi đang kéo layer bằng Move
+        self._tf = None  # (layer, ảnh gốc, khung gốc, vùng chọn gốc) khi đang Free Transform
         self.setCentralWidget(self.view)
 
         lily, textp = self._build_panel()
@@ -322,14 +335,16 @@ class MainWindow(QMainWindow):
         mb = self.menuBar()
         A = self._action
         m = mb.addMenu("&Tệp")
-        A(m, "Mở ảnh…", self.open_image, "Ctrl+O")
+        A(m, "Mở… (ảnh / dự án .lzp / PSD)", self.open_image, "Ctrl+O")
         A(m, "Mở chương (thư mục ảnh)…", self.open_chapter, "Ctrl+Shift+O")
         A(m, "Mở bản dịch (.docx / .txt)…", self.open_docs, "Ctrl+Alt+D")
         A(m, "Upload bản redraw…", self.open_redrawn, "Ctrl+Shift+U",
           tip="Ảnh đã xoá chữ/redraw sẵn thành layer Redraw (trên raw, dưới chữ)")
         m.addSeparator()
-        A(m, "Lưu PSD…", self.export_psd_page, "Ctrl+S")
-        A(m, "Xuất JPEG…", self.export_image, ["Ctrl+Alt+Shift+W", "Ctrl+Shift+S"])
+        A(m, "Lưu dự án", self.save_project, "Ctrl+S", tip="Lưu .lzp để mở lại làm tiếp (giữ mọi layer, khung chữ)")
+        A(m, "Lưu dự án thành…", lambda: self.save_project(ask=True), "Ctrl+Shift+S")
+        A(m, "Lưu PSD…", self.export_psd_page, "Ctrl+Alt+S")
+        A(m, "Xuất JPEG…", self.export_image, "Ctrl+Alt+Shift+W")
         self.act_export_all = A(m, "Xuất cả chương (PSD / JPEG)…", self.export_psd_chapter)
         m.addSeparator()
         A(m, "Thoát", self.close, "Ctrl+Q")
@@ -344,6 +359,7 @@ class MainWindow(QMainWindow):
         A(m, "Tô màu trước", lambda: self.fill_color(True), "Alt+Backspace")
         A(m, "Tô màu nền", lambda: self.fill_color(False), "Ctrl+Backspace")
         A(m, "Xoá (Delete)", self.delete_key, "Delete")
+        A(m, "Free Transform", self.free_transform, "Ctrl+T")
         m.addSeparator()
         A(m, "API key AI (Gemini / OpenAI)…", self.open_api_dialog)
 
@@ -508,6 +524,9 @@ class MainWindow(QMainWindow):
             tool = TOOL_MOVE
         self.view.set_tool(tool)
         self.tool_actions[tool].setChecked(True)
+        if tool == TOOL_TEXT and self.region is not None and self.region.cleaned and not self.view.editing_text \
+                and len(self.selection) == 1:
+            QTimer.singleShot(0, self._inline_edit)  # bấm T khi đang chọn một bóng: gõ ngay trong bóng đó
         self.settings.setValue("tool", tool)
         self.opt_stack.setCurrentIndex(self._opt_pages[tool])
         glyph = next(g for t, g, _, _ in TOOLS if t == tool)
@@ -550,8 +569,10 @@ class MainWindow(QMainWindow):
             "Shift+F5\tTô vùng chọn (có Content-Aware)", "Delete\tXoá điểm trong vùng chọn (không có vùng chọn: xoá khung)",
             "Alt+Backspace / Ctrl+Backspace\tTô màu trước / màu nền", "Ctrl+Shift+N / Ctrl+J / Ctrl+E\tLayer mới / nhân đôi / gộp",
             "Ctrl+] / Ctrl+[\tĐưa layer lên / xuống", "F5\tNhận diện chữ", "Ctrl+Enter\tXử lý khung đang chọn",
-            "Tab\tKhung tiếp theo", "Ctrl+Shift+A\tChọn mọi khung có bản dịch", "Ctrl+S\tLưu PSD",
-            "Ctrl+Alt+Shift+W\tXuất JPEG"]
+            "Tab\tKhung tiếp theo", "Ctrl+Shift+A\tChọn mọi khung có bản dịch",
+            "Ctrl+T (Enter / Esc)\tFree Transform (áp dụng / huỷ)", "Bấm đúp khung chữ\tGõ chữ ngay trên ảnh",
+            "Ctrl+O\tMở ảnh / dự án / PSD", "Ctrl+S / Ctrl+Shift+S\tLưu dự án / lưu thành…",
+            "Ctrl+Alt+S\tLưu PSD", "Ctrl+Alt+Shift+W\tXuất JPEG"]
         QMessageBox.information(self, "Phím tắt", "\n".join(rows))
 
     def _build_panel(self) -> tuple[QWidget, QWidget]:
@@ -658,6 +679,45 @@ class MainWindow(QMainWindow):
         srow.addWidget(self.btn_stroke)
         srow.addWidget(self.stroke_box, 1)
         fl.addRow("Viền (Stroke)", srow)
+        # Bóng đổ (Drop Shadow)
+        self.chk_shadow = QCheckBox("Bật")
+        self.chk_shadow.toggled.connect(self._style_changed)
+        self.btn_shadow = ColorButton("#000000")
+        self.btn_shadow.changed.connect(self._style_changed)
+        self.shadow_opacity = QDoubleSpinBox()
+        self.shadow_opacity.setRange(0, 100)
+        self.shadow_opacity.setDecimals(0)
+        self.shadow_opacity.setSuffix(" %")
+        self.shadow_opacity.setValue(75)
+        shrow = QHBoxLayout()
+        shrow.addWidget(self.chk_shadow)
+        shrow.addWidget(self.btn_shadow)
+        shrow.addWidget(self.shadow_opacity, 1)
+        fl.addRow("Bóng đổ", shrow)
+        self.shadow_angle = QDoubleSpinBox()
+        self.shadow_angle.setRange(-180, 180)
+        self.shadow_angle.setDecimals(0)
+        self.shadow_angle.setSuffix("°")
+        self.shadow_angle.setValue(120)
+        self.shadow_dist = QDoubleSpinBox()
+        self.shadow_dist.setRange(0, 300)
+        self.shadow_dist.setDecimals(0)
+        self.shadow_dist.setSuffix(" px")
+        self.shadow_dist.setValue(5)
+        self.shadow_size = QDoubleSpinBox()
+        self.shadow_size.setRange(0, 250)
+        self.shadow_size.setDecimals(0)
+        self.shadow_size.setSuffix(" px")
+        self.shadow_size.setValue(5)
+        for w, tip in ((self.shadow_opacity, "Opacity của bóng"), (self.shadow_angle, "Góc ánh sáng (Angle)"),
+                       (self.shadow_dist, "Khoảng cách (Distance)"), (self.shadow_size, "Độ nhoè (Size)")):
+            w.setToolTip(tip)
+            w.valueChanged.connect(self._style_changed)
+        sh2 = QHBoxLayout()
+        sh2.addWidget(self.shadow_angle)
+        sh2.addWidget(self.shadow_dist)
+        sh2.addWidget(self.shadow_size)
+        fl.addRow("Góc · cách · nhoè", sh2)
         self.fav_box = QComboBox()
         self.fav_box.setToolTip("Font yêu thích: chọn để dùng ngay (áp cho mọi vùng đang chọn)")
         self.fav_box.activated.connect(self._favorite_picked)
@@ -732,6 +792,12 @@ class MainWindow(QMainWindow):
             stroke_color=self.btn_stroke.color,
             stroke_width=self.stroke_box.value(),
             rotation=self.rotate_box.value(),
+            shadow=self.chk_shadow.isChecked(),
+            shadow_color=self.btn_shadow.color,
+            shadow_opacity=self.shadow_opacity.value(),
+            shadow_angle=self.shadow_angle.value(),
+            shadow_distance=self.shadow_dist.value(),
+            shadow_size=self.shadow_size.value(),
         )
 
     def _apply_style_to_ui(self, s: TextStyle):
@@ -740,6 +806,12 @@ class MainWindow(QMainWindow):
         self.btn_stroke.set_color(s.stroke_color)
         self.stroke_box.setValue(s.stroke_width)
         self.rotate_box.setValue(s.rotation)
+        self.chk_shadow.setChecked(s.shadow)
+        self.btn_shadow.set_color(s.shadow_color)
+        self.shadow_opacity.setValue(s.shadow_opacity)
+        self.shadow_angle.setValue(s.shadow_angle)
+        self.shadow_dist.setValue(s.shadow_distance)
+        self.shadow_size.setValue(s.shadow_size)
         self._loading_ui = False
         self._update_star()
 
@@ -994,11 +1066,38 @@ class MainWindow(QMainWindow):
 
     # --- mở file -------------------------------------------------------------
     def open_image(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Mở ảnh raw", self.settings.value("dir/image", ""), IMAGE_FILTER)
+        path, _ = QFileDialog.getOpenFileName(self, "Mở", self.settings.value("dir/image", ""), OPEN_FILTER)
         if path:
             self.load_image(path)
 
+    def _confirm_discard(self) -> bool:
+        """Còn thay đổi chưa lưu: hỏi lưu dự án trước (như Photoshop). False = huỷ thao tác."""
+        pages = list(self.chapter.pages.values()) if self.chapter else ([self.page] if self.page else [])
+        if not any(getattr(pg, "doc", None) is not None and pg.doc.dirty for pg in pages):
+            return True
+        btn = QMessageBox.question(self, "Lilyzono", "Lưu thay đổi vào dự án trước khi đóng?",
+                                   QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
+        if btn == QMessageBox.Cancel:
+            return False
+        return self.save_project() if btn == QMessageBox.Save else True
+
+    def closeEvent(self, e):
+        if self._confirm_discard():
+            e.accept()
+        else:
+            e.ignore()
+
     def load_image(self, path: str):
+        ext = os.path.splitext(path)[1].lower()
+        if not self._confirm_discard():
+            return
+        if ext == ".lzp":
+            self.open_project(path)
+            return
+        if ext == ".psd":
+            self.open_psd_file(path)
+            return
+        self.project_path = None
         try:
             page = Page(path)
         except Exception as e:  # noqa: BLE001
@@ -1011,10 +1110,9 @@ class MainWindow(QMainWindow):
 
     def _show_page(self, page: Page):
         self.page = page
-        name = os.path.basename(page.path)
-        self.setWindowTitle(f"Lilyzono – {name}" + (f" ({os.path.basename(self.chapter.folder)})" if self.chapter else ""))
         self.selected, self.selection = -1, []
         self.doc = doc_for(page)
+        self._update_title()
         self.view.set_image(self.doc.render(), fit=True)
         w, h = page.size
         self.lbl_size.setText(f"{w} × {h} px")
@@ -1034,15 +1132,19 @@ class MainWindow(QMainWindow):
         if folder:
             self.load_chapter(folder)
 
-    def load_chapter(self, folder: str):
-        try:
-            chapter = Chapter(folder)
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.warning(self, "Lỗi", str(e))
-            return
+    def load_chapter(self, folder: str, chapter: Chapter | None = None):
+        if chapter is None:
+            if not self._confirm_discard():
+                return
+            self.project_path = None
+            try:
+                chapter = Chapter(folder)
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.warning(self, "Lỗi", str(e))
+                return
         old = self.chapter
         self.chapter = chapter
-        if old and old.translations:
+        if old and old.translations and not chapter.translations:
             chapter.translations = old.translations
         self.settings.setValue("dir/image", folder)
         self.page_list.blockSignals(True)
@@ -1159,7 +1261,7 @@ class MainWindow(QMainWindow):
             ext = os.path.splitext(path)[1].lower()
             if os.path.isdir(path):
                 self.load_chapter(path)
-            elif ext in IMAGE_EXTS:
+            elif ext in IMAGE_EXTS + (".lzp", ".psd"):
                 self.load_image(path)
             elif ext in DOCS_EXTS:
                 self.load_docs(path)
@@ -1230,6 +1332,8 @@ class MainWindow(QMainWindow):
             self.select_region(idx, list(range(a, b + 1)))
         else:
             self.select_region(idx)
+            if self.view.tool == TOOL_TEXT:
+                self._inline_edit()
 
     def select_translated(self):
         idx = [i for i, r in enumerate(self.page.regions if self.page else []) if r.text.strip()]
@@ -1502,6 +1606,95 @@ class MainWindow(QMainWindow):
         self.process_selected()
 
     # --- hiển thị & xuất -----------------------------------------------------
+    # --- dự án (.lzp) / PSD -------------------------------------------------------------
+    def _update_title(self):
+        if self.page is None:
+            return
+        name = os.path.basename(self.project_path) if self.project_path else os.path.basename(self.page.path)
+        where = f" ({os.path.basename(self.chapter.folder)})" if self.chapter and not self.project_path else ""
+        dirty = "*" if self.doc is not None and self.doc.dirty else ""
+        self.setWindowTitle(f"Lilyzono – {name}{dirty}{where}")
+
+    def save_project(self, ask: bool = False) -> bool:
+        if self.page is None:
+            return False
+        path = self.project_path
+        if ask or not path:
+            if self.chapter:
+                base = os.path.join(os.path.dirname(self.chapter.folder), os.path.basename(self.chapter.folder))
+            else:
+                base = os.path.splitext(self.page.path)[0]
+            path, _ = QFileDialog.getSaveFileName(self, "Lưu dự án", path or base + project.EXT,
+                                                  "Dự án Lilyzono (*.lzp)")
+            if not path:
+                return False
+        pages = [self.chapter.pages[p] for p in self.chapter.paths if p in self.chapter.pages] if self.chapter \
+            else [self.page]
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            project.save(path, pages, self.chapter, self.direction.currentIndex())
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Lỗi", f"Không lưu được dự án:\n{e}")
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.project_path = path
+        self._update_title()
+        self.statusBar().showMessage(f"Đã lưu dự án: {path}", 6000)
+        return True
+
+    def open_project(self, path: str):
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            data = project.load(path)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Lỗi", f"Không mở được dự án:\n{e}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.settings.setValue("dir/image", os.path.dirname(path))
+        self.direction.setCurrentIndex(data["direction"])
+        self.project_path = path
+        pages = data["pages"]
+        if data["chapter_folder"]:
+            ch = Chapter(data["chapter_folder"])
+            by_name = {os.path.basename(pg.path): pg for pg in pages}
+            for pth in ch.paths:
+                pg = by_name.get(os.path.basename(pth))
+                if pg is not None:
+                    pg.path = pth
+                    ch.pages[pth] = pg
+            ch.translations = data["translations"]
+            ch.filled = {pth for pth in ch.paths if os.path.basename(pth) in data["filled"]}
+            self.chapter = None
+            self.load_chapter(ch.folder, ch)
+        else:
+            self.chapter = None
+            self.page_dock.hide()
+            self._show_page(pages[0])
+        self.statusBar().showMessage(f"Đã mở dự án: {path}", 6000)
+
+    def open_psd_file(self, path: str):
+        from ..core.psd_import import open_psd
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            page, notes = open_psd(path)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Lỗi", f"Không mở được PSD:\n{e}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.project_path = None
+        self.chapter = None
+        self.page_dock.hide()
+        self.settings.setValue("dir/image", os.path.dirname(path))
+        self._show_page(page)
+        msg = f"Đã mở PSD: {len(page.regions)} layer chữ, {len(page.doc.layers)} layer."
+        if notes:
+            QMessageBox.information(self, "Mở PSD", "\n".join(notes))
+        self.statusBar().showMessage(msg, 6000)
+
     def toggle_boxes(self):
         self.view.show_boxes = self.act_boxes.isChecked()
         self.opt_boxes.blockSignals(True)
@@ -1520,6 +1713,7 @@ class MainWindow(QMainWindow):
         self.layers_panel.set_doc(self.doc)
         self.history_panel.set_doc(self.doc, "Mở " + os.path.basename(self.page.path))
         self.view.set_selection_outline(self.doc.selection_outline())
+        self._update_title()
 
     # --- hoàn tác ----------------------------------------------------------------------
     def undo(self):
@@ -1538,8 +1732,12 @@ class MainWindow(QMainWindow):
     def _after_history(self):
         n = len(self.page.regions)
         sel = [i for i in self.selection if i < n]
+        active = self.doc.active  # layer đang chọn theo trạng thái vừa khôi phục, giữ nguyên
         self.refresh()
         self.select_region(self.selected if self.selected < n else (sel[0] if sel else -1), sel or None)
+        if active in self.doc.layers and self.doc.active is not active:
+            self.doc.active = active
+            self.layers_panel.set_doc(self.doc)
 
     # --- vùng chọn ---------------------------------------------------------------------
     def _selection_made(self, kind: str, data, mode: str):
@@ -1749,12 +1947,35 @@ class MainWindow(QMainWindow):
         from ..core.clean import text_area_candidates
 
         x, y = int(x), int(y)
+        idx = self._region_at_point(x, y)
+        if idx is not None:  # bấm trong bóng thoại đã có khung chữ: sửa chữ của bóng đó
+            self.select_region(idx)
+            self._inline_edit()
+            return
         cands = text_area_candidates(self.page.working, (x - 3, y - 3, x + 3, y + 3))
         box = max(cands, key=lambda c: (c[2] - c[0]) * (c[3] - c[1]))
+        inside = [i for i, r in enumerate(self.page.regions)
+                  if box[0] <= (r.box[0] + r.box[2]) / 2 <= box[2] and box[1] <= (r.box[1] + r.box[3]) / 2 <= box[3]]
+        if inside and (box[2] - box[0]) * (box[3] - box[1]) >= 900:
+            self.select_region(inside[0])  # cùng lòng bóng với một khung chữ có sẵn
+            self._inline_edit()
+            return
         if (box[2] - box[0]) * (box[3] - box[1]) < 900:  # không phải bóng thoại: khung mặc định quanh điểm bấm
             w, h = self.page.size
             box = (max(0, x - 110), max(0, y - 45), min(w, x + 110), min(h, y + 45))
         self._text_box_drawn(box)
+
+    def _region_at_point(self, x: int, y: int, pad: int = 6) -> int | None:
+        """Khung chữ chứa điểm (x, y): khung đặt chữ (đã xử lý) hoặc khung chữ gốc."""
+        best = None
+        for i, r in enumerate(self.page.regions):
+            for rect in ([r.text_rect] if r.cleaned else []) + [r.box]:
+                x1, y1, x2, y2 = rect
+                if x1 - pad <= x <= x2 + pad and y1 - pad <= y <= y2 + pad:
+                    area = (x2 - x1) * (y2 - y1)
+                    if best is None or area < best[0]:
+                        best = (area, i)
+        return best[1] if best else None
 
     def _text_box_drawn(self, box):
         if self.page is None:
@@ -1768,9 +1989,139 @@ class MainWindow(QMainWindow):
             r.text_rects = [tuple(box)]
         self.refresh()
         self.select_region(len(self.page.regions) - 1)
-        self.d_lily.raise_()
-        self.txt.setFocus()
-        self.statusBar().showMessage("Gõ bản dịch vào ô nội dung (panel Lilyzono) – chữ hiện ngay trên ảnh.", 5000)
+        self._inline_edit()
+
+    # --- gõ chữ trực tiếp / xoay chữ -----------------------------------------------------
+    def _region_double_clicked(self, idx: int):
+        self.select_region(idx)
+        self._inline_edit()
+
+    def _inline_edit(self):
+        """Gõ chữ ngay trên ảnh (như công cụ Type của Photoshop): Esc hoặc Ctrl+Enter / bấm ra ngoài để xong."""
+        r = self.region
+        if r is None or self.doc is None:
+            return
+        if not r.cleaned:  # bóng còn chữ gốc: xoá chữ trước rồi mới gõ
+            r.style = self.current_style()
+            self._clean_then(r, self._inline_edit)
+            return
+        st = r.effective_style if r.text.strip() else self.current_style()
+        rect, size = self._inline_geometry(r, st)
+        self.doc.editing_uid = r.uid
+        self.view.set_image(self.doc.render())
+        self.view.begin_text_edit(rect, r.text, make_font(st, size), size, st.color, st.align)
+        self.statusBar().showMessage("Đang gõ chữ trên ảnh – Esc hoặc Ctrl+Enter để xong.", 5000)
+
+    @staticmethod
+    def _inline_geometry(r, st):
+        """Khung + cỡ chữ cho ô gõ trên ảnh: khung đặt chữ thật (bóng trống: khung lớn nhất trong lòng bóng)."""
+        if r.text.strip() or r.manual_rect:
+            rect = r.text_rect
+        else:
+            rect = max(r.text_rects or [r.box], key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+        x1, y1, x2, y2 = rect
+        m, _ = layout(r.text or "Ag", st, x2 - x1, y2 - y1)
+        return rect, m.size
+
+    def _inline_text_changed(self, text: str):
+        if self.txt.toPlainText() != text:
+            self.txt.setPlainText(text)  # → _text_edited: ghi chữ vào vùng (có hoàn tác)
+        r = self.region
+        if r is not None and self.view.editing_text:
+            rect, size = self._inline_geometry(r, r.effective_style)
+            self.view.update_text_edit(rect, size)
+
+    def _inline_edit_finished(self):
+        if self.doc is not None:
+            self.doc.editing_uid = None
+        self.refresh()
+
+    def _text_rotated(self, deg: float):
+        r = self.region
+        if r is None or not r.done:
+            return
+        with self.doc.step("Xoay chữ"):
+            r.style.rotation = ((r.style.rotation + deg + 180) % 360) - 180
+        self._loading_ui = True
+        self.rotate_box.setValue(r.style.rotation)
+        self._loading_ui = False
+        self.refresh()
+
+    # --- Move / Free Transform layer ảnh -------------------------------------------------
+    def _pixel_layer_for_transform(self):
+        L = self.doc.active if self.doc is not None else None
+        if L is None:
+            return None
+        if L.kind == "text":
+            self.statusBar().showMessage("Layer chữ: kéo khung tím để di chuyển, kéo góc để đổi cỡ khung, kéo ngay ngoài "
+                                         "góc để xoay.", 6000)
+            return None
+        if L.kind != "pixel":
+            self.statusBar().showMessage(f"Layer “{L.name}” không di chuyển / biến đổi được: nhân đôi thành layer ảnh "
+                                         "(Ctrl+J) hoặc tạo layer mới.", 6000)
+            return None
+        return L
+
+    def _layer_dragged(self, phase: str, dx: float, dy: float):
+        if phase == "begin":
+            L = self._pixel_layer_for_transform()
+            self._move = (L, L.rgba.copy(), self.doc.selection) if L is not None else None
+            if self._move:
+                self.doc.begin("Move", [L])
+            return
+        if self._move is None:
+            return
+        L, src, sel = self._move
+        m = affine((0, 0, 1, 1), (dx, dy, dx + 1, dy + 1))
+        new_sel = self.doc.transform_pixels(L, src, sel, m, smooth=False)
+        if sel is not None:
+            self.doc.selection = new_sel
+        self.view.set_image(self.doc.render())
+        self.view.set_selection_outline(self.doc.selection_outline())
+        if phase == "end":
+            self._move = None
+            self.doc.end()
+            self.refresh()
+
+    def free_transform(self):
+        if self.doc is None or self.view.transforming:
+            return
+        L = self._pixel_layer_for_transform()
+        if L is None:
+            return
+        box = self.doc.content_bbox(L)
+        if box is None:
+            self.statusBar().showMessage("Layer đang trống – không có gì để biến đổi.", 4000)
+            return
+        self._tf = (L, L.rgba.copy(), box, self.doc.selection)
+        self.doc.begin("Free Transform", [L])
+        self.view.begin_transform(box)
+        self.view.setFocus()
+        self.statusBar().showMessage("Free Transform: kéo tay nắm để co giãn (góc giữ tỉ lệ, Shift: tự do), kéo ngoài "
+                                     "khung để xoay (Shift: 15°) · Enter: áp dụng · Esc: huỷ.")
+
+    def _transform_changed(self, rect, angle: float):
+        if self._tf is None:
+            return
+        L, src, box, sel = self._tf
+        new_sel = self.doc.transform_pixels(L, src, sel, affine(box, rect, angle))
+        if sel is not None:
+            self.doc.selection = new_sel
+        self.view.set_image(self.doc.render())
+        self.view.set_selection_outline(self.doc.selection_outline())
+
+    def _transform_done(self, apply: bool):
+        if self._tf is None:
+            return
+        L, src, box, sel = self._tf
+        self._tf = None
+        if not apply:
+            L.rgba[:] = src
+            self.doc.selection = sel
+        self.view.end_transform()
+        self.doc.end()
+        self.refresh()
+        self.statusBar().showMessage("Đã áp dụng Free Transform." if apply else "Đã huỷ Free Transform.", 4000)
 
     # --- layer ---------------------------------------------------------------------------
     def _layer_activated(self, L):

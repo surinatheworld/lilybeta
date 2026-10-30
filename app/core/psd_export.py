@@ -81,6 +81,8 @@ def text_spec(r) -> dict:
         "space_before": st.space_before, "space_after": st.space_after,
         "stroke": st.stroke_width, "stroke_color": st.stroke_color.lstrip("#"),
         "rotation": st.rotation, "cx": (x1 + x2) / 2, "cy": (y1 + y2) / 2, "redraw": r.needs_redraw,
+        "shadow": st.shadow, "shadow_color": st.shadow_color.lstrip("#"), "shadow_opacity": st.shadow_opacity,
+        "shadow_angle": st.shadow_angle, "shadow_distance": st.shadow_distance, "shadow_size": st.shadow_size,
     }
 
 
@@ -170,23 +172,41 @@ try {
     t.width = new UnitValue(L.width + slack, "px");
     t.height = new UnitValue(L.block_height + L.size * 2, "px");
     t.position = [new UnitValue(L.left - slack / 2, "px"), new UnitValue(L.first_baseline - L.ascent, "px")];
-    if (L.stroke > 0) {
+    if (L.stroke > 0 || L.shadow) {
       var d = new ActionDescriptor(), r = new ActionReference();
       r.putProperty(cTID("Prpr"), cTID("Lefx"));
       r.putEnumerated(cTID("Lyr "), cTID("Ordn"), cTID("Trgt"));
       d.putReference(cTID("null"), r);
-      var fx = new ActionDescriptor(), st = new ActionDescriptor(), c = new ActionDescriptor();
+      var fx = new ActionDescriptor();
       fx.putUnitDouble(cTID("Scl "), cTID("#Prc"), 100);
-      st.putBoolean(cTID("enab"), true);
-      st.putEnumerated(cTID("Styl"), cTID("FStl"), cTID("OutF"));
-      st.putEnumerated(cTID("PntT"), cTID("FrFl"), cTID("SClr"));
-      st.putEnumerated(cTID("Md  "), cTID("BlnM"), cTID("Nrml"));
-      st.putUnitDouble(cTID("Opct"), cTID("#Prc"), 100);
-      st.putUnitDouble(cTID("Sz  "), cTID("#Pxl"), L.stroke);
-      var sc = hex(L.stroke_color);
-      c.putDouble(cTID("Rd  "), sc.rgb.red); c.putDouble(cTID("Grn "), sc.rgb.green); c.putDouble(cTID("Bl  "), sc.rgb.blue);
-      st.putObject(cTID("Clr "), cTID("RGBC"), c);
-      fx.putObject(cTID("FrFX"), cTID("FrFX"), st);
+      if (L.stroke > 0) {
+        var st = new ActionDescriptor(), c = new ActionDescriptor();
+        st.putBoolean(cTID("enab"), true);
+        st.putEnumerated(cTID("Styl"), cTID("FStl"), cTID("OutF"));
+        st.putEnumerated(cTID("PntT"), cTID("FrFl"), cTID("SClr"));
+        st.putEnumerated(cTID("Md  "), cTID("BlnM"), cTID("Nrml"));
+        st.putUnitDouble(cTID("Opct"), cTID("#Prc"), 100);
+        st.putUnitDouble(cTID("Sz  "), cTID("#Pxl"), L.stroke);
+        var sc = hex(L.stroke_color);
+        c.putDouble(cTID("Rd  "), sc.rgb.red); c.putDouble(cTID("Grn "), sc.rgb.green); c.putDouble(cTID("Bl  "), sc.rgb.blue);
+        st.putObject(cTID("Clr "), cTID("RGBC"), c);
+        fx.putObject(cTID("FrFX"), cTID("FrFX"), st);
+      }
+      if (L.shadow) {
+        var ds = new ActionDescriptor(), dc = new ActionDescriptor();
+        ds.putBoolean(cTID("enab"), true);
+        ds.putEnumerated(cTID("Md  "), cTID("BlnM"), cTID("Mltp"));
+        var shc = hex(L.shadow_color);
+        dc.putDouble(cTID("Rd  "), shc.rgb.red); dc.putDouble(cTID("Grn "), shc.rgb.green); dc.putDouble(cTID("Bl  "), shc.rgb.blue);
+        ds.putObject(cTID("Clr "), cTID("RGBC"), dc);
+        ds.putUnitDouble(cTID("Opct"), cTID("#Prc"), L.shadow_opacity);
+        ds.putBoolean(cTID("uglg"), false);
+        ds.putUnitDouble(cTID("lagl"), cTID("#Ang"), L.shadow_angle);
+        ds.putUnitDouble(cTID("Dstn"), cTID("#Pxl"), L.shadow_distance);
+        ds.putUnitDouble(cTID("Ckmt"), cTID("#Pxl"), 0);
+        ds.putUnitDouble(cTID("blur"), cTID("#Pxl"), L.shadow_size);
+        fx.putObject(cTID("DrSh"), cTID("DrSh"), ds);
+      }
       d.putObject(cTID("T   "), cTID("Lefx"), fx);
       executeAction(cTID("setd"), d, DialogModes.NO);
     }

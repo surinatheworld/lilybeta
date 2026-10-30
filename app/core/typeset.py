@@ -6,6 +6,7 @@ Các thông số chữ theo kiểu bảng Character / Paragraph của Photoshop.
 from __future__ import annotations
 
 from dataclasses import asdict, astuple, dataclass
+import math
 from functools import lru_cache
 
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -15,6 +16,7 @@ from PySide6.QtGui import (
     QFont,
     QFontDatabase,
     QFontMetricsF,
+    QImage,
     QPainter,
     QPainterPath,
     QPen,
@@ -66,6 +68,13 @@ class TextStyle:
     space_before: float = 0.0
     space_after: float = 0.0
     hyphenate: bool = False  # ngắt từ quá dài kèm dấu gạch nối
+    # --- Hiệu ứng: bóng đổ (Drop Shadow) ---
+    shadow: bool = False
+    shadow_color: str = "#000000"
+    shadow_opacity: float = 75.0  # %
+    shadow_angle: float = 120.0  # độ, hướng ánh sáng như Photoshop (bóng đổ về phía ngược lại)
+    shadow_distance: float = 5.0  # px
+    shadow_size: float = 5.0  # px, độ nhoè
 
     def copy(self) -> "TextStyle":
         return TextStyle(**asdict(self))
@@ -241,6 +250,49 @@ def _line_path(text: str, m: _Metrics, gap: float = 0.0) -> QPainterPath:
     return path
 
 
+def _draw_shadow(p: QPainter, path: QPainterPath, style: TextStyle) -> None:
+    """Bóng đổ: hình chữ (cả viền) làm mờ, lệch theo góc/khoảng cách, nằm dưới chữ."""
+    import cv2
+    import numpy as np
+
+    dev = p.worldTransform().map(path)
+    blur = max(0.0, style.shadow_size)
+    margin = int(style.stroke_width + blur * 2 + 4)
+    br = dev.boundingRect().adjusted(-margin, -margin, margin, margin)
+    x0, y0 = int(math.floor(br.left())), int(math.floor(br.top()))
+    w, h = int(math.ceil(br.width())) + 2, int(math.ceil(br.height())) + 2
+    if w <= 0 or h <= 0 or w * h > 40_000_000:
+        return
+    img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    q = QPainter(img)
+    q.setRenderHint(QPainter.Antialiasing)
+    q.translate(-x0, -y0)
+    if style.stroke_width > 0:
+        pen = QPen(Qt.black, style.stroke_width * 2)
+        pen.setJoinStyle(Qt.RoundJoin)
+        q.strokePath(dev, pen)
+    q.fillPath(dev, QBrush(Qt.black))
+    q.end()
+    arr = np.frombuffer(img.constBits(), np.uint8, img.sizeInBytes()).reshape(h, img.bytesPerLine())[:, :w * 4]
+    alpha = arr.reshape(h, w, 4)[..., 3].astype(np.float32)
+    if blur > 0:
+        alpha = cv2.GaussianBlur(alpha, (0, 0), blur / 2)
+    alpha *= max(0.0, min(100.0, style.shadow_opacity)) / 100
+    c = QColor(style.shadow_color)
+    out = np.empty((h, w, 4), np.uint8)  # BGRA, màu nhân sẵn alpha (Format_ARGB32_Premultiplied)
+    for i, v in enumerate((c.blue(), c.green(), c.red())):
+        out[..., i] = (alpha * v / 255).astype(np.uint8)
+    out[..., 3] = alpha.astype(np.uint8)
+    shadow = QImage(out.data, w, h, 4 * w, QImage.Format_ARGB32_Premultiplied)
+    a = math.radians(style.shadow_angle)
+    dx, dy = -math.cos(a) * style.shadow_distance, math.sin(a) * style.shadow_distance
+    p.save()
+    p.resetTransform()
+    p.drawImage(QPointF(x0 + dx, y0 + dy), shadow)
+    p.restore()
+
+
 def draw_text(p: QPainter, text: str, style: TextStyle, rect: QRectF) -> None:
     """Vẽ chữ trong `rect`: căn giữa theo chiều dọc, căn/dàn đều theo chiều ngang, có viền nếu
     stroke_width > 0, xoay quanh tâm khung nếu style.rotation khác 0."""
@@ -293,6 +345,8 @@ def draw_text(p: QPainter, text: str, style: TextStyle, rect: QRectF) -> None:
         p.translate(c)
         p.rotate(style.rotation)
         p.translate(-c)
+    if style.shadow:
+        _draw_shadow(p, path, style)
     if style.stroke_width > 0:
         pen = QPen(QColor(style.stroke_color), style.stroke_width * 2)
         pen.setJoinStyle(Qt.RoundJoin)

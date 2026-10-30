@@ -23,6 +23,12 @@ def new_uid() -> int:
     return next(_region_ids)
 
 
+def reserve_uids(upto: int) -> None:
+    """Mở lại dự án: uid mới phải lớn hơn mọi uid đã lưu."""
+    global _region_ids
+    _region_ids = itertools.count(max(next(_region_ids), upto + 1))
+
+
 @dataclass
 class Region:
     box: Box

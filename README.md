@@ -38,6 +38,17 @@ Bố cục và thao tác quen thuộc của Photoshop 2023 (giao diện tối), 
 - **Redraw tay**: Brush, Eraser (trên Redraw: trả về raw), Clone Stamp, Spot Healing (tô lên chữ, nhả chuột là AI
   vẽ lại); mọi nét đều bị giới hạn trong vùng chọn nếu có.
 - **Hoàn tác nhiều bước** cho mọi thao tác (gõ chữ, đổi font, nét cọ, xoá chữ, nhận diện…), bảng History như PS.
+- **Chữ**: công cụ **T** – bấm vào bóng thoại là gõ ngay trong bóng (chọn sẵn một bóng rồi bấm T cũng vậy);
+  bóng còn chữ gốc thì tự xoá chữ trước. Esc / Ctrl+Enter / bấm ra ngoài để xong. Bấm đúp vào khung chữ để sửa.
+  Kéo khung tím để di chuyển, kéo góc để đổi cỡ khung, kéo ngay ngoài góc để **xoay** (Shift: bước 15°).
+  Hiệu ứng: **viền (Stroke)** và **bóng đổ (Drop Shadow)** – màu, opacity, góc, khoảng cách, độ nhoè; xuất PSD
+  thành layer effect thật của Photoshop.
+- **Move (V)** kéo layer ảnh (có vùng chọn: chỉ kéo phần trong vùng chọn). **Free Transform (Ctrl+T)**: co giãn
+  (kéo góc giữ tỉ lệ, Shift: tự do), xoay (kéo ngoài khung, Shift: 15°), Enter áp dụng, Esc huỷ.
+- **Dự án (.lzp)**: *Lưu dự án* (Ctrl+S) giữ mọi thứ – layer, khung chữ, kiểu chữ, bản redraw, bản dịch, cả chương –
+  để mở lại làm tiếp (kèm ảnh raw, mở được trên máy khác). Đóng app khi chưa lưu sẽ được hỏi.
+- **Mở PSD** (Ctrl+O): Background thành raw, layer ảnh giữ tên / ẩn hiện / opacity / blend, layer chữ thành khung
+  chữ sửa được (nội dung, font, cỡ, màu, căn lề, xoay, Stroke, Drop Shadow) – sửa tiếp PSD đã type tay.
 
 ## Luồng làm việc: 3 lớp (raw → Redraw → chữ)
 
@@ -51,7 +62,7 @@ Bố cục và thao tác quen thuộc của Photoshop 2023 (giao diện tối), 
    (Ctrl+Enter) – chữ dịch nằm trên, nền gốc giữ nguyên, khung vàng nét đứt = cần redraw.
 4. **Upload bản redraw** (lớp 2): ảnh đã xoá chữ/redraw sẵn (Photoshop, nhờ người khác, AI…) nằm trên raw, dưới lớp
    chữ; chữ đã gõ được giữ và đặt lại lên nền mới. Chế độ chương: chọn thư mục, ghép theo số trang trong tên file.
-5. **Lưu PSD** (Ctrl+S) hoặc **Xuất JPEG** (Ctrl+Alt+Shift+W); cả chương: *Xuất cả chương* → PSD + JPEG / PSD / JPEG.
+5. **Lưu PSD** (Ctrl+Alt+S) hoặc **Xuất JPEG** (Ctrl+Alt+Shift+W); cả chương: *Xuất cả chương* → PSD + JPEG / PSD / JPEG.
    PSD gồm `Background` (raw), `Redraw` (bản redraw + phần tool đã xoá) và mỗi bóng một **lớp chữ thật sửa được**
    (máy có Photoshop; không có thì lớp chữ là ảnh).
 
@@ -122,7 +133,7 @@ vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. C
        Chọn nhiều vùng gần nhau rồi Xử lý → **gom chung 1 lần gọi API**. Tính phí theo nhà cung cấp.
        Gemini cần tài khoản đã bật thanh toán (gói miễn phí không dùng được model sửa ảnh).
        Key được cất trong Windows Credential Manager, không ghi ra file.
-7. **Lưu PSD** (Ctrl+S) hoặc **Xuất JPEG** (Ctrl+Alt+Shift+W).
+7. **Lưu PSD** (Ctrl+Alt+S) hoặc **Xuất JPEG** (Ctrl+Alt+Shift+W).
 
 Vùng đã xử lý vẫn sửa được: chọn lại rồi đổi chữ/font, ảnh cập nhật ngay. Ctrl+Z hoàn tác từng bước; *Hoàn tác vùng* trả lại ảnh gốc
 (hoặc bản redraw đã nạp) ở vùng đó.
@@ -159,7 +170,7 @@ Chọn **1** vùng đã xử lý → hiện khung tím quanh chữ:
 |---|---|
 | V / M / L / W | Move / Rectangular Marquee / Lasso / Magic Wand |
 | J / B / S / E | Spot Healing (AI) / Brush / Clone Stamp (Alt+bấm lấy mẫu) / Eraser |
-| T | Type – bấm vào bóng thoại để gõ chữ, kéo để tạo khung đoạn văn |
+| T | Type – bấm vào bóng thoại để gõ chữ ngay trong bóng, kéo để tạo khung đoạn văn |
 | K / Shift+K | Khung chữ chữ nhật / lasso (xoá chữ gốc & đặt bản dịch) |
 | H / Z, giữ Space | Hand / Zoom, kéo ảnh tạm thời |
 | [ ] · D · X | Đổi cỡ cọ · màu đen/trắng · đổi chỗ màu trước/nền |
@@ -172,7 +183,10 @@ Chọn **1** vùng đã xử lý → hiện khung tím quanh chữ:
 | Ctrl+] / Ctrl+[ | Đưa layer lên / xuống |
 | Ctrl+0 / Ctrl+1 / Ctrl + lăn | Vừa màn hình / 100% / phóng to-thu nhỏ |
 | Ctrl+H | Ẩn/hiện khung chữ |
-| Ctrl+S / Ctrl+Alt+Shift+W | Lưu PSD / Xuất JPEG |
+| Ctrl+O | Mở ảnh / dự án .lzp / PSD |
+| Ctrl+S / Ctrl+Shift+S | Lưu dự án (.lzp) / lưu dự án thành… |
+| Ctrl+Alt+S / Ctrl+Alt+Shift+W | Lưu PSD / Xuất JPEG |
+| Ctrl+T · Enter · Esc | Free Transform · áp dụng · huỷ |
 | F5 · Ctrl+Enter · Tab | Nhận diện chữ · xử lý khung đang chọn · khung tiếp theo |
 | Ctrl+Shift+A / Ctrl+Alt+A | Chọn mọi khung có bản dịch / mọi khung |
 | Ctrl+Shift+R | Redraw khung đang chọn qua ChatGPT / Gemini (copy–dán) |
@@ -190,4 +204,6 @@ Chọn **1** vùng đã xử lý → hiện khung tím quanh chữ:
 - `app/core/page.py` – trạng thái trang (ảnh, vùng chữ)
 - `app/core/document.py` – layer, ghép ảnh, vùng chọn, cọ, lịch sử hoàn tác
 - `app/core/psd_export.py` – xuất PSD (lớp chữ thật qua Photoshop, hoặc lớp ảnh khi không có Photoshop)
+- `app/core/psd_import.py` – mở PSD thành layer + khung chữ sửa được
+- `app/core/project.py` – lưu / mở dự án `.lzp`
 - `app/ui/` – giao diện PySide6
