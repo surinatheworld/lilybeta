@@ -34,6 +34,7 @@ ASPECT_WEIGHT = 0.3  # mức ưu tiên khối chữ cùng tỉ lệ với khung 
 BREAK_WORD = 0.8  # phạt xuống dòng giữa từ ghép, tính như dòng lệch dáng 80%
 BREAK_PARTICLE = 0.3  # phạt nhẹ để tiểu từ kết câu ("ạ.") không đứng trơ một mình
 BREAK_CLAUSE = 0.15  # thưởng xuống dòng sau dấu phẩy / chấm
+BUBBLE_FILL = 0.8  # chữ dàn trong bóng thu nhỏ còn 80% (lề dòng, dáng bo tròn) → nét chữ phủ ~70% bề ngang lòng bóng
 SHRINK_MAX = 0.15  # được nhỏ chữ tối đa 15% so với cỡ lớn nhất vừa khung…
 SHRINK_COST = 1.2  # …nếu điểm dáng tốt lên hơn 0,12 cho mỗi 10% nhỏ đi
 SCRIPT_SIZE = 0.583  # cỡ chỉ số trên/dưới so với cỡ chữ (mặc định Photoshop 58.3%)
@@ -398,9 +399,17 @@ def _place(text: str, style_key: tuple, shape):
         half[y - y0] = max(0.0, min(cx - left, right - cx))
     bw = 2 * max(half)
     bh = len(half)
-    pad = max(2.0, min(bw, bh) * style.padding) + style.stroke_width
+    pad = 1.0 + style.stroke_width
     k = len(words)
     want = math.log(max(bw, 1) / max(bh, 1))
+    # Chữ chỉ chiếm ~BUBBLE_FILL lòng bóng: dàn trong bóng thu nhỏ còn BUBBLE_FILL quanh tâm (giữ nguyên dáng bóng).
+    lo_y, hi_y = cy - (cy - y0) * BUBBLE_FILL, cy + (y0 + bh - cy) * BUBBLE_FILL
+
+    def inner_half(ya: float, yb: float) -> float:
+        """Nửa bề ngang hẹp nhất của bóng thu nhỏ trong dải [ya, yb]."""
+        a = max(0, int(cy + (ya - cy) / BUBBLE_FILL) - y0)
+        b = min(bh, int(math.ceil(cy + (yb - cy) / BUBBLE_FILL)) - y0)
+        return BUBBLE_FILL * min(half[a:b], default=0)
 
     def fit(size: int):
         m = _Metrics(style, size)
@@ -409,13 +418,12 @@ def _place(text: str, style_key: tuple, shape):
         best = None
         for n in range(1, min(k, (2 * k + 2) // 3 + 2) + 1):
             top = cy - n * m.lh / 2
-            if top < y0 + pad or top + n * m.lh > y0 + bh - pad:
+            if top + .1 * m.lh < lo_y or top + (n - .1) * m.lh > hi_y:
                 break
             caps = []
-            for i in range(n):  # bề ngang lòng bóng hẹp nhất trong dải của dòng (bỏ phần đệm trên/dưới dòng)
-                a = max(0, int(top + (i + .1) * m.lh) - y0)
-                b = min(bh, int(math.ceil(top + (i + .9) * m.lh)) - y0)
-                caps.append(float(int(2 * min(half[a:b], default=0) - 2 * pad)))
+            for i in range(n):  # bề ngang bóng hẹp nhất trong dải của dòng (bỏ phần đệm trên/dưới dòng)
+                half_w = inner_half(top + (i + .1) * m.lh, top + (i + .9) * m.lh)
+                caps.append(float(int(2 * half_w - 2 * pad)))
             if max(caps) < widest_word:
                 continue
             res = _break(words, style_key, size, tuple(caps))
