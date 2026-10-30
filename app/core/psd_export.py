@@ -191,6 +191,14 @@ class PhotoshopExporter:
             raise RuntimeError(f"Photoshop không lưu được {out_path}: {res}")
 
 
+def _ascii_name(name: str) -> str:
+    """Tên lớp kiểu cũ trong PSD chỉ nhận ký tự Mac Roman: bỏ dấu tiếng Việt (vd "Xoá chữ" → "Xoa chu")."""
+    import unicodedata
+
+    name = name.replace("đ", "d").replace("Đ", "D")
+    return "".join(c for c in unicodedata.normalize("NFKD", name) if not unicodedata.combining(c))[:60]
+
+
 def export_without_photoshop(page, out_path: str) -> None:
     """PSD có lớp nhưng chữ là lớp ảnh (khi máy không có Photoshop)."""
     from PIL import Image
@@ -204,7 +212,8 @@ def export_without_photoshop(page, out_path: str) -> None:
     h, w = page.original.shape[:2]
     psd = PSDImage.new("RGB", (w, h))
     psd.append(PixelLayer.frompil(Image.fromarray(cv2.cvtColor(page.original, cv2.COLOR_BGR2RGB)), psd, "Background"))
-    psd.append(PixelLayer.frompil(Image.fromarray(cv2.cvtColor(clean_layer(page), cv2.COLOR_BGRA2RGBA)), psd, "Xoá chữ"))
+    psd.append(PixelLayer.frompil(Image.fromarray(cv2.cvtColor(clean_layer(page), cv2.COLOR_BGRA2RGBA)), psd,
+                                  _ascii_name("Xoá chữ")))
     for r in page.regions:
         if not (r.cleaned and r.text.strip()):
             continue
@@ -220,6 +229,6 @@ def export_without_photoshop(page, out_path: str) -> None:
         if len(xs) == 0:
             continue
         bx1, by1, bx2, by2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
-        name = r.text.replace("\n", " ")[:60]
+        name = _ascii_name(r.text.replace("\n", " "))
         psd.append(PixelLayer.frompil(Image.fromarray(arr[by1:by2, bx1:bx2]), psd, name, top=int(by1), left=int(bx1)))
     psd.save(out_path)

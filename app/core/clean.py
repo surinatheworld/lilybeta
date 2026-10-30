@@ -55,6 +55,8 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
         mask = build_text_mask(text_mask, box)[cy1:cy2, cx1:cx2]
     if not mask.any():
         return None
+    if area_mask is None and _fill_light_bubble(img, build_text_mask(text_mask, box), box):
+        return None
     crop = img[cy1:cy2, cx1:cx2]
 
     ring = cv2.dilate(mask, np.ones((7, 7), np.uint8), iterations=2)
@@ -69,7 +71,8 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
             # Quét nét sót rộng hơn khung chữ (vd vạch dài phía trên chữ), nhưng chỉ trong lòng bóng.
             ex = max(x2 - x1, y2 - y1) // 2 + MARGIN
             ex1, ey1, ex2, ey2 = max(0, x1 - ex), max(0, y1 - ex), min(w, x2 + ex), min(h, y2 + ex)
-            _remove_leftover_strokes(img[ey1:ey2, ex1:ex2], (x1 - ex1, y1 - ey1, x2 - ex1, y2 - ey1),
+            near = cv2.dilate(build_text_mask(text_mask, box)[ey1:ey2, ex1:ex2], np.ones((15, 15), np.uint8)) > 0
+            _remove_leftover_strokes(img[ey1:ey2, ex1:ex2], (x1 - ex1, y1 - ey1, x2 - ex1, y2 - ey1), near=near,
                                      limit=(0, 0, ex2 - ex1, ey2 - ey1))
         return None
     # Nền chuyển màu mượt (gradient): khớp mặt cong bậc 2 theo viền rồi tô lại.
@@ -96,10 +99,60 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
     return None
 
 
-def _remove_leftover_strokes(crop: np.ndarray, box: tuple[int, int, int, int], limit=None) -> None:
+def _fill_light_bubble(img: np.ndarray, strokes: np.ndarray, box: tuple[int, int, int, int]) -> bool:
+    """Bóng thoại sáng (kể cả bóng tia sáng không có viền kín): tô trắng cả lòng bóng.
+
+    Xoá nét chữ, loang màu sáng từ tâm chữ trên ảnh đã làm mờ (lưới chấm bên ngoài thành xám nên không
+    loang ra được), lấp lỗ bên trong. Nếu được một vùng sáng, khép kín, không quá lớn thì mọi thứ lọt thỏm
+    trong đó (chữ, furigana, dấu "……", vạch "──") là chữ → tô màu nền; tia/viền bóng chạm mép vùng được giữ.
+    """
+    h, w = img.shape[:2]
+    x1, y1, x2, y2 = box
+    e = 2 * max(x2 - x1, y2 - y1)
+    wx1, wy1, wx2, wy2 = max(0, x1 - e), max(0, y1 - e), min(w, x2 + e), min(h, y2 + e)
+    win = img[wy1:wy2, wx1:wx2]
+    strokes = strokes[wy1:wy2, wx1:wx2] > 0
+    gray = cv2.cvtColor(win, cv2.COLOR_BGR2GRAY)
+    gray[strokes] = 255
+    soft = cv2.GaussianBlur(gray, (0, 0), 2.5)
+    sx, sy = (x1 + x2) // 2 - wx1, (y1 + y2) // 2 - wy1
+    if soft[sy, sx] < 225:
+        return False
+    ff = np.zeros((soft.shape[0] + 2, soft.shape[1] + 2), np.uint8)
+    flags = 4 | cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE | (255 << 8)
+    cv2.floodFill(soft, ff, (sx, sy), 0, 255, 255 - 222, flags)  # mọi điểm ≥ 222 (đã làm mờ)
+    region = ff[1:-1, 1:-1] > 0
+    ys, xs = np.nonzero(region)
+    if (len(xs) == 0 or xs.min() == 0 or ys.min() == 0 or xs.max() == region.shape[1] - 1
+            or ys.max() == region.shape[0] - 1 or len(xs) > 0.25 * w * h):
+        return False  # không khép kín trong cửa sổ: nền trắng của trang/panel, không phải bóng
+    interior = _fill_holes(region.astype(np.uint8))
+    bg = np.median(win[region & ~strokes], axis=0)
+    if bg.min() < 230:
+        return False
+    holes = _drop_edge_holes(interior & ~region, interior)
+    # Nét chữ chỉ tô trong khung chữ (model hay đánh dấu nhầm cả tia của bóng tia sáng là chữ).
+    in_box = np.zeros_like(strokes)
+    p = FURIGANA_PAD
+    in_box[max(0, y1 - p - wy1):y2 + p - wy1, max(0, x1 - p - wx1):x2 + p - wx1] = True
+    win[holes | (strokes & interior & in_box)] = bg.astype(np.uint8)
+    return True
+
+
+def _drop_edge_holes(holes: np.ndarray, interior: np.ndarray) -> np.ndarray:
+    """Bỏ các "lỗ" chạm sát mép lòng bóng: đó là tia của bóng tia sáng / răng cưa viền, không phải chữ sót."""
+    edge = interior & ~cv2.erode(interior.astype(np.uint8), np.ones((9, 9), np.uint8)).astype(bool)
+    n, lab = cv2.connectedComponents(holes.astype(np.uint8))
+    touching = np.unique(lab[edge & holes])
+    return holes & ~np.isin(lab, touching[touching > 0])
+
+
+def _remove_leftover_strokes(crop: np.ndarray, box: tuple[int, int, int, int], limit=None, near=None) -> None:
     """Nền trơn: xoá nét mảnh model bỏ sót (vd "──") nằm lọt thỏm trong lòng bóng.
 
     Chỉ xoá những điểm bị nền bao quanh hoàn toàn, nên viền bóng và nền ngoài bóng không bị đụng tới.
+    `near` (cỡ `crop`): chỉ xoá cụm nét chạm vùng này (quanh nét chữ đã nhận diện) – giữ tia của bóng
+    tia sáng, hoạ tiết… nằm xa chữ.
     """
     x1, y1, x2, y2 = box
     seed = ((x1 + x2) // 2, (y1 + y2) // 2)
@@ -110,7 +163,11 @@ def _remove_leftover_strokes(crop: np.ndarray, box: tuple[int, int, int, int], l
     contours, _ = cv2.findContours(region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     interior = np.zeros_like(region)
     cv2.drawContours(interior, contours, -1, 255, cv2.FILLED)
-    holes = (interior > 0) & (region == 0)
+    holes = _drop_edge_holes((interior > 0) & (region == 0), interior > 0)
+    if near is not None:
+        n, lab = cv2.connectedComponents(holes.astype(np.uint8))
+        hit = np.unique(lab[near & holes])
+        holes &= np.isin(lab, hit[hit > 0])
     inside_box = np.zeros_like(holes)
     lx1, ly1, lx2, ly2 = limit or box
     inside_box[ly1:ly2, lx1:lx2] = True

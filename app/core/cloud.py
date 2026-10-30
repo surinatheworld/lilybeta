@@ -66,6 +66,11 @@ def _send(req: urllib.request.Request) -> dict:
             msg = json.loads(body).get("error", {}).get("message", body)
         except ValueError:
             msg = body
+        if e.code == 429 and "quota" in msg.lower():
+            raise CloudError(
+                "Google chặn yêu cầu (429 – hạn mức = 0): tài khoản/project của API key chưa bật thanh toán, "
+                "nên không dùng được model sửa ảnh. Vào aistudio.google.com → Get API key → chọn project → "
+                "Set up billing (liên kết thẻ), hoặc tạo key trong project đã bật billing.") from None
         raise CloudError(f"Lỗi API ({e.code}): {msg[:400]}") from None
     except urllib.error.URLError as e:
         raise CloudError(f"Không kết nối được: {e.reason}") from None
