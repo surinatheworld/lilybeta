@@ -155,6 +155,8 @@ class TextPanel(QTabWidget):
         w = QWidget()
         g = QGridLayout(w)
         g.setHorizontalSpacing(6)
+        g.setColumnStretch(1, 1)
+        g.setColumnStretch(3, 1)
 
         self.font_box = QFontComboBox()
         self.font_box.setEditable(True)
@@ -301,6 +303,8 @@ class TextPanel(QTabWidget):
         v.addLayout(arow)
 
         g = QGridLayout()
+        g.setColumnStretch(1, 1)
+        g.setColumnStretch(3, 1)
         self.indent_left = _spin(0, 1000, " px")
         self.indent_left.setToolTip("Thụt lề trái (Indent Left Margin)")
         self.indent_right = _spin(0, 1000, " px")

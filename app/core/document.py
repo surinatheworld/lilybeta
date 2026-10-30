@@ -101,6 +101,8 @@ class Document:
         for L in self.layers:
             if L.kind == "text" and not L.custom_name:
                 L.name = " ".join(typed[L.uid].text.split())[:40]
+        for uid in self._text_cache.keys() - typed.keys():
+            del self._text_cache[uid]
         if self.active not in self.layers:
             self.active = self.layers[1]
 
@@ -181,8 +183,9 @@ class Document:
     def redraw_alpha(self, box: Box) -> np.ndarray:
         x1, y1, x2, y2 = box
         p = self.page
-        diff = np.abs(p.working[y1:y2, x1:x2].astype(np.int16) - p.original[y1:y2, x1:x2]).max(axis=2) > 0
-        return (diff | (p.paint_mask[y1:y2, x1:x2] > 0)).astype(np.float32)
+        diff = cv2.absdiff(p.working[y1:y2, x1:x2], p.original[y1:y2, x1:x2])
+        unchanged = cv2.inRange(diff, (0, 0, 0), (0, 0, 0))
+        return ((unchanged == 0) | (p.paint_mask[y1:y2, x1:x2] > 0)).astype(np.float32)
 
     def composite(self, box: Box | None = None, text: bool = True) -> np.ndarray:
         """Ảnh BGR (uint8) ghép mọi layer đang hiện trong `box` (mặc định cả trang)."""
@@ -190,11 +193,23 @@ class Document:
         x1, y1, x2, y2 = box or (0, 0, w, h)
         p = self.page
         bg = self.layers[0]
-        out = _checker(x1, y1, x2, y2)
-        if bg.visible and bg.opacity > 0:
+        redraw = self.layers[1]
+        # With an opaque background, unchanged Redraw pixels are already identical
+        # to Background. Avoid allocating a full checkerboard and difference mask.
+        opaque = bg.visible and bg.opacity == 1.0
+        flat_redraw = opaque and redraw.visible and redraw.opacity == 1.0 and redraw.blend == "normal"
+        if flat_redraw:
+            out = p.working[y1:y2, x1:x2].astype(np.float32)
+        elif opaque:
+            out = p.original[y1:y2, x1:x2].astype(np.float32)
+        else:
+            out = _checker(x1, y1, x2, y2)
+        if not opaque and bg.visible and bg.opacity > 0:
             src = p.original[y1:y2, x1:x2].astype(np.float32)
             out += (src - out) * bg.opacity
         for L in self.layers[1:]:
+            if L is redraw and flat_redraw:
+                continue
             if not L.visible or L.opacity <= 0:
                 continue
             if L.kind == "text":
@@ -238,7 +253,8 @@ class Document:
             return hit[1]
         w, h = self.size
         x1, y1, x2, y2 = rect
-        m = int(max(x2 - x1, y2 - y1) * 0.5 + st.stroke_width * 2 + 16)  # chỗ cho viền, chữ xoay
+        m = int(max(x2 - x1, y2 - y1) * 0.5 + st.stroke_width * 2 + 16
+                + (abs(st.shadow_distance) + st.shadow_size * 3 if st.shadow else 0))
         bx1, by1, bx2, by2 = max(0, x1 - m), max(0, y1 - m), min(w, x2 + m), min(h, y2 + m)
         img = QImage(max(1, bx2 - bx1), max(1, by2 - by1), QImage.Format_ARGB32_Premultiplied)
         img.fill(0)
@@ -259,14 +275,24 @@ class Document:
         return patch
 
     def render(self) -> QImage:
-        rgb = cv2.cvtColor(self.composite(), cv2.COLOR_BGR2RGB)
-        h, w = rgb.shape[:2]
-        return QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+        return self.render_box((0, 0, *self.size))
 
     def render_box(self, box: Box) -> QImage:
-        rgb = np.ascontiguousarray(cv2.cvtColor(self.composite(box), cv2.COLOR_BGR2RGB))
-        h, w = rgb.shape[:2]
-        return QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+        bgr = np.ascontiguousarray(self.composite(box))
+        h, w = bgr.shape[:2]
+        return QImage(bgr.data, w, h, bgr.strides[0], QImage.Format_BGR888).copy()
+
+    def text_bounds(self, regions) -> Box | None:
+        """Actual painted bounds, including rotation/effects; capture before edits too."""
+        box = None
+        for r in regions:
+            if not r.done or r.uid == self.editing_uid:
+                continue
+            x, y, _, alpha = self._text_patch(r)
+            h, w = alpha.shape
+            if w and h:
+                box = _union(box, (x, y, x + w, y + h))
+        return box
 
     def export(self, path: str) -> None:
         """JPEG (chất lượng 95) / PNG của mọi layer đang hiện."""
@@ -496,6 +522,7 @@ class Document:
         targets = self._targets(layers)
         top = self.history[self.index - 1] if self.index else None
         if (merge and top is not None and top.merge == merge and self.index == len(self.history)
+                and self.index != self.saved_index
                 and time.time() - top.time < MERGE_SECONDS and not targets):
             self.history.pop()
             self.index -= 1
@@ -526,6 +553,8 @@ class Document:
         step.time = time.time()
         if not step.patches and _same_meta(step.before, step.after):
             return  # không có gì đổi: không ghi bước
+        if self.saved_index > self.index:
+            self.saved_index = -1  # a new branch cannot return to the saved state
         del self.history[self.index:]
         self.history.append(step)
         while len(self.history) > MAX_HISTORY:

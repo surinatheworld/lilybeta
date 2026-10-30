@@ -27,8 +27,10 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QTabWidget,
+    QTabBar,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -66,7 +68,7 @@ from .image_view import (
     ImageView,
 )
 from .panels import ColorPair, HistoryPanel, LayersPanel, SelectionModes, check, labeled, spin
-from .theme import glyph_icon
+from .theme import tool_icon
 from .text_panel import TextPanel
 
 IMAGE_FILTER = "Ảnh (*.png *.jpg *.jpeg *.webp *.bmp)"
@@ -254,9 +256,57 @@ class MainWindow(QMainWindow):
         self.view.transformDone.connect(self._transform_done)
         self._move = None  # (layer, ảnh gốc, vùng chọn gốc) khi đang kéo layer bằng Move
         self._tf = None  # (layer, ảnh gốc, khung gốc, vùng chọn gốc) khi đang Free Transform
-        self.setCentralWidget(self.view)
+        canvas = QWidget()
+        canvas.setObjectName("documentArea")
+        canvas_layout = QVBoxLayout(canvas)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        canvas_layout.setSpacing(0)
+        self.document_tab = QTabBar()
+        self.document_tab.setObjectName("documentTabs")
+        self.document_tab.setExpanding(False)
+        self.document_tab.addTab("Chưa mở tài liệu")
+        self.document_tab.setDrawBase(False)
+        canvas_layout.addWidget(self.document_tab)
+        self.canvas_stack = QStackedWidget()
+        welcome = QWidget()
+        welcome.setObjectName("welcome")
+        welcome_layout = QVBoxLayout(welcome)
+        welcome_layout.addStretch()
+        title = QLabel("Lilyzono")
+        title.setObjectName("welcomeTitle")
+        title.setAlignment(Qt.AlignCenter)
+        welcome_layout.addWidget(title)
+        subtitle = QLabel("Không gian dịch và dàn chữ truyện")
+        subtitle.setAlignment(Qt.AlignCenter)
+        welcome_layout.addWidget(subtitle)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        for label, slot in (("Mở ảnh / dự án…", self.open_image), ("Mở chương…", self.open_chapter)):
+            button = QPushButton(label)
+            button.clicked.connect(slot)
+            buttons.addWidget(button)
+        buttons.addStretch()
+        welcome_layout.addSpacing(16)
+        welcome_layout.addLayout(buttons)
+        hint = QLabel("Ctrl+O để mở tài liệu · Kéo thả ảnh vào cửa sổ")
+        hint.setAlignment(Qt.AlignCenter)
+        welcome_layout.addSpacing(12)
+        welcome_layout.addWidget(hint)
+        welcome_layout.addStretch()
+        self.canvas_stack.addWidget(welcome)
+        self.canvas_stack.addWidget(self.view)
+        canvas_layout.addWidget(self.canvas_stack, 1)
+        self.setCentralWidget(canvas)
 
         lily, textp = self._build_panel()
+        # Dropdowns must shrink inside dock panels; long font/engine names
+        # belong in the popup, not in the panel's minimum width.
+        for panel in (lily, textp):
+            for combo in panel.findChildren(QComboBox):
+                combo.setMinimumContentsLength(6)
+                combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+                combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                combo.setMinimumWidth(0)
         self.layers_panel = LayersPanel()
         self.layers_panel.activated.connect(self._layer_activated)
         self.layers_panel.visibility.connect(self._layer_visibility)
@@ -290,9 +340,9 @@ class MainWindow(QMainWindow):
         self.d_history = dock("History", self.history_panel, "history")
         self.page_dock = dock("Trang", self.page_list, "pages")
         for d in (self.d_lily, self.d_text, self.d_layers, self.d_history, self.page_dock):
-            d.setMinimumWidth(330)
+            d.setMinimumWidth(320)
         self.setTabPosition(Qt.AllDockWidgetAreas, QTabWidget.North)
-        self.setDockOptions(QMainWindow.AnimatedDocks | QMainWindow.AllowTabbedDocks | QMainWindow.GroupedDragging)
+        self.setDockOptions(QMainWindow.AllowTabbedDocks | QMainWindow.GroupedDragging)
         self.addDockWidget(Qt.RightDockWidgetArea, self.d_lily)
         self.splitDockWidget(self.d_lily, self.d_layers, Qt.Vertical)
         self.tabifyDockWidget(self.d_lily, self.d_text)
@@ -306,12 +356,20 @@ class MainWindow(QMainWindow):
         self._build_menus()
         self._build_toolbox()
         self._build_options()
+        self._default_workspace = self.saveState(1)
         self.lbl_pos, self.lbl_size, self.lbl_zoom = QLabel(), QLabel(), QLabel()
         for w in (self.lbl_pos, self.lbl_size, self.lbl_zoom):
             w.setMinimumWidth(90)
             self.statusBar().addPermanentWidget(w)
         self._load_style_settings()
         self._update_ai_label()
+        self.layers_panel.set_doc(None)
+        geometry = self.settings.value("workspace/geometry")
+        state = self.settings.value("workspace/state")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        if state is not None:
+            self.restoreState(state, 1)
         self.set_tool(self.settings.value("tool", TOOL_MOVE))
         self.statusBar().showMessage("Mở ảnh raw (Ctrl+O), cả chương (Ctrl+Shift+O) hoặc kéo thả ảnh vào cửa sổ.")
 
@@ -410,6 +468,8 @@ class MainWindow(QMainWindow):
         m = mb.addMenu("Cửa &sổ")
         for d in (self.d_layers, self.d_history, self.d_lily, self.d_text, self.page_dock):
             m.addAction(d.toggleViewAction())
+        m.addSeparator()
+        A(m, "Đặt lại không gian làm việc", self._reset_workspace)
 
         m = mb.addMenu("Trợ &giúp")
         A(m, "Phím tắt", self.show_shortcuts, "F1")
@@ -424,7 +484,7 @@ class MainWindow(QMainWindow):
         group = QActionGroup(self)
         self.tool_actions = {}
         for tool, glyph, tip, key in TOOLS:
-            icon = glyph_icon(glyph, 22, font="Times New Roman", bold=True) if glyph == "T" else glyph_icon(glyph, 22)
+            icon = tool_icon(tool)
             a = QAction(icon, f"{tip} ({key})", self)
             a.setCheckable(True)
             a.setShortcut(QKeySequence(key))
@@ -441,11 +501,14 @@ class MainWindow(QMainWindow):
 
     def _build_options(self):
         ob = QToolBar("Tuỳ chọn công cụ")
+        ob.setObjectName("toolOptions")
         ob.setMovable(False)
         self.addToolBar(Qt.TopToolBarArea, ob)
         self.opt_icon = QLabel()
         ob.addWidget(self.opt_icon)
         self.opt_stack = QStackedWidget()
+        self.opt_stack.setMinimumWidth(0)
+        self.opt_stack.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         ob.addWidget(self.opt_stack)
         self._opt_pages = {}
 
@@ -519,6 +582,13 @@ class MainWindow(QMainWindow):
                            TOOL_TEXT: i_text, TOOL_RECT: i_region, TOOL_LASSO: i_region, TOOL_HAND: i_view,
                            TOOL_ZOOM: i_view, **{t: i_paint for t in PAINT_TOOLS}}
 
+    def _reset_workspace(self):
+        self.restoreState(self._default_workspace, 1)
+        self.resizeDocks([self.d_lily], [360], Qt.Horizontal)
+        self.resizeDocks([self.d_lily, self.d_layers], [540, 280], Qt.Vertical)
+        self.d_lily.raise_()
+        self.d_layers.raise_()
+
     def set_tool(self, tool: str):
         if tool not in self.tool_actions:
             tool = TOOL_MOVE
@@ -529,8 +599,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._inline_edit)  # bấm T khi đang chọn một bóng: gõ ngay trong bóng đó
         self.settings.setValue("tool", tool)
         self.opt_stack.setCurrentIndex(self._opt_pages[tool])
-        glyph = next(g for t, g, _, _ in TOOLS if t == tool)
-        self.opt_icon.setPixmap(glyph_icon(glyph, 20).pixmap(20, 20))
+        self.opt_icon.setPixmap(tool_icon(tool, 20).pixmap(20, 20))
         if tool in PAINT_TOOLS:
             size, hard, op = self.paint_opts[tool]
             for w, v in ((self.opt_size, size), (self.opt_hard, hard), (self.opt_opacity, op)):
@@ -668,6 +737,7 @@ class MainWindow(QMainWindow):
         # Hiệu ứng, bộ kiểu, vị trí
         g_font = QGroupBox("Hiệu ứng, bộ kiểu & vị trí")
         fl = QFormLayout(g_font)
+        fl.setRowWrapPolicy(QFormLayout.WrapLongRows)
         srow = QHBoxLayout()
         self.btn_stroke = ColorButton("#ffffff")
         self.btn_stroke.changed.connect(self._style_changed)
@@ -835,6 +905,8 @@ class MainWindow(QMainWindow):
         self._save_style_settings(style)
         self._update_warning()
         # Vùng đã xử lý thì đổi kiểu là thấy ngay – áp cho mọi vùng đang chọn.
+        regions = self.selected_regions
+        before = self.doc.text_bounds(regions) if self.doc is not None else None
         changed = False
         if self.doc is not None:
             self.doc.begin("Đổi kiểu chữ", merge="style")
@@ -845,7 +917,7 @@ class MainWindow(QMainWindow):
         if self.doc is not None:
             self.doc.end()
         if changed:
-            self.refresh()
+            self._refresh_text(regions, before)
 
     # --- font yêu thích & bộ kiểu ------------------------------------------------
     def _favorites(self) -> list[str]:
@@ -927,26 +999,30 @@ class MainWindow(QMainWindow):
     def _text_rect_dragged(self, rect):
         r = self.region
         if r is not None and r.cleaned:
+            before = self.doc.text_bounds([r])
             with self.doc.step("Di chuyển chữ"):
                 r.manual_rect = tuple(int(v) for v in rect)
-            self.refresh()
+            self._refresh_text([r], before)
 
     def _nudge(self, dx: int, dy: int):
         r = self.region
         if r is None or not r.done:
             return
         x1, y1, x2, y2 = r.text_rect
+        before = self.doc.text_bounds([r])
         with self.doc.step("Nhích chữ", merge=f"nudge:{r.uid}"):
             r.manual_rect = (x1 + dx, y1 + dy, x2 + dx, y2 + dy)
-        self.refresh()
+        self._refresh_text([r], before)
 
     def _reset_text_rect(self):
         if self.doc is None:
             return
+        regions = self.selected_regions
+        before = self.doc.text_bounds(regions)
         with self.doc.step("Tự đặt lại vị trí chữ"):
             for r in self.selected_regions:
                 r.manual_rect = None
-        self.refresh()
+        self._refresh_text(regions, before)
 
     @property
     def engine(self) -> str:
@@ -1083,6 +1159,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e):
         if self._confirm_discard():
+            self.settings.setValue("workspace/geometry", self.saveGeometry())
+            self.settings.setValue("workspace/state", self.saveState(1))
             e.accept()
         else:
             e.ignore()
@@ -1109,15 +1187,18 @@ class MainWindow(QMainWindow):
         self._show_page(page)
 
     def _show_page(self, page: Page):
+        # Finish the previous inline editor while it still points at its page.
+        self.view.end_text_edit()
         self.page = page
         self.selected, self.selection = -1, []
         self.doc = doc_for(page)
         self._update_title()
-        self.view.set_image(self.doc.render(), fit=True)
+        self.canvas_stack.setCurrentWidget(self.view)
         w, h = page.size
         self.lbl_size.setText(f"{w} × {h} px")
         self._lines_for_page()
         self.refresh()
+        self.view.fit_page()
         if page.detected:
             self.select_region(0 if page.regions else -1)
         else:
@@ -1415,11 +1496,12 @@ class MainWindow(QMainWindow):
         self._update_warning()
         r = self.region
         if r is not None and r.cleaned:
+            before = self.doc.text_bounds([r])
             with self.doc.step("Gõ chữ", merge=f"text:{r.uid}"):
                 if not r.text.strip():
                     r.style = self.current_style()  # khung mới gõ chữ: dùng font/kiểu đang chọn
                 r.text = self.txt.toPlainText()
-            self.refresh()
+            self._refresh_text([r], before)
 
     def process_selected(self):
         r = self.region
@@ -1614,6 +1696,8 @@ class MainWindow(QMainWindow):
         where = f" ({os.path.basename(self.chapter.folder)})" if self.chapter and not self.project_path else ""
         dirty = "*" if self.doc is not None and self.doc.dirty else ""
         self.setWindowTitle(f"Lilyzono – {name}{dirty}{where}")
+        self.document_tab.setTabText(0, f"{os.path.basename(self.page.path)}{dirty}  (RGB/8)")
+        self.document_tab.setTabToolTip(0, self.page.path)
 
     def save_project(self, ask: bool = False) -> bool:
         if self.page is None:
@@ -1700,7 +1784,21 @@ class MainWindow(QMainWindow):
         self.opt_boxes.blockSignals(True)
         self.opt_boxes.setChecked(self.view.show_boxes)
         self.opt_boxes.blockSignals(False)
-        self.refresh()
+        self._draw_overlays()
+
+    def _refresh_text(self, regions, before=None):
+        """Recompose only the union of old/new text ink, leaving page pixels intact."""
+        after = self.doc.text_bounds(regions)
+        boxes = [b for b in (before, after) if b is not None]
+        if boxes:
+            box = (min(b[0] for b in boxes), min(b[1] for b in boxes),
+                   max(b[2] for b in boxes), max(b[3] for b in boxes))
+            self.view.update_patch(box[0], box[1], self.doc.render_box(box))
+        self._draw_overlays()
+        self._update_page_list()
+        self.layers_panel.set_doc(self.doc, pixels_changed=False)
+        self.history_panel.set_doc(self.doc, "Mở " + os.path.basename(self.page.path))
+        self._update_title()
 
     def refresh(self):
         if self.page is None:
@@ -1710,7 +1808,7 @@ class MainWindow(QMainWindow):
         self.view.set_image(self.doc.render())
         self._draw_overlays()
         self._update_page_list()
-        self.layers_panel.set_doc(self.doc)
+        self.layers_panel.set_doc(self.doc, pixels_changed=True)
         self.history_panel.set_doc(self.doc, "Mở " + os.path.basename(self.page.path))
         self.view.set_selection_outline(self.doc.selection_outline())
         self._update_title()
@@ -2007,8 +2105,10 @@ class MainWindow(QMainWindow):
             return
         st = r.effective_style if r.text.strip() else self.current_style()
         rect, size = self._inline_geometry(r, st)
+        self.view.end_text_edit()
+        before = self.doc.text_bounds([r])
         self.doc.editing_uid = r.uid
-        self.view.set_image(self.doc.render())
+        self._refresh_text([r], before)
         self.view.begin_text_edit(rect, r.text, make_font(st, size), size, st.color, st.align)
         self.statusBar().showMessage("Đang gõ chữ trên ảnh – Esc hoặc Ctrl+Enter để xong.", 5000)
 
@@ -2033,19 +2133,21 @@ class MainWindow(QMainWindow):
 
     def _inline_edit_finished(self):
         if self.doc is not None:
+            r = next((r for r in self.page.regions if r.uid == self.doc.editing_uid), None)
             self.doc.editing_uid = None
-        self.refresh()
+            self._refresh_text([r] if r is not None else [])
 
     def _text_rotated(self, deg: float):
         r = self.region
         if r is None or not r.done:
             return
+        before = self.doc.text_bounds([r])
         with self.doc.step("Xoay chữ"):
             r.style.rotation = ((r.style.rotation + deg + 180) % 360) - 180
         self._loading_ui = True
         self.rotate_box.setValue(r.style.rotation)
         self._loading_ui = False
-        self.refresh()
+        self._refresh_text([r], before)
 
     # --- Move / Free Transform layer ảnh -------------------------------------------------
     def _pixel_layer_for_transform(self):
