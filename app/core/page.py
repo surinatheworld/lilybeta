@@ -1,6 +1,7 @@
 """Trạng thái một trang: ảnh gốc, ảnh đã xoá chữ và các vùng chữ."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field, replace
 
 import cv2
@@ -8,7 +9,7 @@ import numpy as np
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage, QPainter
 
-from .clean import MARGIN, clean_local, clean_region, text_area_candidates
+from .clean import MARGIN, clean_local, text_area_candidates
 from .detect import TextDetector, sort_reading_order
 from .typeset import TextStyle, best_rect, draw_text
 
@@ -27,6 +28,7 @@ class Region:
     polygon: list[tuple[int, int]] | None = None  # đường khoanh lasso (toạ độ ảnh)
     auto_cap: float = 0.0  # cỡ chữ chuẩn của trang (do Page đặt)
     manual_rect: Box | None = None  # khung chữ người dùng tự kéo/căn chỉnh (ưu tiên hơn khung tự động)
+    needs_redraw: bool = False  # nền khó, tool để nguyên chữ gốc cho người dùng tự redraw
 
     @property
     def text_rect(self) -> Box:
@@ -55,6 +57,7 @@ class Page:
         if img is None:
             raise ValueError(f"Không đọc được ảnh: {path}")
         self.original = img
+        self.redrawn: np.ndarray | None = None  # bản đã redraw (xoá chữ) nạp từ ngoài, cùng cỡ ảnh gốc
         self.working = img.copy()
         self.text_mask = np.zeros(img.shape[:2], np.float32)
         self.regions: list[Region] = []
@@ -65,6 +68,54 @@ class Page:
     def size(self) -> tuple[int, int]:
         h, w = self.original.shape[:2]
         return w, h
+
+    @property
+    def base(self) -> np.ndarray:
+        """Nền để xoá chữ / hoàn tác: bản redraw nạp từ ngoài nếu có, không thì ảnh raw."""
+        return self.original if self.redrawn is None else self.redrawn
+
+    def set_redrawn(self, path: str | None) -> None:
+        """Dùng ảnh đã redraw sẵn (xoá chữ bằng Photoshop, AI…) làm nền; None = bỏ, quay về ảnh raw.
+
+        Vị trí chữ vẫn nhận diện trên ảnh raw. Vùng nào bản redraw đã xoá chữ thì giữ nguyên bản redraw,
+        vùng còn chữ thì tool xoá như thường. Các vùng đã xử lý được xoá lại trên nền mới (giữ câu dịch).
+        """
+        if path is None:
+            self.redrawn = None
+        else:
+            img = cv2.imdecode(np.fromfile(path, np.uint8), cv2.IMREAD_COLOR)
+            if img is None:
+                raise ValueError(f"Không đọc được ảnh: {path}")
+            w, h = self.size
+            rh, rw = img.shape[:2]
+            if abs(np.log((rw / rh) / (w / h))) > 0.02:
+                raise ValueError(f"{os.path.basename(path)} ({rw}x{rh}) khác tỉ lệ ảnh raw ({w}x{h}): "
+                                 "bản redraw phải cùng khung với ảnh gốc.")
+            if (rw, rh) != (w, h):
+                img = cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA if rw > w else cv2.INTER_CUBIC)
+            self.redrawn = img
+        self.working = self.base.copy()
+        for r in self.regions:
+            r.cleaned = r.needs_redraw = False
+            r.text_rects = []
+
+    def redrawn_covers(self, region: Region) -> bool:
+        """Bản redraw nạp từ ngoài đã xoá chữ ở vùng này chưa (nét chữ trên raw đã đổi màu hẳn)."""
+        if self.redrawn is None:
+            return False
+        w, h = self.size
+        x1, y1, x2, y2 = region.box
+        x1, y1, x2, y2 = max(0, x1), max(0, y1), min(w, x2), min(h, y2)
+        strokes = self.text_mask[y1:y2, x1:x2] > 0.5
+        area = self.area_mask(region)
+        if area is not None:
+            strokes &= area[y1:y2, x1:x2] > 0
+        if strokes.sum() < 20:  # model không ra nét chữ (vùng vẽ tay): xét các điểm tối
+            strokes = cv2.cvtColor(self.original[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY) < 128
+        if strokes.sum() < 20:
+            return True
+        diff = np.abs(self.redrawn[y1:y2, x1:x2].astype(np.int16) - self.original[y1:y2, x1:x2]).max(axis=2)
+        return float((diff[strokes] > 60).mean()) > 0.5
 
     def detect(self, detector: TextDetector, right_to_left: bool = True) -> None:
         boxes, mask = detector.detect(self.original)
@@ -98,9 +149,21 @@ class Page:
         cv2.fillPoly(m, [np.array(region.polygon, np.int32)], 255)
         return m
 
+    def _clean_local(self, region: Region):
+        """Xoá chữ phần làm được trên máy; trả về mask còn cần AI vẽ lại (None nếu xong / để lại)."""
+        if self.redrawn_covers(region):
+            return None
+        need = clean_local(self.working, self.text_mask, region.box, self.area_mask(region), self.inpainter,
+                           whole_box=region.kind == "text")
+        if need is not None and getattr(self.inpainter, "skip", False):
+            region.needs_redraw = True
+            return None
+        return need
+
     def _clean_pixels(self, region: Region) -> None:
-        clean_region(self.working, self.text_mask, region.box, self.area_mask(region), self.inpainter,
-                     whole_box=region.kind == "text")
+        need = self._clean_local(region)
+        if need is not None:
+            self.inpainter(self.working, need)
 
     def remove_region(self, region: Region) -> None:
         self.reset(region)
@@ -138,8 +201,7 @@ class Page:
         for r in regions:
             if r.cleaned:
                 continue
-            need = clean_local(self.working, self.text_mask, r.box, self.area_mask(r), self.inpainter,
-                               whole_box=r.kind == "text")
+            need = self._clean_local(r)
             if need is None:
                 r.cleaned = True
             else:
@@ -173,12 +235,12 @@ class Page:
             x1, y1, x2, y2 = region.box
             w, h = self.size
             x1, y1, x2, y2 = max(0, x1 - MARGIN), max(0, y1 - MARGIN), min(w, x2 + MARGIN), min(h, y2 + MARGIN)
-            self.working[y1:y2, x1:x2] = self.original[y1:y2, x1:x2]
+            self.working[y1:y2, x1:x2] = self.base[y1:y2, x1:x2]
             # Vẽ lại các vùng khác đã xoá mà chồng lên phần vừa khôi phục.
             for other in self.regions:
                 if other is not region and other.cleaned and _overlap(other.box, (x1, y1, x2, y2)):
                     self._clean_pixels(other)
-        region.cleaned = False
+        region.cleaned = region.needs_redraw = False
         region.text = ""
         region.text_rects = []
         region.manual_rect = None

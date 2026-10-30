@@ -1,7 +1,10 @@
 """Type cả chương không cần mở giao diện: raw + file docs theo trang → PSD.
 
     python tools/run_chapter.py <thư mục raw> <file bản dịch .docx/.txt> <thư mục PSD ra> [--font "000 WildWords2 TB"]
-                                [--engine lama|opencv|gemini|openai] [--no-photoshop]
+                                [--engine simple|lama|opencv|gemini|openai] [--redrawn <thư mục>] [--no-photoshop]
+
+--engine simple: chỉ xoá chữ ở nền đơn giản (bóng thoại, nền trơn); nền khó để nguyên, lớp chữ tên "REDRAW - …".
+--redrawn: thư mục ảnh đã redraw sẵn (ghép theo số trang trong tên file) làm nền để type lên.
 
 Gemini/OpenAI: key lấy từ biến môi trường GEMINI_API_KEY / OPENAI_API_KEY, hoặc key đã nhập trong app.
 
@@ -20,6 +23,7 @@ from PySide6.QtGui import QGuiApplication  # noqa: E402
 
 from app.core import lama  # noqa: E402
 from app.core.chapter import Chapter  # noqa: E402
+from app.core.clean import skip_hard  # noqa: E402
 from app.core.detect import TextDetector  # noqa: E402
 from app.core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available  # noqa: E402
 from app.core.typeset import TextStyle  # noqa: E402
@@ -31,8 +35,9 @@ def main():
     ap.add_argument("docs")
     ap.add_argument("out_dir")
     ap.add_argument("--font", default="000 WildWords2 TB")
-    ap.add_argument("--engine", default="lama", choices=["lama", "opencv", "gemini", "openai"])
+    ap.add_argument("--engine", default="lama", choices=["simple", "lama", "opencv", "gemini", "openai"])
     ap.add_argument("--model", default="", help="model của Gemini/OpenAI (mặc định theo app)")
+    ap.add_argument("--redrawn", default="", help="thư mục ảnh đã redraw sẵn làm nền")
     ap.add_argument("--no-photoshop", action="store_true")
     a = ap.parse_args()
 
@@ -41,6 +46,8 @@ def main():
     ch = Chapter(a.raw_dir)
     tr = ch.load_translations(a.docs)
     print(f"{len(ch.paths)} trang ảnh, bản dịch có {len(tr)} trang / {sum(map(len, tr.values()))} câu")
+    if a.redrawn:
+        print(f"Bản redraw: ghép được {len(ch.load_redrawn(a.redrawn))}/{len(ch.paths)} trang")
     det = TextDetector()
     if a.engine in ("gemini", "openai"):
         from app.core import cloud, secrets
@@ -48,7 +55,7 @@ def main():
         key = os.environ.get(f"{a.engine.upper()}_API_KEY") or secrets.get_key(a.engine)
         inpainter = cloud.make_inpainter(a.engine, key, a.model)
     else:
-        inpainter = lama.inpaint if a.engine == "lama" else None
+        inpainter = {"lama": lama.inpaint, "simple": skip_hard}.get(a.engine)
     style = TextStyle(family=a.font)
     exporter = None
     if not a.no_photoshop and photoshop_available():
@@ -66,8 +73,10 @@ def main():
             exporter.export(page, out)
         else:
             export_without_photoshop(page, out)
+        hard = sum(r.needs_redraw for r in page.regions)
         print(f"{os.path.basename(path)}: {len(page.regions)} vùng, điền {len(plan)} vùng / "
-              f"{len(ch.lines_for(path))} câu → {os.path.basename(out)} ({time.time() - t:.1f}s)")
+              f"{len(ch.lines_for(path))} câu" + (f", {hard} vùng cần tự redraw" if hard else "")
+              + f" → {os.path.basename(out)} ({time.time() - t:.1f}s)")
 
 
 if __name__ == "__main__":

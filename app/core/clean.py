@@ -24,6 +24,13 @@ def build_text_mask(text_mask: np.ndarray, box: tuple[int, int, int, int]) -> np
     return cv2.dilate(out, k, iterations=2)
 
 
+def skip_hard(img: np.ndarray, mask: np.ndarray) -> None:
+    """Chế độ "chỉ xoá chỗ đơn giản": nền có hoạ tiết (tranh, lưới chấm, SFX) để nguyên cho người dùng tự redraw."""
+
+
+skip_hard.skip = True
+
+
 def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int, int],
                  area_mask: np.ndarray | None = None, inpainter=None, whole_box: bool = False) -> None:
     """Xoá chữ trong `box` trực tiếp trên `img` (BGR).

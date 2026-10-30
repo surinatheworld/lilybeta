@@ -39,6 +39,7 @@ from ..core import cloud, lama, secrets
 from ..core.detect import TextDetector
 from ..core.assign import apply_plan, assign_lines
 from ..core.chapter import Chapter
+from ..core.clean import skip_hard
 from ..core.docs import load_lines, load_pages, page_number
 from ..core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available
 from ..core.page import Page, Region
@@ -120,6 +121,7 @@ class CleanWorker(QThread):
 
 
 ENGINES = [
+    ("simple", "Chỉ xoá chỗ đơn giản – nền khó để nguyên, tự redraw sau"),
     ("opencv", "Thường (OpenCV) – nhanh, nền tranh hơi mờ"),
     ("lama", "AI LaMa – chạy trên máy, miễn phí"),
     ("gemini", "AI Google Gemini – cần API key"),
@@ -221,6 +223,9 @@ class MainWindow(QMainWindow):
             "Mở cả thư mục ảnh raw của một chương")
         act("Mở ảnh", self.open_image, "Ctrl+O")
         act("Mở bản dịch", self.open_docs, "Ctrl+D")
+        act("Nạp bản redraw", self.open_redrawn).setToolTip(
+            "Nạp ảnh đã xoá chữ/redraw sẵn (Photoshop, AI…) làm nền rồi type lên. Chế độ chương: chọn thư mục, "
+            "ảnh được ghép với trang theo số trong tên file")
         tb.addSeparator()
         self.direction = QComboBox()
         self.direction.addItems(["Manga: phải → trái", "Manhwa/Manhua: trái → phải"])
@@ -581,6 +586,8 @@ class MainWindow(QMainWindow):
         """Hàm vẽ lại nền theo lựa chọn hiện tại (None = OpenCV)."""
         if self.engine == "lama":
             return lama.inpaint
+        if self.engine == "simple":
+            return skip_hard
         if self.engine in PROVIDERS:
             key = secrets.get_key(self.engine)
             if not key:
@@ -639,6 +646,10 @@ class MainWindow(QMainWindow):
             self.statusBar().clearMessage()
             if all(x.cleaned for x in regions):
                 after()
+                hard = sum(x.needs_redraw for x in regions)
+                if hard:
+                    self.statusBar().showMessage(f"{hard} vùng nền khó: đã đặt chữ nhưng giữ nguyên nền gốc "
+                                                 "(khung vàng) – tự redraw, hoặc Ctrl+Shift+R.", 10000)
             else:
                 self.refresh()
 
@@ -731,7 +742,11 @@ class MainWindow(QMainWindow):
             if page is not None and page.detected:
                 todo = [r for r in page.regions if r.text.strip()]
                 done = sum(1 for r in todo if r.done)
+                hard = sum(1 for r in page.regions if r.needs_redraw)
                 label += f"   {done}/{len(todo)}" + (" ✓" if todo and done == len(todo) else "")
+                label += f"  ⚠{hard} cần redraw" if hard else ""
+            if path in self.chapter.redrawn or (page is not None and page.redrawn is not None):
+                label += "  [redraw]"
             self.page_list.item(i).setText(label)
 
     def _lines_for_page(self):
@@ -889,6 +904,8 @@ class MainWindow(QMainWindow):
             self.txt.setPlainText("")
         else:
             state = "đã xử lý" if r.done else ("đã xoá chữ" if r.cleaned else "chưa xử lý")
+            if r.needs_redraw:
+                state += " · nền khó, giữ nguyên chữ gốc: tự redraw hoặc Ctrl+Shift+R"
             kind = {"sfx": " · SFX (tự nhận diện)", "manual": " · vẽ tay", "lasso": " · lasso"}.get(r.kind, "")
             text = f"Vùng #{idx + 1} / {len(self.page.regions)}{kind} – {state}"
             if len(self.selection) > 1:
@@ -1135,7 +1152,7 @@ class MainWindow(QMainWindow):
         self._update_page_list()
 
     # --- cả chương / PSD ----------------------------------------------------------------
-    def _run_batch(self, title: str, job, done_msg: str):
+    def _run_batch(self, title: str, job, done_msg: str, extra=None):
         if self.batch is not None:
             return
         self.centralWidget().setEnabled(False)
@@ -1151,7 +1168,7 @@ class MainWindow(QMainWindow):
                 self._lines_for_page()
                 self.refresh()
                 self.select_region(self.selected if self.page.regions else -1)
-            self.statusBar().showMessage(done_msg, 10000)
+            self.statusBar().showMessage(done_msg + (extra() if extra else ""), 15000)
 
         self.batch.finished.connect(finished)
         self.batch.start()
@@ -1184,7 +1201,67 @@ class MainWindow(QMainWindow):
                 regs = [r for r in page.regions if r.text.strip() and not r.cleaned]
                 page.clean_many(regs, fit)
 
-        self._run_batch("Đang xử lý cả chương:", job, "Đã xử lý xong cả chương. Kiểm tra từng trang rồi Xuất PSD.")
+        def summary():
+            hard = sum(r.needs_redraw for pg in ch.pages.values() for r in pg.regions)
+            return (f" {hard} vùng nền khó giữ nguyên chữ gốc (khung vàng, ⚠ ở danh sách trang) – tự redraw sau."
+                    if hard else "")
+
+        self._run_batch("Đang xử lý cả chương:", job, "Đã xử lý xong cả chương. Kiểm tra từng trang rồi Xuất PSD.",
+                        extra=summary)
+
+    def open_redrawn(self):
+        """Nạp bản đã redraw làm nền: chữ vẫn nhận diện trên raw, câu dịch type lên bản redraw."""
+        if self.page is None and self.chapter is None:
+            QMessageBox.information(self, "Nạp bản redraw", "Mở ảnh raw hoặc chương trước, rồi nạp bản redraw.")
+            return
+        start = self.settings.value("dir/redrawn", "")
+        if self.chapter is not None:
+            folder = QFileDialog.getExistingDirectory(self, "Thư mục ảnh đã redraw của chương", start)
+            if not folder:
+                return
+            self.settings.setValue("dir/redrawn", folder)
+            try:
+                matched = self.chapter.load_redrawn(folder)
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.warning(self, "Lỗi", str(e))
+                return
+            if not matched:
+                QMessageBox.warning(self, "Nạp bản redraw", "Không ghép được ảnh nào với trang raw (số trang trong "
+                                    "tên file phải khớp, hoặc hai thư mục cùng số ảnh).")
+                return
+            pages = list(self.chapter.pages.values())
+            msg = f"Đã nạp bản redraw cho {len(matched)}/{len(self.chapter.paths)} trang."
+        else:
+            path, _ = QFileDialog.getOpenFileName(self, "Ảnh đã redraw của trang này", start or
+                                                  os.path.dirname(self.page.path), IMAGE_FILTER)
+            if not path:
+                return
+            self.settings.setValue("dir/redrawn", os.path.dirname(path))
+            try:
+                self.page.set_redrawn(path)
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.warning(self, "Lỗi", str(e))
+                return
+            pages = [self.page]
+            msg = "Đã nạp bản redraw."
+        self._retype(pages, msg)
+
+    def _retype(self, pages: list[Page], msg: str):
+        """Đặt lại chữ cho các vùng đã có câu dịch sau khi đổi nền (chỗ bản redraw còn chữ thì xoá như thường)."""
+        try:
+            inpainter = self._make_inpainter()
+        except cloud.CloudError as e:
+            QMessageBox.warning(self, "AI vẽ nền", str(e))
+            inpainter = skip_hard
+        fit = self.chk_bubble.isChecked()
+
+        def job(report):
+            for i, page in enumerate(pages):
+                report(f"{i + 1}/{len(pages)}…")
+                page.inpainter = inpainter
+                page.clean_many([r for r in page.regions if r.text.strip()], fit)
+
+        self._run_batch("Đang đặt chữ lên bản redraw:", job, msg + " Câu dịch đã có được đặt lại trên nền mới.")
 
     def _export_pages(self, pages: list[Page], out_dir: str):
         def job(report):

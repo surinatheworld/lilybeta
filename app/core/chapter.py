@@ -16,21 +16,45 @@ def _natural(s: str):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
 
 
+def list_images(folder: str) -> list[str]:
+    return sorted((os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(IMAGE_EXTS)),
+                  key=lambda p: _natural(os.path.basename(p)))
+
+
 class Chapter:
     def __init__(self, folder: str):
         self.folder = folder
-        self.paths = sorted((os.path.join(folder, f) for f in os.listdir(folder)
-                             if f.lower().endswith(IMAGE_EXTS)), key=lambda p: _natural(os.path.basename(p)))
+        self.paths = list_images(folder)
         if not self.paths:
             raise ValueError(f"Thư mục không có ảnh: {folder}")
         self.pages: dict[str, Page] = {}
         self.translations: dict[int, list[str]] = {}
         self.filled: set[str] = set()  # trang đã tự điền câu dịch
+        self.redrawn: dict[str, str] = {}  # ảnh raw → ảnh đã redraw nạp từ ngoài
 
     def page(self, path: str) -> Page:
         if path not in self.pages:
-            self.pages[path] = Page(path)
+            page = self.pages[path] = Page(path)
+            if path in self.redrawn:
+                page.set_redrawn(self.redrawn[path])
         return self.pages[path]
+
+    def load_redrawn(self, folder: str) -> dict[str, str]:
+        """Ghép ảnh đã redraw trong `folder` với từng trang: theo số trang trong tên file (001.png ↔ 001.jpg),
+        không khớp được thì theo thứ tự nếu hai thư mục cùng số ảnh. Trả về {ảnh raw: ảnh redraw}."""
+        files = [f for f in list_images(folder) if os.path.normcase(f) not in map(os.path.normcase, self.paths)]
+        by_num: dict[int, str] = {}
+        for f in files:
+            n = page_number(f)
+            if n is not None:
+                by_num.setdefault(n, f)
+        matched = {p: by_num[page_number(p)] for p in self.paths if page_number(p) in by_num}
+        if len(matched) < len(self.paths) and len(files) == len(self.paths):
+            matched = dict(zip(self.paths, files))
+        self.redrawn = matched
+        for path, page in self.pages.items():
+            page.set_redrawn(matched.get(path))
+        return matched
 
     def load_translations(self, docs_path: str) -> dict[int, list[str]]:
         self.translations = load_pages(docs_path)
