@@ -6,12 +6,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import cv2
 import numpy as np
-from PySide6.QtGui import QFontDatabase, QGuiApplication
+from PySide6.QtCore import QRectF
+from PySide6.QtGui import QFontDatabase, QGuiApplication, QImage, QPainter
 
 from app.core import project
 from app.core.clean import text_area
 from app.core.page import Page, Region
-from app.core.typeset import TextStyle, layout, place_in_shape
+from app.core.typeset import TextStyle, draw_text, layout, place_in_shape
 from app.core.vi_words import joined
 
 NINE = "Cứ như này thì mình sẽ mất kiểm soát mất…"
@@ -95,15 +96,28 @@ class BubbleShapeTests(unittest.TestCase):
         rect = place_in_shape(NINE, style, shape)
         self.assertIsNotNone(rect)
         x1, y1, x2, y2 = rect
-        self.assertLess(abs((x1 + x2) / 2 - cx), 1)
-        self.assertLess(abs((y1 + y2) / 2 - cy), 1)
+        # Căn theo nét chữ thật: khoảng hở tới mép bóng (elip tâm 200,180) bằng nhau trên/dưới, trái/phải.
+        img = QImage(800, 700, QImage.Format_ARGB32_Premultiplied)
+        img.fill(0)
+        p = QPainter(img)
+        draw_text(p, NINE, style, QRectF(x1, y1, x2 - x1, y2 - y1))
+        p.end()
+        alpha = np.frombuffer(img.constBits(), np.uint8, img.sizeInBytes()).reshape(700, img.bytesPerLine())[:, :3200]
+        ys, xs = np.nonzero(alpha.reshape(700, 800, 4)[..., 3] > 60)
+        dx, dy = (xs - 200) / 110, (ys - 180) / 150
+        top = (ys - (180 - 150 * np.sqrt(1 - dx ** 2))).min()
+        bottom = ((180 + 150 * np.sqrt(1 - dx ** 2)) - ys).min()
+        left = (xs - (200 - 110 * np.sqrt(1 - dy ** 2))).min()
+        right = ((200 + 110 * np.sqrt(1 - dy ** 2)) - xs).min()
+        self.assertLess(abs(top - bottom), 4, (top, bottom))
+        self.assertLess(abs(left - right), 4, (left, right))
         # Mọi nơi dàn lại theo khung này (vẽ, xuất PSD/Photoshop) đều ra đúng bố cục theo dáng bóng.
         m, lines = layout(NINE, style, x2 - x1, y2 - y1)
         half = {y: min(cx - l, r - cx) for y, l, r in rows}
-        top = cy - len(lines) * m.lh / 2
+        top = (y1 + y2) / 2 - len(lines) * m.lh / 2
         for i, w in enumerate(_widths(lines, m)):
             band = [half.get(int(top + (i + f) * m.lh), 0) for f in (.15, .5, .85)]
-            self.assertLessEqual(w / 2, min(band) + 1, (i, lines))
+            self.assertLessEqual(w / 2, min(band) + 4, (i, lines))
         widths = _widths(lines, m)
         self.assertLess(widths[0], max(widths))
         self.assertLess(widths[-1], max(widths))

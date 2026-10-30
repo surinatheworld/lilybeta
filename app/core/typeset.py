@@ -451,11 +451,69 @@ def _place(text: str, style_key: tuple, shape):
     lines = _lines_of(words, cuts)
     seg = _segments(words, style_key, size)
     widest = max(seg[a][b] for a, b in zip(cuts, cuts[1:]))
+    x, y = _balance(_ink_boxes(lines, m, style), rows, cx, cy)
     # Khung chữ đủ rộng cho dòng dài nhất sau khi trừ lề (style.padding) và chừa thêm chút cho Photoshop đo lệch.
     w = int(math.ceil(widest / (1 - 2 * style.padding))) + 6
     h = int(math.ceil(_block_height(lines, m, style) / (1 - 2 * style.padding))) + 4
-    x1, y1 = int(round(cx - w / 2)), int(round(cy - h / 2))
+    x1, y1 = int(round(x - w / 2)), int(round(y - h / 2))
     return (x1, y1, x1 + w, y1 + h), size, lines
+
+
+def _ink_boxes(lines, m: _Metrics, style: TextStyle):
+    """Nét chữ thật của từng dòng (trái, phải, trên, dưới), toạ độ so với tâm khối chữ – đúng như draw_text vẽ.
+    Khác khung dòng: chữ IN HOA có khoảng trống trên đầu (chỗ cho dấu) và dưới chân (phần đuôi chữ thường)."""
+    top = -_block_height(lines, m, style) / 2
+    scale = QTransform(m.hs, 0, 0, m.vs, 0, 0)
+    out = []
+    for i, (ln, _, _) in enumerate(lines):
+        r = scale.mapRect(_line_path(ln, m).boundingRect())
+        left = -m.adv(ln) / 2
+        baseline = top + i * m.lh + (m.lh - m.fm.height() * m.vs) / 2 + m.fm.ascent() * m.vs - style.baseline_shift
+        out.append((left + r.left(), left + r.right(), baseline + r.top(), baseline + r.bottom()))
+    return out
+
+
+def _balance(ink, rows, cx: float, cy: float):
+    """Căn giữa theo mắt nhìn: dời khối chữ cho khoảng hở từ nét chữ tới mép lòng bóng bằng nhau hai bên trái/phải
+    và trên/dưới (tâm hình học của bóng mây, bóng gai, bóng méo không phải chỗ mắt thấy là giữa)."""
+    y0 = rows[0][0]
+    span = {y: (left, right) for y, left, right in rows}
+    tops: dict[int, int] = {}
+    bottoms: dict[int, int] = {}
+    for y, left, right in rows:
+        for col in range(left, right):
+            tops[col] = min(tops.get(col, y), y)
+            bottoms[col] = max(bottoms.get(col, y), y)
+
+    def gaps(x, y):
+        gl = gr = gt = gb = math.inf
+        for a, b, t, u in ink:
+            for row in range(int(math.floor(y + t)), int(math.ceil(y + u)) + 1):
+                if row not in span:
+                    return None
+                gl, gr = min(gl, x + a - span[row][0]), min(gr, span[row][1] - (x + b))
+            for col in range(int(math.floor(x + a)), int(math.ceil(x + b)) + 1):
+                if col not in tops:
+                    return None
+                gt, gb = min(gt, y + t - tops[col]), min(gb, bottoms[col] - (y + u))
+        return gl, gr, gt, gb
+
+    start = gaps(cx, cy)
+    if start is None or y0 is None:
+        return cx, cy
+    x, y = cx, cy
+    for _ in range(4):  # dời một bước làm dòng khác chạm chỗ hẹp hơn, nên lặp vài lần cho cân
+        g = gaps(x, y)
+        if g is None:
+            break
+        dx, dy = (g[1] - g[0]) / 2, (g[3] - g[2]) / 2
+        if abs(dx) < .5 and abs(dy) < .5:
+            break
+        x, y = x + dx, y + dy
+    g = gaps(x, y)
+    if g is None or min(g) < min(min(start), 0):
+        return cx, cy  # cân xong mà lại chạm mép: giữ tâm cũ
+    return x, y
 
 
 def best_rect(text: str, style: TextStyle, rects: list[tuple[int, int, int, int]]):
