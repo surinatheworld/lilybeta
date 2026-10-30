@@ -24,9 +24,18 @@ from PySide6.QtGui import (
 )
 
 from .fonts import qt_family
+from .vi_words import bare, ends_clause, final_particle, joined
 
 MIN_SIZE = 8
 MAX_SIZE = 150
+SHAPES = {"round": "Bo tròn", "even": "Đều dòng", "": "Lấp đầy dòng"}
+ROUND_POWER = 0.75  # độ nhọn của dáng bo tròn: 0.5 = hình tròn, 1 = nhọn hơn (9 từ → 1·2·3·2·1)
+ASPECT_WEIGHT = 0.3  # mức ưu tiên khối chữ cùng tỉ lệ với khung so với dáng dòng
+BREAK_WORD = 0.8  # phạt xuống dòng giữa từ ghép, tính như dòng lệch dáng 80%
+BREAK_PARTICLE = 0.3  # phạt nhẹ để tiểu từ kết câu ("ạ.") không đứng trơ một mình
+BREAK_CLAUSE = 0.15  # thưởng xuống dòng sau dấu phẩy / chấm
+SHRINK_MAX = 0.15  # được nhỏ chữ tối đa 15% so với cỡ lớn nhất vừa khung…
+SHRINK_COST = 1.2  # …nếu điểm dáng tốt lên hơn 0,12 cho mỗi 10% nhỏ đi
 SCRIPT_SIZE = 0.583  # cỡ chỉ số trên/dưới so với cỡ chữ (mặc định Photoshop 58.3%)
 SCRIPT_POS = 0.333  # độ nâng/hạ chỉ số trên/dưới (mặc định Photoshop 33.3%)
 
@@ -75,6 +84,8 @@ class TextStyle:
     shadow_angle: float = 120.0  # độ, hướng ánh sáng như Photoshop (bóng đổ về phía ngược lại)
     shadow_distance: float = 5.0  # px
     shadow_size: float = 5.0  # px, độ nhoè
+    # --- Dáng khối chữ khi tự xuống dòng (chỉ với căn giữa, một đoạn) ---
+    shape: str = "round"  # "round" = bo tròn (dòng giữa dài, trên/dưới ngắn) | "even" = các dòng dài đều | "" = lấp đầy dòng
 
     def copy(self) -> "TextStyle":
         return TextStyle(**asdict(self))
@@ -180,7 +191,11 @@ def _block_height(lines, m: _Metrics, style: TextStyle) -> float:
 
 def layout(text: str, style: TextStyle, w: float, h: float):
     """Chọn cỡ chữ lớn nhất vừa khung. Trả về (_Metrics, các dòng)."""
-    _, size, lines = _layout(text, astuple(style), int(w), int(h))
+    key = astuple(style)
+    placed = _PLACED.get((text, key, int(w), int(h)))
+    if placed:  # khung do place_in_shape dàn theo dáng bóng
+        return _Metrics(style, placed[0]), list(placed[1])
+    _, size, lines = _layout(text, key, int(w), int(h))
     return _Metrics(style, size), list(lines)
 
 
@@ -202,19 +217,245 @@ def _layout(text: str, style_key: tuple, w: int, h: int):
         return ok, size, tuple(lines)
 
     if style.size > 0:
-        return fit(style.size)
+        best = fit(style.size)
+    else:
+        cap = int(style.max_size) if style.max_size > 0 else MAX_SIZE
+        lo, hi = MIN_SIZE, max(MIN_SIZE, min(MAX_SIZE, cap, int(ih)))
+        best = None
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            res = fit(mid)
+            if res[0]:
+                best, lo = res, mid + 1
+            else:
+                hi = mid - 1
+        best = best or fit(MIN_SIZE)
+    ok, size, lines = best
+    if not ok:
+        return ok, size, lines
+    shaped = _shape_lines(text, style, style_key, size, iw, ih, lines)
+    if shaped and style.size <= 0:
+        # Như người typeset: chịu nhỏ chữ đi chút (≤15%) nếu nhờ đó khối chữ đẹp hơn, không cắt đôi từ ghép.
+        top = size
+        for smaller in range(top - 1, max(MIN_SIZE, int(top * (1 - SHRINK_MAX))) - 1, -1):
+            res = _shape_lines(text, style, style_key, smaller, iw, ih, fit(smaller)[2])
+            if res and res[0] + SHRINK_COST * (1 - smaller / top) < shaped[0] + SHRINK_COST * (1 - size / top):
+                shaped, size = res, smaller
+    return ok, size, shaped[1] if shaped else lines
 
-    cap = int(style.max_size) if style.max_size > 0 else MAX_SIZE
-    lo, hi = MIN_SIZE, max(MIN_SIZE, min(MAX_SIZE, cap, int(ih)))
+
+def _profile(n: int, shape: str) -> list[float]:
+    """Bề ngang mong muốn của từng dòng so với dòng dài nhất: bo tròn thì dòng giữa dài, càng ra mép càng ngắn."""
+    if shape != "round" or n < 3:
+        return [1.0] * n
+    r = n / 2
+    return [(1 - ((i + .5 - r) / r) ** 2) ** ROUND_POWER for i in range(n)]
+
+
+@lru_cache(maxsize=2048)
+def _segments(words: tuple[str, ...], style_key: tuple, size: int):
+    """seg[i][j] = bề ngang của words[i:j] khi đặt trên một dòng."""
+    m = _Metrics(TextStyle(*style_key), size)
+    k = len(words)
+    return tuple(tuple(m.adv(" ".join(words[i:j])) if j > i else 0.0 for j in range(k + 1)) for i in range(k + 1))
+
+
+@lru_cache(maxsize=20000)
+def _break(words: tuple[str, ...], style_key: tuple, size: int, caps: tuple[float, ...]):
+    """Chia các từ thành đúng len(caps) dòng, dòng i dài ≤ caps[i], bề ngang các dòng sát dáng `style.shape` nhất.
+
+    Quy hoạch động trên vị trí ngắt. Dòng dài nhất W suy từ tổng bề ngang chữ để khối chữ có đúng dáng đó.
+    Trả về (độ lệch so với dáng, theo tỉ lệ W; các điểm ngắt) hoặc None nếu không chia được."""
+    seg = _segments(words, style_key, size)
+    k, n = len(words), len(caps)
+    p = _profile(n, TextStyle(*style_key).shape)
+    letters = sum(seg[i][i + 1] for i in range(k))
+    space = (seg[0][k] - letters) / (k - 1) if k > 1 else 0.0
+    W = max(1.0, (letters + (k - n) * space) / sum(p))
+    # Xuống dòng giữa từ ghép ("Cảm | ơn") bị phạt nặng (BREAK_WORD); sau dấu phẩy/chấm thì được thưởng.
+    after = [0.0] * (k + 1)
+    for j in range(1, k):
+        if joined(words[j - 1], words[j]):
+            after[j] = (BREAK_WORD * W) ** 2
+        elif final_particle(words[j - 1], words[j]):  # "ạ." một chữ cái đứng riêng trông như rơi chữ: phạt nặng
+            after[j] = ((BREAK_WORD if len(bare(words[j])) == 1 else BREAK_PARTICLE) * W) ** 2
+        elif ends_clause(words[j - 1]):
+            after[j] = -(BREAK_CLAUSE * W) ** 2
+    inf = float("inf")
+    cost = [[inf] * (k + 1) for _ in range(n + 1)]
+    back = [[0] * (k + 1) for _ in range(n + 1)]
+    cost[0][0] = 0.0
+    for line in range(1, n + 1):
+        cap = caps[line - 1]
+        target = min(p[line - 1] * W, cap)
+        for j in range(line, k - (n - line) + 1):
+            for i in range(j - 1, line - 2, -1):
+                a = seg[i][j]
+                if a > cap + .5:
+                    break  # thêm từ ở đầu dòng chỉ làm dòng dài hơn
+                c = cost[line - 1][i] + (a - target) ** 2 + after[j]
+                if c < cost[line][j]:
+                    cost[line][j], back[line][j] = c, i
+    if cost[n][k] == inf:
+        return None
+    cuts, j = [k], k
+    for line in range(n, 0, -1):
+        j = back[line][j]
+        cuts.append(j)
+    return math.sqrt(max(0.0, cost[n][k]) / n) / W, tuple(reversed(cuts))
+
+
+def _score(style: TextStyle, seg, res, lh: float, want: float, k: int) -> float:
+    """Điểm (càng nhỏ càng đẹp) của một cách ngắt: lệch dáng + khối chữ khác tỉ lệ khung + bị "thắt eo"."""
+    dev, cuts = res
+    n = len(cuts) - 1
+    widths = [seg[a][b] for a, b in zip(cuts, cuts[1:])]
+    widest = max(widths)
+    score = dev + ASPECT_WEIGHT * abs(math.log(widest / (n * lh)) - want)
+    if style.shape == "round" and n >= 3:
+        # Khối bo tròn không được "thắt eo": dòng gần giữa phải dài hơn dòng ở mép.
+        mid = (n - 1) / 2
+        dent = sum(max(0.0, widths[i] - widths[i + (1 if i < mid else -1)]) for i in range(n) if abs(i - mid) > .5)
+        score += 2 * dent / widest
+    if n > max(1, (2 * k + 2) // 3):
+        score += 1.0  # trung bình mỗi dòng dưới 1,5 từ: chỉ dùng khi không còn cách khác
+    return score
+
+
+def _lines_of(words, cuts):
+    n = len(cuts) - 1
+    return tuple((" ".join(words[a:b]), i == 0, i == n - 1) for i, (a, b) in enumerate(zip(cuts, cuts[1:])))
+
+
+def _shapeable(text: str, style: TextStyle) -> bool:
+    return bool(style.shape) and style.align == "center" and not style.justify and not style.indent_first \
+        and "\n" not in text
+
+
+def _shape_lines(text: str, style: TextStyle, style_key: tuple, size: int, iw: float, ih: float, lines):
+    """Ngắt lại dòng cho đẹp như người typeset: khối chữ bo tròn (vd 9 từ → 1·2·3·2·1) hoặc các dòng dài đều.
+    Với cỡ chữ `size`, chọn số dòng để khối chữ cùng tỉ lệ với khung. Trả về (điểm, các dòng) hoặc None (giữ
+    cách ngắt thường: văn bản có xuống dòng tay, căn trái/phải, dàn đều, thụt dòng đầu, từ dài hơn cả dòng)."""
+    if not _shapeable(text, style):
+        return None
+    words = tuple(text.split())
+    k = len(words)
+    if k < 2:
+        return None
+    seg = _segments(words, style_key, size)
+    if max(seg[i][i + 1] for i in range(k)) > iw + .5:
+        return None
+    lh = _Metrics(style, size).lh
+    n_lo = len(lines)
+    n_hi = n_lo
+    while n_hi < min(k, max(n_lo, (2 * k + 2) // 3)) and (n_hi + 1) * lh <= ih + .5:
+        n_hi += 1  # thêm dòng khi khung còn chỗ, nhưng trung bình mỗi dòng vẫn ≥ 1,5 từ
+    want = math.log(max(iw, 1) / max(ih, 1))
     best = None
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        res = fit(mid)
-        if res[0]:
-            best, lo = res, mid + 1
-        else:
-            hi = mid - 1
-    return best or fit(MIN_SIZE)
+    for n in range(n_lo, n_hi + 1):
+        res = _break(words, style_key, size, (1e9,) * n)
+        if res is None or max(seg[a][b] for a, b in zip(res[1], res[1][1:])) > iw + .5:
+            res = _break(words, style_key, size, (float(int(iw)),) * n)
+        if res is None:
+            continue
+        score = _score(style, seg, res, lh, want, k)
+        if best is None or score < best[0] - 1e-6:
+            best = (score, res[1])
+    return None if best is None else (best[0], _lines_of(words, best[1]))
+
+
+# Bố cục đã dàn theo dáng bóng: (chữ, kiểu, rộng, cao của khung chữ) → (cỡ, các dòng). layout() dùng lại
+# đúng kết quả này cho khung place_in_shape trả về, nên mọi nơi vẽ/xuất theo khung chữ đều ra cùng một bố cục.
+_PLACED: dict[tuple, tuple] = {}
+
+
+def place_in_shape(text: str, style: TextStyle, shape) -> tuple[int, int, int, int] | None:
+    """Dàn chữ theo đúng hình lòng bóng `shape` = (cx, cy, ((y, trái, phải), …)) (xem clean.text_area):
+    mỗi dòng được rộng bằng lòng bóng ở độ cao của nó, khối chữ đặt chính giữa lòng bóng.
+    Trả về khung chữ (để vẽ/xuất như khung thường) hoặc None nếu không dàn được theo dáng."""
+    key = astuple(style)
+    res = _place(text, key, shape)
+    if res is None:
+        return None
+    rect, size, lines = res
+    if len(_PLACED) > 50000:
+        _PLACED.clear()
+    _PLACED[(text, key, rect[2] - rect[0], rect[3] - rect[1])] = (size, lines)
+    return rect
+
+
+@lru_cache(maxsize=4096)
+def _place(text: str, style_key: tuple, shape):
+    style = TextStyle(*style_key)
+    text = prepare(text, style)
+    words = tuple(text.split())
+    if not words or not _shapeable(text, style) or style.indent_left or style.indent_right:
+        return None
+    cx, cy, rows = shape
+    y0 = min(r[0] for r in rows)
+    half = [0.0] * (max(r[0] for r in rows) + 1 - y0)
+    for y, left, right in rows:
+        half[y - y0] = max(0.0, min(cx - left, right - cx))
+    bw = 2 * max(half)
+    bh = len(half)
+    pad = max(2.0, min(bw, bh) * style.padding) + style.stroke_width
+    k = len(words)
+    want = math.log(max(bw, 1) / max(bh, 1))
+
+    def fit(size: int):
+        m = _Metrics(style, size)
+        seg = _segments(words, style_key, size)
+        widest_word = max(seg[i][i + 1] for i in range(k))
+        best = None
+        for n in range(1, min(k, (2 * k + 2) // 3 + 2) + 1):
+            top = cy - n * m.lh / 2
+            if top < y0 + pad or top + n * m.lh > y0 + bh - pad:
+                break
+            caps = []
+            for i in range(n):  # bề ngang lòng bóng hẹp nhất trong dải của dòng (bỏ phần đệm trên/dưới dòng)
+                a = max(0, int(top + (i + .1) * m.lh) - y0)
+                b = min(bh, int(math.ceil(top + (i + .9) * m.lh)) - y0)
+                caps.append(float(int(2 * min(half[a:b], default=0) - 2 * pad)))
+            if max(caps) < widest_word:
+                continue
+            res = _break(words, style_key, size, tuple(caps))
+            if res is None:
+                continue
+            score = _score(style, seg, res, m.lh, want, k)
+            if best is None or score < best[0] - 1e-6:
+                best = (score, size, res[1], m)
+        return best
+
+    if style.size > 0:
+        best = fit(style.size)
+    else:
+        cap = int(style.max_size) if style.max_size > 0 else MAX_SIZE
+        lo, hi, best = MIN_SIZE, max(MIN_SIZE, min(MAX_SIZE, cap, int(bh))), None
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            res = fit(mid)
+            if res:
+                best, lo = res, mid + 1
+            else:
+                hi = mid - 1
+        if best is not None:
+            # Như người typeset: chịu nhỏ chữ đi chút (≤15%) nếu nhờ đó khối chữ tròn hơn, không cắt đôi từ ghép.
+            top = best[1]
+            for size in range(top - 1, max(MIN_SIZE, int(top * (1 - SHRINK_MAX))) - 1, -1):
+                res = fit(size)
+                if res and res[0] + SHRINK_COST * (1 - size / top) < best[0] + SHRINK_COST * (1 - best[1] / top):
+                    best = res
+    if best is None:
+        return None
+    _, size, cuts, m = best
+    lines = _lines_of(words, cuts)
+    seg = _segments(words, style_key, size)
+    widest = max(seg[a][b] for a, b in zip(cuts, cuts[1:]))
+    # Khung chữ đủ rộng cho dòng dài nhất sau khi trừ lề (style.padding) và chừa thêm chút cho Photoshop đo lệch.
+    w = int(math.ceil(widest / (1 - 2 * style.padding))) + 6
+    h = int(math.ceil(_block_height(lines, m, style) / (1 - 2 * style.padding))) + 4
+    x1, y1 = int(round(cx - w / 2)), int(round(cy - h / 2))
+    return (x1, y1, x1 + w, y1 + h), size, lines
 
 
 def best_rect(text: str, style: TextStyle, rects: list[tuple[int, int, int, int]]):

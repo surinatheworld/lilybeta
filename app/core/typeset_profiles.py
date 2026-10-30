@@ -115,6 +115,8 @@ def profile_style(page, region, base: TextStyle) -> TextStyle:
         style.style_name = ""
         style.bold = False
         style.italic = kind == "thought"
+        if kind == "square" and style.shape == "round":
+            style.shape = "even"  # khung chữ nhật: các dòng dài đều, không bo tròn
     return style
 
 

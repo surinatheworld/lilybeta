@@ -10,9 +10,9 @@ import numpy as np
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage, QPainter
 
-from .clean import MARGIN, clean_local, fill_bubble, is_small_sfx, text_area_candidates
+from .clean import MARGIN, clean_local, fill_bubble, is_small_sfx, text_area
 from .detect import TextDetector, sort_reading_order
-from .typeset import TextStyle, best_rect, draw_text
+from .typeset import TextStyle, best_rect, draw_text, place_in_shape
 from .typeset_profiles import apply_profile, profile_style
 
 Box = tuple[int, int, int, int]
@@ -44,12 +44,19 @@ class Region:
     needs_redraw: bool = False  # nền khó, tool để nguyên chữ gốc cho người dùng tự redraw
     uid: int = field(default_factory=new_uid)  # định danh bền (layer chữ, lịch sử hoàn tác trỏ tới vùng qua uid)
     typeset_kind: str = "auto"  # automatic balloon shape, or a user-selected font category
+    # Dáng lòng bóng (cx, cy, ((y, trái, phải), …)) để dàn chữ theo đúng hình bóng; None = chỉ dùng text_rects.
+    text_shape: tuple | None = None
 
     @property
     def text_rect(self) -> Box:
-        """Khung đặt chữ: khung người dùng tự chỉnh, không thì khung cho cỡ chữ lớn nhất."""
+        """Khung đặt chữ: khung người dùng tự chỉnh; không thì dàn theo dáng lòng bóng (chính giữa bóng, dòng giữa
+        dài, trên/dưới ngắn); không được nữa thì khung chữ nhật cho cỡ chữ lớn nhất."""
         if self.manual_rect:
             return self.manual_rect
+        if self.text_shape and self.text.strip():
+            rect = place_in_shape(self.text, self.effective_style, self.text_shape)
+            if rect:
+                return rect
         return best_rect(self.text, self.effective_style, self.text_rects) if self.text_rects else self.box
 
     @property
@@ -117,6 +124,7 @@ class Page:
         for r in self.regions:
             r.cleaned = r.needs_redraw = False
             r.text_rects = []
+            r.text_shape = None
 
     def redrawn_covers(self, region: Region) -> bool:
         """Bản redraw nạp từ ngoài đã xoá chữ ở vùng này chưa (nét chữ trên raw đã đổi màu hẳn)."""
@@ -225,6 +233,7 @@ class Page:
         if not region.cleaned:
             self._clean_pixels(region)
             region.cleaned = True
+        region.text_shape = None
         if region.kind == "sfx":
             # Dịch SFX đặt ngay tại chỗ SFX gốc (không loang ra nền trắng của panel).
             x1, y1, x2, y2 = region.box
@@ -232,12 +241,19 @@ class Page:
             w, h = self.size
             region.text_rects = [(max(0, x1 - ex), max(0, y1 - ey), min(w, x2 + ex), min(h, y2 + ey))]
         elif fit_bubble:
-            cands = text_area_candidates(self.working, region.box, self.area_mask(region))
+            cands, shape = text_area(self.working, region.box, self.area_mask(region))
             # Khung đặt chữ không được đè lên chữ gốc của vùng khác (vd hai câu chung một bóng).
             others = [o.box for o in self.regions if o is not region]
-            free = [c for c in cands if not any(c[0] < o[2] - 2 and o[0] < c[2] - 2 and c[1] < o[3] - 2
-                                                and o[1] < c[3] - 2 for o in others)]
+
+            def hits(c):
+                return any(c[0] < o[2] - 2 and o[0] < c[2] - 2 and c[1] < o[3] - 2 and o[1] < c[3] - 2 for o in others)
+
+            free = [c for c in cands if not hits(c)]
             region.text_rects = free or [region.box]
+            # Bóng có chữ của vùng khác (hai câu chung một bóng) thì không dàn theo cả bóng được.
+            if shape and not hits((min(r[1] for r in shape[2]), shape[2][0][0],
+                                   max(r[2] for r in shape[2]), shape[2][-1][0] + 1)):
+                region.text_shape = shape
         else:
             region.text_rects = [region.box]
 
@@ -289,6 +305,7 @@ class Page:
         region.cleaned = region.needs_redraw = False
         region.text = ""
         region.text_rects = []
+        region.text_shape = None
         region.manual_rect = None
 
     def render(self) -> QImage:
