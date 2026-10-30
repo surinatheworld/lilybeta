@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import os
+import gc
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
+import weakref
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -12,14 +16,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import cv2
 import numpy as np
 from PySide6.QtCore import QPoint, QSettings, Qt
-from PySide6.QtGui import QColor, QImage
-from PySide6.QtWidgets import QApplication, QToolBar
+from PySide6.QtGui import QCloseEvent, QColor, QImage
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QToolBar, QMessageBox
 
 from app.core import project
+from app.core.chapter import Chapter
 from app.core.document import BLENDS, Document, _blend, _checker, doc_for
 from app.core.page import Page, Region
 from app.ui.image_view import CanvasImageItem
-from app.ui.main_window import MainWindow
+from app.ui.main_window import DetectWorker, MainWindow
 from app.ui.theme import apply_dark
 from tools.benchmark_editor import load_offscreen_fonts
 
@@ -75,6 +81,9 @@ class EditorTests(unittest.TestCase):
         cls.temp.cleanup()
 
     def setUp(self):
+        preloader = patch.object(MainWindow, "_preload_lama")
+        preloader.start()
+        self.addCleanup(preloader.stop)
         rng = np.random.default_rng(7)
         image = rng.integers(0, 256, (480, 640, 3), dtype=np.uint8)
         path = str(Path(self.temp.name) / "page.png")
@@ -264,6 +273,253 @@ class EditorTests(unittest.TestCase):
         for control in (panel.leading_box, panel.tracking_box, panel.hscale_box, panel.color_btn, panel.aa_box):
             right = control.mapTo(viewport, QPoint(control.width(), 0)).x()
             self.assertLessEqual(right, viewport.width(), control.toolTip())
+
+    def other_page(self, name="other.png", detected=True):
+        path = str(Path(self.temp.name) / name)
+        cv2.imencode(".png", self.page.original)[1].tofile(path)
+        page = Page(path)
+        page.detected = detected
+        page.regions = [Region((100, 100, 300, 250), text="Trang thứ hai", cleaned=True)]
+        return page
+
+    def drain_jobs(self):
+        deadline = time.monotonic() + 10
+        while self.window.batch is not None or self.window.worker is not None or self.window._detect_queue:
+            self.assertLess(time.monotonic(), deadline, "background job timed out")
+            QTest.qWait(20)
+
+    def test_open_multiple_files_preserves_unsaved_document_and_deduplicates(self):
+        window = self.editor()
+        window.txt.setPlainText("Chưa lưu ở ảnh 1")
+        original = window._active_document
+        other = self.other_page()
+        with patch.object(window, "_confirm_discard", side_effect=AssertionError("opening must not discard")), \
+             patch.object(window, "run_detect"):
+            window.load_image(other.path)
+            window.load_image(other.path)
+        self.assertEqual(window.document_tab.count(), 2)
+        self.assertIsNot(window.page, self.page)
+        window._activate_document(original)
+        self.assertEqual(window.txt.toPlainText(), "Chưa lưu ở ảnh 1")
+        self.assertTrue(self.doc.dirty)
+        self.assert_canvas()
+
+    def test_tabs_restore_zoom_selection_history_and_translation_context(self):
+        window = self.editor()
+        window.show()
+        self.app.processEvents()
+        first = window._active_document
+        window.select_region(1)
+        window.view.zoom_to(2)
+        window.txt.setPlainText("Chỉ đổi ảnh 1")
+        window.lines = ["Bản dịch riêng ảnh 1"]
+        window._doc_flat = list(window.lines)
+        self.doc.select_rect((20, 30, 70, 90))
+        window._show_page(self.other_page())
+        second = window._active_document
+        window.txt.setPlainText("Chỉ đổi ảnh 2")
+        window.view.zoom_to(0.5)
+        window._activate_document(first)
+        self.assertEqual(window.selected, 1)
+        self.assertEqual(window.view.zoom, 2)
+        self.assertEqual(window.lines, ["Bản dịch riêng ảnh 1"])
+        self.assertEqual(window.txt.toPlainText(), "Chỉ đổi ảnh 1")
+        self.assertIsNotNone(window.doc.selection)
+        window.undo()
+        self.assertEqual(window.page.regions[1].text, "Một trang truyện")
+        window._activate_document(second)
+        self.assertEqual(window.txt.toPlainText(), "Chỉ đổi ảnh 2")
+        self.assertEqual(window.view.zoom, 0.5)
+        self.assertIsNone(window.doc.selection)
+
+    def test_unprocessed_region_keeps_typed_translation_when_switching_tabs(self):
+        window = self.editor()
+        first = window._active_document
+        self.page.regions[0].cleaned = False
+        window.select_region(0)
+        window.txt.setPlainText("Bản dịch chưa xoá nền")
+        window._show_page(self.other_page())
+        window._activate_document(first)
+        self.assertEqual(window.txt.toPlainText(), "Bản dịch chưa xoá nền")
+        self.assertFalse(window.region.cleaned)
+        self.assertTrue(window.doc.dirty)
+        self.assertFalse(window.save_document(wait=True))
+        self.assertIn("chưa xử lý", window.statusBar().currentMessage())
+
+    def test_close_tab_cancel_save_cancel_discard_and_welcome(self):
+        window = self.editor()
+        window.txt.setPlainText("Chưa lưu")
+        with patch("app.ui.main_window.QMessageBox.question", return_value=QMessageBox.Cancel):
+            window.close_document(0)
+        self.assertEqual(window.document_tab.count(), 1)
+        with patch("app.ui.main_window.QMessageBox.question", return_value=QMessageBox.Save), \
+             patch("app.ui.main_window.QFileDialog.getSaveFileName", return_value=("", "")):
+            window.close_document(0)
+        self.assertEqual(window.document_tab.count(), 1)
+        with patch("app.ui.main_window.QMessageBox.question", return_value=QMessageBox.Discard):
+            window.close_document(0)
+        self.assertEqual(window.document_tab.count(), 0)
+        self.assertIsNone(window.page)
+        self.assertEqual(window.canvas_stack.currentIndex(), 0)
+        window._show_page(self.other_page())
+        self.assertEqual(window.document_tab.count(), 1)
+
+    def test_closing_app_checks_every_dirty_tab_and_honors_cancel(self):
+        window = self.editor()
+        window.txt.setPlainText("Chưa lưu 1")
+        window._show_page(self.other_page())
+        window.txt.setPlainText("Chưa lưu 2")
+        event = QCloseEvent()
+        with patch("app.ui.main_window.QMessageBox.question", side_effect=[QMessageBox.Discard, QMessageBox.Cancel]) as question:
+            window.closeEvent(event)
+        self.assertFalse(event.isAccepted())
+        self.assertEqual(question.call_count, 2)
+        self.assertEqual(window.document_tab.count(), 2)
+
+    def test_psd_default_save_reuses_path_and_save_as_keeps_other_tab_independent(self):
+        window = self.editor()
+        first = window._active_document
+        path = str(Path(self.temp.name) / "default-save.psd")
+        window.txt.setPlainText("Đã lưu PSD")
+        with patch("app.ui.main_window.photoshop_available", return_value=False), \
+             patch("app.ui.main_window.QFileDialog.getSaveFileName", return_value=(path, "Photoshop (*.psd)")) as dialog:
+            self.assertTrue(window.save_document(wait=True))
+            self.assertEqual(dialog.call_args.args[3], "Photoshop (*.psd)")
+        self.assertEqual(Path(path).read_bytes()[:4], b"8BPS")
+        self.assertFalse(window.doc.dirty)
+        self.assertEqual(first.psd_path, path)
+        window.txt.setPlainText("Lưu lại PSD")
+        with patch("app.ui.main_window.photoshop_available", return_value=False), \
+             patch("app.ui.main_window.QFileDialog.getSaveFileName", side_effect=AssertionError("Save must reuse path")):
+            self.assertTrue(window.save_document(wait=True))
+        window._show_page(self.other_page())
+        self.assertIsNone(window._active_document.psd_path)
+        window.document_tab.moveTab(0, 1)
+        window._activate_document(first)
+        self.assertIn("default-save.psd", window.document_tab.tabText(window.document_tab.currentIndex()))
+        copied = str(Path(self.temp.name) / "copy-save.psd")
+        with patch("app.ui.main_window.photoshop_available", return_value=False), \
+             patch("app.ui.main_window.QFileDialog.getSaveFileName", return_value=(copied, "")):
+            self.assertTrue(window.save_document(ask=True, wait=True))
+        self.assertTrue(Path(copied).exists())
+        self.assertEqual(first.psd_path, copied)
+
+    def test_failed_psd_save_keeps_original_file_and_unsaved_state(self):
+        window = self.editor()
+        path = Path(self.temp.name) / "failed-save.psd"
+        path.write_bytes(b"previous PSD")
+        window._active_document.psd_path = str(path)
+        window.txt.setPlainText("Chưa lưu do lỗi ghi")
+
+        def broken_export(page, destination):
+            Path(destination).write_bytes(b"partial PSD")
+            raise OSError("disk error")
+
+        with patch("app.ui.main_window.photoshop_available", return_value=False), \
+             patch("app.ui.main_window.export_without_photoshop", side_effect=broken_export), \
+             patch("app.ui.main_window.QMessageBox.warning"):
+            self.assertFalse(window.save_document(wait=True))
+        self.assertEqual(path.read_bytes(), b"previous PSD")
+        self.assertTrue(window.doc.dirty)
+        self.assertIn("disk error", window.statusBar().currentMessage())
+
+    def test_detection_queue_completes_on_its_own_tab(self):
+        window = self.editor()
+        first, second = self.other_page("detect1.png", False), self.other_page("detect2.png", False)
+        gate = threading.Event()
+        processed = []
+
+        def fake_detect(worker):
+            if worker.page is first:
+                gate.wait(5)
+            worker.page.detected = True
+            processed.append(worker.page)
+            worker.finished_ok.emit()
+
+        with patch.object(DetectWorker, "run", fake_detect):
+            window._show_page(first)
+            window._show_page(second)
+            self.assertEqual(window.document_tab.count(), 3)
+            self.assertEqual(len(window._detect_queue), 1)
+            gate.set()
+            self.drain_jobs()
+        self.assertEqual(processed, [first, second])
+        self.assertIs(window.page, second)
+        self.assertTrue(window.view.isEnabled())
+
+    def test_file_dialog_opens_every_selected_file(self):
+        window = self.editor()
+        second = self.other_page("dialog2.png")
+        third = self.other_page("dialog3.png")
+        with patch("app.ui.main_window.QFileDialog.getOpenFileNames", return_value=([second.path, third.path], "")), \
+             patch.object(window, "run_detect"):
+            window.open_image()
+        self.assertEqual(window.document_tab.count(), 3)
+        self.assertEqual(window.page.path, third.path)
+
+    def test_project_and_psd_open_without_replacing_other_tabs(self):
+        window = self.editor()
+        window.txt.setPlainText("Ảnh đang sửa")
+        first = window._active_document
+        other = self.other_page("project2.png")
+        project_path = str(Path(self.temp.name) / "tabs.lzp")
+        project.save(project_path, [other])
+        window.open_project(project_path)
+        second = window._active_document
+        psd_page = self.other_page("psd-background.png")
+        psd_path = str(Path(self.temp.name) / "opened.psd")
+        with patch("app.core.psd_import.open_psd", return_value=(psd_page, [])):
+            window.load_image(psd_path)
+        self.assertEqual(window.document_tab.count(), 3)
+        self.assertEqual(window._active_document.psd_path, psd_path)
+        self.assertEqual(second.project_path, project_path)
+        window._activate_document(first)
+        self.assertIsNone(window.project_path)
+        self.assertEqual(window.txt.toPlainText(), "Ảnh đang sửa")
+        self.assertTrue(window.doc.dirty)
+
+    def test_close_save_waits_for_success_before_removing_tab(self):
+        window = self.editor()
+        window.txt.setPlainText("Lưu trước khi đóng")
+        path = str(Path(self.temp.name) / "close-save.psd")
+        with patch("app.ui.main_window.QMessageBox.question", return_value=QMessageBox.Save), \
+             patch("app.ui.main_window.photoshop_available", return_value=False), \
+             patch("app.ui.main_window.QFileDialog.getSaveFileName", return_value=(path, "")):
+            window.close_document(0)
+        self.assertEqual(window.document_tab.count(), 0)
+        self.assertEqual(Path(path).read_bytes()[:4], b"8BPS")
+
+    def test_closed_saved_tab_is_released_after_worker_finishes(self):
+        window = self.editor()
+        reference = weakref.ref(window._active_document)
+        path = str(Path(self.temp.name) / "released-tab.psd")
+        with patch("app.ui.main_window.photoshop_available", return_value=False), \
+             patch("app.ui.main_window.QFileDialog.getSaveFileName", return_value=(path, "")):
+            self.assertTrue(window.save_document(wait=True))
+        window.close_document(0)
+        QTest.qWait(30)
+        gc.collect()
+        self.assertIsNone(reference())
+
+    def test_chapter_navigation_uses_tabs_and_preserves_other_workspaces(self):
+        window = self.editor()
+        folder = Path(self.temp.name) / "chapter"
+        folder.mkdir(exist_ok=True)
+        chapter = Chapter.__new__(Chapter)
+        chapter.folder = str(folder)
+        first, second = self.other_page("chapter1.png"), self.other_page("chapter2.png")
+        chapter.paths = [first.path, second.path]
+        chapter.pages = {first.path: first, second.path: second}
+        chapter.translations, chapter.filled, chapter.redrawn = {}, set(), {}
+        window.load_chapter(chapter.folder, chapter)
+        window._page_row_changed(1)
+        self.assertEqual(window.document_tab.count(), 3)
+        self.assertIs(window.page, second)
+        window._page_row_changed(0)
+        self.assertEqual(window.document_tab.count(), 3)
+        self.assertIs(window.page, first)
+        window._activate_document(window.documents[0])
+        self.assertIsNone(window.chapter)
 
 
 if __name__ == "__main__":

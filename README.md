@@ -40,6 +40,12 @@ Bố cục và thao tác quen thuộc của Photoshop 2023 (giao diện tối), 
 - **Redraw tay**: Brush, Eraser (trên Redraw: trả về raw), Clone Stamp, Spot Healing (tô lên chữ, nhả chuột là AI
   vẽ lại); mọi nét đều bị giới hạn trong vùng chọn nếu có.
 - **Hoàn tác nhiều bước** cho mọi thao tác (gõ chữ, đổi font, nét cọ, xoá chữ, nhận diện…), bảng History như PS.
+- **Nhiều tài liệu**: Ctrl+O cho phép chọn nhiều file; mở thêm ảnh/PSD/dự án tạo tab mới, giữ nguyên các tab đang sửa.
+  Mỗi tab giữ Layers, History, vùng chọn, bản dịch, vị trí xem và mức zoom riêng. Kéo để đổi thứ tự tab;
+  Ctrl+Tab / Ctrl+Shift+Tab chuyển tab, Ctrl+W hoặc nút × đóng tab. Mở lại cùng file sẽ chuyển về tab đã mở.
+- **Lưu mặc định là PSD**: Ctrl+S chọn tên `.psd` ở lần đầu, các lần sau lưu lại vào PSD của riêng tab đó.
+  Ctrl+Shift+S lưu PSD thành tên khác. Đóng tab/app sẽ hỏi lưu những tài liệu đã sửa; huỷ hoặc lưu lỗi sẽ giữ tab.
+  Bản dịch trong khung chưa xử lý cần được xử lý trước khi lưu PSD; dùng `.lzp` nếu muốn giữ bản nháp và khung nhận diện.
 - **Chữ**: công cụ **T** – bấm vào bóng thoại là gõ ngay trong bóng (chọn sẵn một bóng rồi bấm T cũng vậy);
   bóng còn chữ gốc thì tự xoá chữ trước. Esc / Ctrl+Enter / bấm ra ngoài để xong. Bấm đúp vào khung chữ để sửa.
   Kéo khung tím để di chuyển, kéo góc để đổi cỡ khung, kéo ngay ngoài góc để **xoay** (Shift: bước 15°).
@@ -47,7 +53,7 @@ Bố cục và thao tác quen thuộc của Photoshop 2023 (giao diện tối), 
   thành layer effect thật của Photoshop.
 - **Move (V)** kéo layer ảnh (có vùng chọn: chỉ kéo phần trong vùng chọn). **Free Transform (Ctrl+T)**: co giãn
   (kéo góc giữ tỉ lệ, Shift: tự do), xoay (kéo ngoài khung, Shift: 15°), Enter áp dụng, Esc huỷ.
-- **Dự án (.lzp)**: *Lưu dự án* (Ctrl+S) giữ mọi thứ – layer, khung chữ, kiểu chữ, bản redraw, bản dịch, cả chương –
+- **Dự án (.lzp)**: *Lưu dự án Lilyzono* (Ctrl+Alt+Shift+S) giữ mọi thứ – layer, khung chữ, kiểu chữ, bản redraw, bản dịch, cả chương –
   để mở lại làm tiếp (kèm ảnh raw, mở được trên máy khác). Đóng app khi chưa lưu sẽ được hỏi.
 - **Mở PSD** (Ctrl+O): Background thành raw, layer ảnh giữ tên / ẩn hiện / opacity / blend, layer chữ thành khung
   chữ sửa được (nội dung, font, cỡ, màu, căn lề, xoay, Stroke, Drop Shadow) – sửa tiếp PSD đã type tay.
@@ -218,7 +224,9 @@ Chọn **1** vùng đã xử lý → hiện khung tím quanh chữ:
 | Ctrl+0 / Ctrl+1 / Ctrl + lăn | Vừa màn hình / 100% / phóng to-thu nhỏ |
 | Ctrl+H | Ẩn/hiện khung chữ |
 | Ctrl+O | Mở ảnh / dự án .lzp / PSD |
-| Ctrl+S / Ctrl+Shift+S | Lưu dự án (.lzp) / lưu dự án thành… |
+| Ctrl+S / Ctrl+Shift+S | Lưu PSD / lưu PSD thành… |
+| Ctrl+Alt+Shift+S | Lưu dự án Lilyzono (.lzp) |
+| Ctrl+W / Ctrl+Tab / Ctrl+Shift+Tab | Đóng tab / tab tiếp theo / tab trước |
 | Ctrl+Alt+S / Ctrl+Alt+Shift+W | Lưu PSD / Xuất JPEG |
 | Ctrl+T · Enter · Esc | Free Transform · áp dụng · huỷ |
 | F5 · Ctrl+Enter · Tab | Nhận diện chữ · xử lý khung đang chọn · khung tiếp theo |
