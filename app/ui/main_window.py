@@ -39,7 +39,7 @@ from ..core import cloud, lama, secrets
 from ..core.detect import TextDetector
 from ..core.assign import apply_plan, assign_lines
 from ..core.chapter import Chapter
-from ..core.clean import skip_hard
+from ..core.clean import skip_hard, small_only
 from ..core.docs import load_lines, load_pages, page_number
 from ..core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available
 from ..core.page import Page, Region
@@ -60,15 +60,20 @@ class DetectWorker(QThread):
     finished_ok = Signal()
     failed = Signal(str)
 
-    def __init__(self, window: "MainWindow", page: Page, right_to_left: bool):
+    def __init__(self, window: "MainWindow", page: Page, right_to_left: bool, auto=None):
         super().__init__(window)
         self.window, self.page, self.rtl = window, page, right_to_left
+        self.auto = auto  # (inpainter, xoá SFX nhỏ?, đặt chữ theo lòng bóng?) hoặc None = không tự xoá
+        self.cleaned = 0
 
     def run(self):
         try:
             if self.window.detector is None:
                 self.window.detector = TextDetector()
             self.page.detect(self.window.detector, self.rtl)
+            if self.auto is not None:
+                self.page.inpainter, small, fit = self.auto
+                self.cleaned = self.page.auto_clean(small, fit)
             self.finished_ok.emit()
         except Exception as e:  # noqa: BLE001 - báo lỗi cho người dùng
             self.failed.emit(str(e))
@@ -121,12 +126,14 @@ class CleanWorker(QThread):
 
 
 ENGINES = [
+    ("auto", "Tự động – bóng thoại + SFX nhỏ (LaMa), chữ trên tranh để redraw"),
     ("simple", "Chỉ xoá chỗ đơn giản – nền khó để nguyên, tự redraw sau"),
     ("opencv", "Thường (OpenCV) – nhanh, nền tranh hơi mờ"),
     ("lama", "AI LaMa – chạy trên máy, miễn phí"),
     ("gemini", "AI Google Gemini – cần API key"),
     ("openai", "AI OpenAI (ChatGPT) – cần API key"),
 ]
+LOCAL_AI = ("auto", "lama")  # các lựa chọn dùng LaMa trên máy
 
 
 class ColorButton(QPushButton):
@@ -223,12 +230,12 @@ class MainWindow(QMainWindow):
             "Mở cả thư mục ảnh raw của một chương")
         act("Mở ảnh", self.open_image, "Ctrl+O")
         act("Mở bản dịch", self.open_docs, "Ctrl+D")
-        act("Nạp bản redraw", self.open_redrawn).setToolTip(
-            "Nạp ảnh đã xoá chữ/redraw sẵn (Photoshop, AI…) làm nền rồi type lên. Chế độ chương: chọn thư mục, "
-            "ảnh được ghép với trang theo số trong tên file")
+        act("Upload bản redraw", self.open_redrawn).setToolTip(
+            "Nạp ảnh đã xoá chữ/redraw sẵn (Photoshop, AI…): thành lớp Redraw nằm trên raw, dưới lớp chữ. "
+            "Chế độ chương: chọn thư mục, ảnh được ghép với trang theo số trong tên file")
         tb.addSeparator()
         self.direction = QComboBox()
-        self.direction.addItems(["Manga: phải → trái", "Manhwa/Manhua: trái → phải"])
+        self.direction.addItems(["Tiếng Nhật (manga): phải → trái", "Tiếng Anh / manhwa: trái → phải"])
         self.direction.setCurrentIndex(int(self.settings.value("direction", 0)))
         self.direction.currentIndexChanged.connect(lambda i: self.settings.setValue("direction", i))
         tb.addWidget(self.direction)
@@ -250,13 +257,14 @@ class MainWindow(QMainWindow):
         self.act_rect.setChecked(True)
         self.view.set_tool(TOOL_RECT)
         tb.addSeparator()
-        act("Xuất ảnh", self.export_image, "Ctrl+S")
+        act("Xuất JPEG", self.export_image, "Ctrl+S")
         act("Xuất PSD", self.export_psd_page, "Ctrl+Shift+S").setToolTip(
             "Xuất trang này ra PSD có lớp (có Photoshop: lớp chữ sửa được)")
         tb.addSeparator()
         self.act_process_all = act("Xử lý cả chương", self.process_chapter)
         self.act_process_all.setToolTip("Nhận diện, tự điền câu dịch theo trang, xoá chữ và đặt chữ cho mọi trang")
-        self.act_export_all = act("Xuất PSD cả chương", self.export_psd_chapter)
+        self.act_export_all = act("Xuất cả chương", self.export_psd_chapter)
+        self.act_export_all.setToolTip("Xuất mọi trang đã mở ra PSD (raw / Redraw / lớp chữ) và/hoặc JPEG")
 
     def _build_panel(self) -> QWidget:
         panel = QWidget()
@@ -293,6 +301,10 @@ class MainWindow(QMainWindow):
                           "rồi dán kết quả về: tool tự căn khớp và chỉ thay phần chữ")
         btn_ai.clicked.connect(self.open_ai_bridge)
         rl.addWidget(btn_ai)
+        btn_sel = QPushButton("Chọn mọi khung đã có bản dịch  (Ctrl+Shift+A)")
+        btn_sel.setToolTip("Chọn hết các khung có chữ dịch để đổi font / kiểu chữ hàng loạt")
+        btn_sel.clicked.connect(self.select_translated)
+        rl.addWidget(btn_sel)
         lay.addWidget(g_region)
 
         # Bản dịch
@@ -388,7 +400,7 @@ class MainWindow(QMainWindow):
             self.engine_box.addItem(label, eid)
         self.engine_box.setToolTip("Cách vẽ lại nền sau khi xoá chữ. Bóng thoại trắng / nền trơn luôn được tô màu "
                                    "nền (tức thì); AI chỉ dùng cho nền có hoạ tiết (tranh, lưới chấm, SFX).")
-        idx = self.engine_box.findData(self.settings.value("ai/engine", "lama"))
+        idx = self.engine_box.findData(self.settings.value("ai/engine", "auto"))
         self.engine_box.setCurrentIndex(max(0, idx))
         self.engine_box.currentIndexChanged.connect(self._engine_changed)
         btn_api = QPushButton("API key…")
@@ -408,6 +420,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Enter"), self, self.process_selected)
         QShortcut(QKeySequence("Ctrl+Z"), self, self.reset_selected)
         QShortcut(QKeySequence("Ctrl+Shift+R"), self, self.open_ai_bridge)
+        QShortcut(QKeySequence("Ctrl+Shift+A"), self, self.select_translated)
         QShortcut(QKeySequence(Qt.Key_Delete), self.view, self.delete_selected)
         QShortcut(QKeySequence(Qt.Key_Tab), self.view, lambda: self._step_region(1))
         QShortcut(QKeySequence("Ctrl+A"), self.view, self.select_all)
@@ -456,9 +469,9 @@ class MainWindow(QMainWindow):
         # Vùng đã xử lý thì đổi kiểu là thấy ngay – áp cho mọi vùng đang chọn.
         changed = False
         for r in self.selected_regions:
-            if r.cleaned:
+            if r.cleaned or r.text.strip():
                 r.style = style.copy()
-                changed = True
+                changed = changed or r.cleaned
         if changed:
             self.refresh()
 
@@ -565,7 +578,7 @@ class MainWindow(QMainWindow):
     def _engine_changed(self, *_):
         self.settings.setValue("ai/engine", self.engine)
         self.lbl_ai.setText("")
-        if self.engine == "lama":
+        if self.engine in LOCAL_AI:
             self._preload_lama()
         elif self.engine in PROVIDERS:
             if not secrets.get_key(self.engine):
@@ -586,6 +599,8 @@ class MainWindow(QMainWindow):
         """Hàm vẽ lại nền theo lựa chọn hiện tại (None = OpenCV)."""
         if self.engine == "lama":
             return lama.inpaint
+        if self.engine == "auto":
+            return small_only(lama.inpaint)
         if self.engine == "simple":
             return skip_hard
         if self.engine in PROVIDERS:
@@ -610,7 +625,7 @@ class MainWindow(QMainWindow):
             self.engine_box.setCurrentIndex(self.engine_box.findData("opencv"))
             QMessageBox.warning(self, "AI vẽ nền", err)
         else:
-            if self.engine == "lama":
+            if self.engine in LOCAL_AI:
                 self.lbl_ai.setText("✓ AI LaMa sẵn sàng")
 
     def _clean_then(self, r, after):
@@ -629,7 +644,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "AI vẽ nền", str(e))
             return
         name = self.engine_box.currentText().split(" – ")[0]
-        wait = " (đang chờ nạp model)" if self.engine == "lama" and not lama.is_ready() else ""
+        wait = " (đang chờ nạp model)" if self.engine in LOCAL_AI and not lama.is_ready() else ""
         what = f"{len(r)} vùng" if isinstance(r, list) else f"vùng #{self.selected + 1}"
         self.statusBar().showMessage(f"Đang xoá chữ {what} – {name}{wait}…")
         self.centralWidget().setEnabled(False)
@@ -696,7 +711,7 @@ class MainWindow(QMainWindow):
             self.select_region(0 if page.regions else -1)
         else:
             self.run_detect()
-        if self.engine == "lama":
+        if self.engine in LOCAL_AI:
             self._preload_lama()
 
     # --- chương -------------------------------------------------------------------------
@@ -774,10 +789,8 @@ class MainWindow(QMainWindow):
         """Docs chia theo trang: tự ghép câu của trang vào các khung theo thứ tự đọc."""
         if not (self.page_lines and self.lines and self.page and self.page.detected):
             return
-        free = [r for r in self.page.regions if not r.cleaned]
+        free = [r for r in self.page.regions if not r.text.strip()]
         plan = assign_lines(self.page, free, self.lines)
-        for r in free:
-            r.text = ""
         apply_plan(self.page, plan, self.current_style())
         if self.chapter:
             self.chapter.filled.add(self.page.path)
@@ -843,15 +856,24 @@ class MainWindow(QMainWindow):
             return
         self.act_detect.setEnabled(False)
         self.statusBar().showMessage("Đang nhận diện chữ…")
-        self.worker = DetectWorker(self, self.page, self.direction.currentIndex() == 0)
+        self.worker = DetectWorker(self, self.page, self.direction.currentIndex() == 0, self._auto_clean_args())
         self.worker.finished_ok.connect(self._detect_done)
         self.worker.failed.connect(self._detect_failed)
         self.worker.start()
 
+    def _auto_clean_args(self):
+        """Thông số tự xoá sau khi nhận diện: bóng thoại luôn xoá; SFX nhỏ xoá bằng AI trên máy (không tự gọi AI
+        trên mạng vì tốn phí)."""
+        if self.engine in PROVIDERS or self.engine == "simple":
+            return (skip_hard, False, self.chk_bubble.isChecked())
+        return (lama.inpaint if self.engine in LOCAL_AI else None, True, self.chk_bubble.isChecked())
+
     def _detect_done(self):
         self.act_detect.setEnabled(True)
         n = len(self.page.regions)
-        self.statusBar().showMessage(f"Tìm thấy {n} vùng chữ. Bấm vào một khung để chọn, kéo chuột để vẽ thêm.")
+        k = self.worker.cleaned if self.worker else 0
+        self.statusBar().showMessage(f"Tìm thấy {n} vùng chữ, đã tự xoá chữ {k} bóng thoại / SFX nhỏ. "
+                                     "Chọn khung rồi gõ bản dịch; chỗ còn lại: Xử lý (Ctrl+Enter) hoặc upload bản redraw.")
         self._auto_fill()
         self.refresh()
         self.select_region(0 if n else -1)
@@ -889,6 +911,12 @@ class MainWindow(QMainWindow):
             self.select_region(idx, list(range(a, b + 1)))
         else:
             self.select_region(idx)
+
+    def select_translated(self):
+        idx = [i for i, r in enumerate(self.page.regions if self.page else []) if r.text.strip()]
+        if idx:
+            self.select_region(idx[0], idx)
+            self.statusBar().showMessage(f"Đã chọn {len(idx)} khung có bản dịch: đổi font/kiểu là áp cho tất cả.", 6000)
 
     def select_all(self):
         if self.page and self.page.regions:
@@ -957,6 +985,8 @@ class MainWindow(QMainWindow):
         self._update_warning()
         r = self.region
         if r is not None and r.cleaned:
+            if not r.text.strip():
+                r.style = self.current_style()  # khung mới gõ chữ: dùng font/kiểu đang chọn
             r.text = self.txt.toPlainText()
             self.refresh()
 
@@ -1185,6 +1215,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "AI vẽ nền", str(e))
             return
         style, fit, rtl = self.current_style(), self.chk_bubble.isChecked(), self.direction.currentIndex() == 0
+        auto = self._auto_clean_args()
         ch = self.chapter
 
         def job(report):
@@ -1196,6 +1227,9 @@ class MainWindow(QMainWindow):
                 page.inpainter = inpainter
                 if not page.detected:
                     page.detect(self.detector, rtl)
+                    page.inpainter, small, _ = auto
+                    page.auto_clean(small, fit)
+                    page.inpainter = inpainter
                 if path not in ch.filled and ch.lines_for(path):
                     ch.auto_fill(path, style)
                 regs = [r for r in page.regions if r.text.strip() and not r.cleaned]
@@ -1263,19 +1297,25 @@ class MainWindow(QMainWindow):
 
         self._run_batch("Đang đặt chữ lên bản redraw:", job, msg + " Câu dịch đã có được đặt lại trên nền mới.")
 
-    def _export_pages(self, pages: list[Page], out_dir: str):
+    def _export_pages(self, pages: list[Page], out_dir: str, psd: bool = True, jpeg: bool = False):
         def job(report):
-            exporter = PhotoshopExporter() if photoshop_available() else None
+            exporter = PhotoshopExporter() if psd and photoshop_available() else None
             for i, page in enumerate(pages):
                 report(f"{i + 1}/{len(pages)} ({os.path.basename(page.path)})…")
-                out = os.path.join(out_dir, os.path.splitext(os.path.basename(page.path))[0] + ".psd")
+                base = os.path.join(out_dir, os.path.splitext(os.path.basename(page.path))[0])
+                if jpeg:
+                    page.export(base + ".jpg")
+                if not psd:
+                    continue
                 if exporter:
-                    exporter.export(page, out)
+                    exporter.export(page, base + ".psd")
                 else:
-                    export_without_photoshop(page, out)
+                    export_without_photoshop(page, base + ".psd")
 
-        how = "lớp chữ sửa được (Photoshop)" if photoshop_available() else "lớp chữ dạng ảnh (máy không có Photoshop)"
-        self._run_batch("Đang xuất PSD:", job, f"Đã xuất {len(pages)} file PSD, {how} → {out_dir}")
+        what = " + ".join(x for x, on in (("PSD", psd), ("JPEG", jpeg)) if on)
+        how = ("" if not psd else ", lớp chữ sửa được (Photoshop)" if photoshop_available()
+               else ", lớp chữ dạng ảnh (máy không có Photoshop)")
+        self._run_batch("Đang xuất:", job, f"Đã xuất {len(pages)} trang ({what}{how}) → {out_dir}")
 
     def export_psd_page(self):
         if self.page is None:
@@ -1298,17 +1338,24 @@ class MainWindow(QMainWindow):
         if self.chapter is None:
             self.export_psd_page()
             return
-        out_dir = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu PSD", self.chapter.folder)
+        kinds = ["PSD + JPEG", "PSD", "JPEG"]
+        last = self.settings.value("export/kind", kinds[0])
+        kind, ok = QInputDialog.getItem(self, "Xuất cả chương", "Định dạng:", kinds,
+                                        kinds.index(last) if last in kinds else 0, False)
+        if not ok:
+            return
+        self.settings.setValue("export/kind", kind)
+        out_dir = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu", self.chapter.folder)
         if not out_dir:
             return
         pages = [self.chapter.page(p) for p in self.chapter.paths if p in self.chapter.pages]
-        self._export_pages(pages, out_dir)
+        self._export_pages(pages, out_dir, psd="PSD" in kind, jpeg="JPEG" in kind)
 
     def export_image(self):
         if self.page is None:
             return
         base, _ = os.path.splitext(self.page.path)
-        path, _ = QFileDialog.getSaveFileName(self, "Xuất ảnh", base + "_typed.png", "PNG (*.png);;JPG (*.jpg)")
+        path, _ = QFileDialog.getSaveFileName(self, "Xuất JPEG", base + "_typed.jpg", "JPEG (*.jpg);;PNG (*.png)")
         if not path:
             return
         try:

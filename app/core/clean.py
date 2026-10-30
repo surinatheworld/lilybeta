@@ -30,6 +30,28 @@ def skip_hard(img: np.ndarray, mask: np.ndarray) -> None:
 
 skip_hard.skip = True
 
+SMALL_SFX_FRAC = 0.004  # SFX có khung ≤ 0,4% diện tích trang coi là nhỏ: AI trên máy vẽ lại được
+
+
+def is_small_sfx(region, size: tuple[int, int]) -> bool:
+    x1, y1, x2, y2 = region.box
+    return region.kind == "sfx" and (x2 - x1) * (y2 - y1) <= SMALL_SFX_FRAC * size[0] * size[1]
+
+
+def small_only(inpainter):
+    """Chế độ "Tự động": `inpainter` chỉ vẽ lại SFX nhỏ và vùng người dùng tự khoanh; chữ đè lên tranh và
+    SFX lớn để nguyên cho người dùng tự redraw (hoặc nạp bản redraw)."""
+    def run(img: np.ndarray, mask: np.ndarray) -> None:
+        inpainter(img, mask)
+
+    run.skip = lambda page, region: region.kind == "text" or (region.kind == "sfx" and not is_small_sfx(region, page.size))
+    return run
+
+
+def fill_bubble(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int, int]) -> bool:
+    """Xoá chữ nếu nằm trong bóng thoại / hộp dẫn truyện sáng, khép kín; False (không đụng gì) nếu không phải."""
+    return _fill_light_bubble(img, build_text_mask(text_mask, box), box)
+
 
 def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int, int],
                  area_mask: np.ndarray | None = None, inpainter=None, whole_box: bool = False) -> None:
@@ -120,20 +142,29 @@ def _fill_light_bubble(img: np.ndarray, strokes: np.ndarray, box: tuple[int, int
     win = img[wy1:wy2, wx1:wx2]
     strokes = strokes[wy1:wy2, wx1:wx2] > 0
     gray = cv2.cvtColor(win, cv2.COLOR_BGR2GRAY)
-    gray[strokes] = 255
+    # Chỉ xoá nét trong đúng khung chữ khi dò lòng bóng: chữ (nhất là chữ Anh) hay sát viền bóng, xoá cả phần
+    # nới rộng thì mất viền và vùng loang tràn ra ngoài. Furigana ngoài khung thành "lỗ" trong lòng bóng, vẫn được tô.
+    core = np.zeros_like(strokes)
+    core[max(0, y1 - 2 - wy1):y2 + 2 - wy1, max(0, x1 - 2 - wx1):x2 + 2 - wx1] = True
+    gray[strokes & core] = 255
     soft = cv2.GaussianBlur(gray, (0, 0), 2.5)
     sx, sy = (x1 + x2) // 2 - wx1, (y1 + y2) // 2 - wy1
     if soft[sy, sx] < 225:
         return False
     ff = np.zeros((soft.shape[0] + 2, soft.shape[1] + 2), np.uint8)
     flags = 4 | cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE | (255 << 8)
-    cv2.floodFill(soft, ff, (sx, sy), 0, 255, 255 - 222, flags)  # mọi điểm ≥ 222 (đã làm mờ)
+    seed = int(soft[sy, sx])
+    cv2.floodFill(soft, ff, (sx, sy), 0, seed - 222, 255, flags)  # mọi điểm ≥ 222 (đã làm mờ)
     region = ff[1:-1, 1:-1] > 0
     ys, xs = np.nonzero(region)
     if (len(xs) == 0 or xs.min() == 0 or ys.min() == 0 or xs.max() == region.shape[1] - 1
             or ys.max() == region.shape[0] - 1 or len(xs) > 0.25 * w * h):
         return False  # không khép kín trong cửa sổ: nền trắng của trang/panel, không phải bóng
     interior = _fill_holes(region.astype(np.uint8))
+    # Bóng thật bao trọn khung chữ và có lề quanh chữ; viền trắng của chữ đè lên tranh (tên tác giả…) thì bám sát chữ.
+    box_in = interior[y1 - wy1:y2 - wy1, x1 - wx1:x2 - wx1]
+    if box_in.mean() < 0.9 or interior.sum() < 1.3 * (x2 - x1) * (y2 - y1):
+        return False
     bg = np.median(win[region & ~strokes], axis=0)
     if bg.min() < 230:
         return False

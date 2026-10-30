@@ -1,8 +1,9 @@
 """Type cả chương không cần mở giao diện: raw + file docs theo trang → PSD.
 
     python tools/run_chapter.py <thư mục raw> <file bản dịch .docx/.txt> <thư mục PSD ra> [--font "000 WildWords2 TB"]
-                                [--engine simple|lama|opencv|gemini|openai] [--redrawn <thư mục>] [--no-photoshop]
+                                [--engine auto|simple|lama|opencv|gemini|openai] [--redrawn <thư mục>] [--no-photoshop]
 
+--engine auto (mặc định): bóng thoại + SFX nhỏ (LaMa); chữ trên tranh, SFX lớn để nguyên (lớp chữ "REDRAW - …").
 --engine simple: chỉ xoá chữ ở nền đơn giản (bóng thoại, nền trơn); nền khó để nguyên, lớp chữ tên "REDRAW - …".
 --redrawn: thư mục ảnh đã redraw sẵn (ghép theo số trang trong tên file) làm nền để type lên.
 
@@ -23,7 +24,7 @@ from PySide6.QtGui import QGuiApplication  # noqa: E402
 
 from app.core import lama  # noqa: E402
 from app.core.chapter import Chapter  # noqa: E402
-from app.core.clean import skip_hard  # noqa: E402
+from app.core.clean import skip_hard, small_only  # noqa: E402
 from app.core.detect import TextDetector  # noqa: E402
 from app.core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available  # noqa: E402
 from app.core.typeset import TextStyle  # noqa: E402
@@ -35,7 +36,7 @@ def main():
     ap.add_argument("docs")
     ap.add_argument("out_dir")
     ap.add_argument("--font", default="000 WildWords2 TB")
-    ap.add_argument("--engine", default="lama", choices=["simple", "lama", "opencv", "gemini", "openai"])
+    ap.add_argument("--engine", default="auto", choices=["auto", "simple", "lama", "opencv", "gemini", "openai"])
     ap.add_argument("--model", default="", help="model của Gemini/OpenAI (mặc định theo app)")
     ap.add_argument("--redrawn", default="", help="thư mục ảnh đã redraw sẵn làm nền")
     ap.add_argument("--no-photoshop", action="store_true")
@@ -55,7 +56,7 @@ def main():
         key = os.environ.get(f"{a.engine.upper()}_API_KEY") or secrets.get_key(a.engine)
         inpainter = cloud.make_inpainter(a.engine, key, a.model)
     else:
-        inpainter = {"lama": lama.inpaint, "simple": skip_hard}.get(a.engine)
+        inpainter = {"lama": lama.inpaint, "simple": skip_hard, "auto": small_only(lama.inpaint)}.get(a.engine)
     style = TextStyle(family=a.font)
     exporter = None
     if not a.no_photoshop and photoshop_available():
@@ -64,8 +65,12 @@ def main():
     for path in ch.paths:
         t = time.time()
         page = ch.page(path)
-        page.inpainter = inpainter
         page.detect(det)
+        # Bóng thoại (và SFX nhỏ bằng AI trên máy) xoá ngay, như trong app.
+        local = a.engine in ("auto", "lama", "opencv")
+        page.inpainter = lama.inpaint if a.engine in ("auto", "lama") else None
+        page.auto_clean(small_sfx=local)
+        page.inpainter = inpainter
         plan = ch.auto_fill(path, style)
         page.clean_many([r for r, _ in plan])
         out = os.path.join(a.out_dir, os.path.splitext(os.path.basename(path))[0] + ".psd")
