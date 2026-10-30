@@ -38,9 +38,37 @@ def is_ready() -> bool:
     return _session is not None
 
 
+TILE_CORE = 320  # phần giữa mỗi ô 512px dùng để vẽ, phần còn lại là nền xung quanh cho model nhìn
+
+
 def inpaint(img: np.ndarray, mask: np.ndarray) -> None:
-    """Vẽ lại vùng `mask` (0/255, cỡ ảnh) trên `img` (BGR) tại chỗ."""
-    box = square_around(mask)
+    """Vẽ lại vùng `mask` (0/255, cỡ ảnh) trên `img` (BGR) tại chỗ.
+
+    Vùng nhỏ: một ô vuông quanh vùng. Vùng lớn: chia thành nhiều ô 512px ở độ phân giải gốc
+    (không thu nhỏ ảnh, để giữ được lưới chấm/hoạ tiết mảnh), vẽ lần lượt từng ô.
+    """
+    ys, xs = np.nonzero(mask)
+    if len(xs) == 0:
+        return
+    if max(xs.max() - xs.min(), ys.max() - ys.min()) * 2.2 <= SIZE:
+        _inpaint_window(img, mask, square_around(mask))
+        return
+    h, w = mask.shape[:2]
+    for cy in range(int(ys.min()) + TILE_CORE // 2, int(ys.max()) + TILE_CORE, TILE_CORE):
+        for cx in range(int(xs.min()) + TILE_CORE // 2, int(xs.max()) + TILE_CORE, TILE_CORE):
+            cy0, cx0 = min(cy, int(ys.max())), min(cx, int(xs.max()))
+            core = np.zeros_like(mask)
+            core[max(0, cy0 - TILE_CORE // 2):cy0 + TILE_CORE // 2, max(0, cx0 - TILE_CORE // 2):cx0 + TILE_CORE // 2] = 1
+            part = np.where(core > 0, mask, 0).astype(np.uint8)
+            if not part.any():
+                continue
+            side = min(SIZE, max(h, w))
+            x1 = int(np.clip(cx0 - side // 2, 0, max(0, w - side)))
+            y1 = int(np.clip(cy0 - side // 2, 0, max(0, h - side)))
+            _inpaint_window(img, part, (x1, y1, min(w, x1 + side), min(h, y1 + side)))
+
+
+def _inpaint_window(img: np.ndarray, mask: np.ndarray, box) -> None:
     if box is None:
         return
     x1, y1, x2, y2 = box

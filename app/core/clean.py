@@ -25,7 +25,7 @@ def build_text_mask(text_mask: np.ndarray, box: tuple[int, int, int, int]) -> np
 
 
 def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int, int],
-                 area_mask: np.ndarray | None = None, inpainter=None) -> None:
+                 area_mask: np.ndarray | None = None, inpainter=None, whole_box: bool = False) -> None:
     """Xoá chữ trong `box` trực tiếp trên `img` (BGR).
 
     `area_mask` (vùng khoanh lasso, 0/255 cỡ ảnh): xoá toàn bộ trong vùng đó thay vì chỉ nét chữ.
@@ -33,13 +33,13 @@ def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, in
     nền có hoạ tiết (tranh, lưới chấm) vẽ lại bằng `inpainter(img, mask)` (AI: LaMa / Gemini / OpenAI)
     nếu có, không thì inpaint của OpenCV.
     """
-    need = clean_local(img, text_mask, box, area_mask, inpainter)
+    need = clean_local(img, text_mask, box, area_mask, inpainter, whole_box)
     if need is not None:
         inpainter(img, need)
 
 
 def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int, int],
-                area_mask: np.ndarray | None = None, inpainter=None) -> np.ndarray | None:
+                area_mask: np.ndarray | None = None, inpainter=None, whole_box: bool = False) -> np.ndarray | None:
     """Phần xoá chữ làm ngay trên máy. Trả về mask (0/255, cỡ ảnh) còn cần AI vẽ lại, hoặc None nếu xong.
 
     Tách riêng để có thể gom nhiều vùng vào một lần gọi AI trên mạng.
@@ -60,11 +60,17 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
     ring = cv2.dilate(mask, np.ones((7, 7), np.uint8), iterations=2)
     ring[mask > 0] = 0
     border = crop[ring > 0]
-    if len(border) and border.std(axis=0).max() < 14:
-        bg = np.median(border, axis=0).astype(np.uint8)
-        crop[mask > 0] = bg
+    # Nền trơn: hầu hết điểm quanh chữ cùng màu (vài nét lọt vào như vạch "──" không tính).
+    med = np.median(border, axis=0) if len(border) else None
+    close = (np.abs(border.astype(np.int16) - med).max(axis=1) < 25).mean() if len(border) else 0
+    if len(border) and (border.std(axis=0).max() < 14 or close >= 0.9):
+        crop[mask > 0] = med.astype(np.uint8)
         if area_mask is None:
-            _remove_leftover_strokes(crop, (x1 - cx1, y1 - cy1, x2 - cx1, y2 - cy1))
+            # Quét nét sót rộng hơn khung chữ (vd vạch dài phía trên chữ), nhưng chỉ trong lòng bóng.
+            ex = max(x2 - x1, y2 - y1) // 2 + MARGIN
+            ex1, ey1, ex2, ey2 = max(0, x1 - ex), max(0, y1 - ex), min(w, x2 + ex), min(h, y2 + ex)
+            _remove_leftover_strokes(img[ey1:ey2, ex1:ex2], (x1 - ex1, y1 - ey1, x2 - ex1, y2 - ey1),
+                                     limit=(0, 0, ex2 - ex1, ey2 - ey1))
         return None
     # Nền chuyển màu mượt (gradient): khớp mặt cong bậc 2 theo viền rồi tô lại.
     if len(border) >= 30:
@@ -78,8 +84,9 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
         # Chữ trên tranh (SFX) thường có viền trắng quanh nét: nới mask để xoá luôn phần viền.
         if area_mask is None:
             mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=2)
-            # AI trên mạng vẽ lại cả vùng nên dán lại cả khung chữ, xoá luôn nét mà mask bỏ sót.
-            if getattr(inpainter, "whole_box", False):
+            # Xoá cả khung chữ (xoá luôn nét mờ model bỏ sót như "——", "。"): AI trên mạng luôn làm vậy;
+            # LaMa làm vậy với khung chữ thoại/dẫn truyện (SFX thì chỉ theo nét để giữ tranh).
+            if getattr(inpainter, "whole_box", False) or whole_box:
                 bx1, by1 = max(0, x1 - 4) - cx1, max(0, y1 - 4) - cy1
                 mask[by1:y2 + 4 - cy1, bx1:x2 + 4 - cx1] = 255
         full = np.zeros(img.shape[:2], np.uint8)
@@ -89,7 +96,7 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
     return None
 
 
-def _remove_leftover_strokes(crop: np.ndarray, box: tuple[int, int, int, int]) -> None:
+def _remove_leftover_strokes(crop: np.ndarray, box: tuple[int, int, int, int], limit=None) -> None:
     """Nền trơn: xoá nét mảnh model bỏ sót (vd "──") nằm lọt thỏm trong lòng bóng.
 
     Chỉ xoá những điểm bị nền bao quanh hoàn toàn, nên viền bóng và nền ngoài bóng không bị đụng tới.
@@ -105,7 +112,8 @@ def _remove_leftover_strokes(crop: np.ndarray, box: tuple[int, int, int, int]) -
     cv2.drawContours(interior, contours, -1, 255, cv2.FILLED)
     holes = (interior > 0) & (region == 0)
     inside_box = np.zeros_like(holes)
-    inside_box[y1:y2, x1:x2] = True
+    lx1, ly1, lx2, ly2 = limit or box
+    inside_box[ly1:ly2, lx1:lx2] = True
     holes = cv2.dilate((holes & inside_box).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
     holes &= interior > 0
     crop[holes] = crop[seed[1], seed[0]]

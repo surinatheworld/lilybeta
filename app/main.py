@@ -28,7 +28,7 @@ def selftest() -> int:
             ok = False
             lines.append(f"FAIL {name}\n{traceback.format_exc()}")
 
-    args = [a for a in sys.argv[1:] if a != "--selftest"]
+    args = [a for a in sys.argv[1:] if a not in ("--selftest", "--psd")]
     img = cv2.imdecode(np.fromfile(args[0], np.uint8), cv2.IMREAD_COLOR) if args else None
     if img is None:
         img = np.full((600, 400, 3), 255, np.uint8)
@@ -50,6 +50,27 @@ def selftest() -> int:
         lama.inpaint(img.copy(), m)
 
     step("AI LaMa", run_lama)
+    from .core.fonts import postscript_name
+    from .core.psd_export import photoshop_available
+
+    step("Tên font cho Photoshop", lambda: postscript_name("Arial"))
+    step("Photoshop", lambda: "có" if photoshop_available() else "không có (PSD sẽ có lớp chữ dạng ảnh)")
+    if "--psd" in sys.argv and photoshop_available():
+        def psd():
+            from .core.page import Page
+            from .core.psd_export import PhotoshopExporter
+            from .core.typeset import TextStyle
+
+            page = Page(args[0])
+            page.detect(TextDetector())
+            for r in page.regions[:2]:
+                r.text, r.style = "Chạy thử EditManga", TextStyle(family="Arial")
+            page.clean_many(page.regions[:2])
+            out = os.path.join(app_dir(), "selftest.psd")
+            PhotoshopExporter().export(page, out)
+            return f"{os.path.getsize(out) // 1024} KB"
+
+        step("Xuất PSD qua Photoshop", psd)
     step("Két lưu API key", lambda: type(__import__("keyring").get_keyring()).__name__ + f", gemini key: {bool(secrets.get_key('gemini'))}")
     with open(log_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")

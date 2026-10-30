@@ -1,7 +1,42 @@
-"""Đọc file bản dịch (.docx / .txt) thành danh sách câu."""
+"""Đọc file bản dịch (.docx / .txt) thành danh sách câu.
+
+Định dạng theo trang: một dòng chỉ có số (có thể kèm "Trang"/"Page") là tên trang, các dòng sau
+là câu dịch của trang đó theo thứ tự đọc:
+
+    1
+    Câu dịch 1
+    Câu dịch 2
+    2
+    …
+"""
 from __future__ import annotations
 
 import os
+import re
+
+PAGE_HEADER = re.compile(r"^\s*(?:trang|page|p\.?|tr\.?)?\s*#?\s*(\d{1,4})\s*[:.\-–]?\s*$", re.IGNORECASE)
+
+
+def load_pages(path: str) -> dict[int, list[str]]:
+    """{số trang: [các câu]}. File không có dòng tên trang thì mọi câu thuộc trang 0."""
+    pages: dict[int, list[str]] = {}
+    cur = 0
+    for line in load_lines(path):
+        m = PAGE_HEADER.match(line)
+        if m:
+            cur = int(m.group(1))
+            pages.setdefault(cur, [])
+            continue
+        pages.setdefault(cur, []).append(line)
+    if 0 in pages and not pages[0] and len(pages) > 1:
+        del pages[0]
+    return pages
+
+
+def page_number(filename: str) -> int | None:
+    """Số trang từ tên file ảnh: 001.jpg → 1, page_12.png → 12 (lấy cụm số cuối cùng)."""
+    nums = re.findall(r"\d+", os.path.splitext(os.path.basename(filename))[0])
+    return int(nums[-1]) if nums else None
 
 
 def load_lines(path: str) -> list[str]:

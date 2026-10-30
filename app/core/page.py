@@ -1,7 +1,7 @@
 """Trạng thái một trang: ảnh gốc, ảnh đã xoá chữ và các vùng chữ."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import cv2
 import numpy as np
@@ -13,6 +13,7 @@ from .detect import TextDetector, sort_reading_order
 from .typeset import TextStyle, best_rect, draw_text
 
 Box = tuple[int, int, int, int]
+AUTO_CAP_FRAC = 0.031
 
 
 @dataclass
@@ -24,6 +25,7 @@ class Region:
     text_rects: list[Box] = field(default_factory=list)  # các khung có thể đặt chữ (lòng bóng thoại)
     kind: str = "text"  # "text" | "sfx" | "manual" (vẽ tay) | "lasso"
     polygon: list[tuple[int, int]] | None = None  # đường khoanh lasso (toạ độ ảnh)
+    auto_cap: float = 0.0  # cỡ chữ chuẩn của trang (do Page đặt)
     manual_rect: Box | None = None  # khung chữ người dùng tự kéo/căn chỉnh (ưu tiên hơn khung tự động)
 
     @property
@@ -31,7 +33,14 @@ class Region:
         """Khung đặt chữ: khung người dùng tự chỉnh, không thì khung cho cỡ chữ lớn nhất."""
         if self.manual_rect:
             return self.manual_rect
-        return best_rect(self.text, self.style, self.text_rects) if self.text_rects else self.box
+        return best_rect(self.text, self.effective_style, self.text_rects) if self.text_rects else self.box
+
+    @property
+    def effective_style(self) -> TextStyle:
+        """Kiểu chữ dùng để dàn chữ: cỡ tự động thì giới hạn theo cỡ chuẩn của trang (nếu chưa đặt tay)."""
+        if self.style.size == 0 and self.style.max_size == 0 and self.auto_cap:
+            return replace(self.style, max_size=self.auto_cap)
+        return self.style
 
     @property
     def done(self) -> bool:
@@ -49,6 +58,7 @@ class Page:
         self.working = img.copy()
         self.text_mask = np.zeros(img.shape[:2], np.float32)
         self.regions: list[Region] = []
+        self.detected = False
         self.inpainter = None  # hàm inpaint(img, mask) bằng AI cho nền có hoạ tiết; None = OpenCV
 
     @property
@@ -59,9 +69,10 @@ class Page:
     def detect(self, detector: TextDetector, right_to_left: bool = True) -> None:
         boxes, mask = detector.detect(self.original)
         self.text_mask = np.maximum(mask, color_text_mask(self.original))
-        boxes = sort_reading_order(boxes, right_to_left)
+        boxes = sort_reading_order(boxes, right_to_left, self.original)
         self.regions = [r for r in self.regions if r.cleaned]
         self.regions += [Region((b.x1, b.y1, b.x2, b.y2), kind=b.kind) for b in boxes]
+        self.detected = True
 
     def add_region(self, box: Box) -> Region:
         x1, y1, x2, y2 = box
@@ -88,17 +99,30 @@ class Page:
         return m
 
     def _clean_pixels(self, region: Region) -> None:
-        clean_region(self.working, self.text_mask, region.box, self.area_mask(region), self.inpainter)
+        clean_region(self.working, self.text_mask, region.box, self.area_mask(region), self.inpainter,
+                     whole_box=region.kind == "text")
 
     def remove_region(self, region: Region) -> None:
         self.reset(region)
         self.regions.remove(region)
 
+    @property
+    def auto_cap(self) -> float:
+        """Cỡ chữ chuẩn khi tự co: ~3,1% bề ngang trang (đo từ chương typeset tay: 836px → 26px)."""
+        return round(self.size[0] * AUTO_CAP_FRAC)
+
     def clean(self, region: Region, fit_bubble: bool = True) -> None:
+        region.auto_cap = self.auto_cap
         if not region.cleaned:
             self._clean_pixels(region)
             region.cleaned = True
-        if fit_bubble:
+        if region.kind == "sfx":
+            # Dịch SFX đặt ngay tại chỗ SFX gốc (không loang ra nền trắng của panel).
+            x1, y1, x2, y2 = region.box
+            ex, ey = (x2 - x1) // 5, (y2 - y1) // 5
+            w, h = self.size
+            region.text_rects = [(max(0, x1 - ex), max(0, y1 - ey), min(w, x2 + ex), min(h, y2 + ey))]
+        elif fit_bubble:
             region.text_rects = text_area_candidates(self.working, region.box, self.area_mask(region))
         else:
             region.text_rects = [region.box]
@@ -109,7 +133,8 @@ class Page:
         for r in regions:
             if r.cleaned:
                 continue
-            need = clean_local(self.working, self.text_mask, r.box, self.area_mask(r), self.inpainter)
+            need = clean_local(self.working, self.text_mask, r.box, self.area_mask(r), self.inpainter,
+                               whole_box=r.kind == "text")
             if need is None:
                 r.cleaned = True
             else:
@@ -161,7 +186,7 @@ class Page:
         for r in self.regions:
             if r.cleaned and r.text.strip():
                 x1, y1, x2, y2 = r.text_rect
-                draw_text(p, r.text, r.style, QRectF(x1, y1, x2 - x1, y2 - y1))
+                draw_text(p, r.text, r.effective_style, QRectF(x1, y1, x2 - x1, y2 - y1))
         p.end()
         return img
 
