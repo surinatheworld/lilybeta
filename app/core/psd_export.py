@@ -1,7 +1,7 @@
 """Xuất trang đã type ra file PSD có lớp.
 
 - Có Photoshop: điều khiển Photoshop (ExtendScript qua COM) để tạo lớp chữ THẬT, sửa được:
-  Background = ảnh raw, lớp "Xoá chữ" = phần đã xoá/vẽ lại nền, mỗi bóng một lớp chữ.
+  Background = ảnh raw, lớp "Redraw" = phần đã xoá/vẽ lại nền (hoặc bản redraw đã upload), mỗi bóng một lớp chữ.
 - Không có Photoshop: ghi PSD bằng psd-tools, chữ là lớp ảnh (không sửa được nội dung chữ).
 """
 from __future__ import annotations
@@ -88,7 +88,7 @@ try {
   cd.activeLayer.duplicate(doc, ElementPlacement.PLACEATBEGINNING);
   cd.close(SaveOptions.DONOTSAVECHANGES);
   app.activeDocument = doc;
-  doc.activeLayer.name = "Xoá chữ";
+  doc.activeLayer.name = "Redraw";
   for (var i = 0; i < D.layers.length; i++) {
     var L = D.layers[i];
     var lay = doc.artLayers.add();
@@ -215,7 +215,7 @@ def export_without_photoshop(page, out_path: str) -> None:
     psd = PSDImage.new("RGB", (w, h))
     psd.append(PixelLayer.frompil(Image.fromarray(cv2.cvtColor(page.original, cv2.COLOR_BGR2RGB)), psd, "Background"))
     psd.append(PixelLayer.frompil(Image.fromarray(cv2.cvtColor(clean_layer(page), cv2.COLOR_BGRA2RGBA)), psd,
-                                  _ascii_name("Xoá chữ")))
+                                  "Redraw"))
     for r in page.regions:
         if not (r.cleaned and r.text.strip()):
             continue

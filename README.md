@@ -24,7 +24,23 @@ python -m venv .venv
 .venv\Scripts\python -m app.main
 ```
 
-## Cách dùng nhanh: type cả chương
+## Luồng làm việc: 3 lớp (raw → Redraw → chữ)
+
+1. **Mở ảnh raw** tiếng Nhật hoặc tiếng Anh (Ctrl+O, kéo thả, hoặc *Mở chương* cho cả thư mục). Chọn chiều đọc trên thanh
+   công cụ: *Tiếng Nhật (manga): phải → trái* / *Tiếng Anh / manhwa: trái → phải*.
+2. Tool **tự nhận diện chữ và xoá ngay những chỗ chắc ăn**: chữ trong bóng thoại / hộp dẫn truyện sáng, khép kín, và SFX
+   nhỏ (AI LaMa trên máy). Chữ đè lên tranh, SFX lớn, tên tác giả… **để nguyên** cho bạn redraw.
+3. **Lớp chữ**: bấm chọn khung rồi gõ bản dịch vào ô nội dung – chữ hiện ngay, tự co cỡ và căn giữa lòng bóng, dùng
+   font đang chọn (font yêu thích ★ / bộ kiểu đã lưu). **Chọn mọi khung đã có bản dịch** (Ctrl+Shift+A) hoặc
+   Ctrl/Shift+bấm nhiều khung rồi đổi font/kiểu là áp cho tất cả. Khung chưa xoá chữ (chữ trên tranh): Xử lý
+   (Ctrl+Enter) – chữ dịch nằm trên, nền gốc giữ nguyên, khung vàng nét đứt = cần redraw.
+4. **Upload bản redraw** (lớp 2): ảnh đã xoá chữ/redraw sẵn (Photoshop, nhờ người khác, AI…) nằm trên raw, dưới lớp
+   chữ; chữ đã gõ được giữ và đặt lại lên nền mới. Chế độ chương: chọn thư mục, ghép theo số trang trong tên file.
+5. **Xuất JPEG** (Ctrl+S) hoặc **Xuất PSD**; cả chương: *Xuất cả chương* → PSD + JPEG / PSD / JPEG.
+   PSD gồm `Background` (raw), `Redraw` (bản redraw + phần tool đã xoá) và mỗi bóng một **lớp chữ thật sửa được**
+   (máy có Photoshop; không có thì lớp chữ là ảnh).
+
+## Cách dùng nhanh: type cả chương từ file bản dịch
 
 1. **Mở chương** (Ctrl+Shift+O): chọn thư mục ảnh raw (001.jpg, 002.jpg…). Danh sách trang hiện bên trái.
 2. **Mở bản dịch** (Ctrl+D): file `.docx`/`.txt` chia theo trang – dòng chỉ có số là tên trang, các dòng sau là câu dịch
@@ -40,7 +56,7 @@ python -m venv .venv
    chỗ không dịch (logo, tên tác giả, SFX nhỏ), tự cho một bóng nhận 2–3 câu khi người dịch tách câu.
 3. Chọn font/kiểu chữ, rồi **Xử lý cả chương** → xoá chữ + vẽ lại nền + đặt chữ mọi trang.
 4. Kiểm tra từng trang (sửa tay nếu cần), rồi **Xuất PSD cả chương**: mỗi trang một file PSD gồm Background (raw),
-   lớp "Xoá chữ" và **lớp chữ thật sửa được trong Photoshop** (máy có Photoshop). Không có Photoshop thì lớp chữ là ảnh.
+   lớp "Redraw" và **lớp chữ thật sửa được trong Photoshop** (máy có Photoshop). Không có Photoshop thì lớp chữ là ảnh.
 
 Không cần giao diện: `python tools/run_chapter.py <thư mục raw> <file docs> <thư mục PSD> --font "000 WildWords2 TB"`
 (thêm `--engine simple` và/hoặc `--redrawn <thư mục>` cho hai cách bên dưới).
@@ -51,11 +67,11 @@ Redraw tranh tự động chưa đẹp bằng tay, nên có hai cách chỉ đ�
   nền chuyển màu, còn chữ đè lên tranh hoặc lưới chấm thì **giữ nguyên nền gốc** nhưng vẫn đặt bản dịch lên trên.
   Những vùng này có **khung vàng nét đứt**, trang có `⚠N cần redraw` trong danh sách, và trong PSD lớp chữ tên
   `REDRAW - …` để bạn tự redraw ngay dưới lớp chữ.
-- **Nạp bản redraw**: đã có ảnh xoá chữ/redraw sẵn (làm trong Photoshop, nhờ người khác, AI…) → bấm **Nạp bản redraw**.
+- **Upload bản redraw**: đã có ảnh xoá chữ/redraw sẵn (làm trong Photoshop, nhờ người khác, AI…) → bấm **Upload bản redraw**.
   Chế độ chương: chọn thư mục, ảnh tự ghép với trang theo số trong tên file (`001.png` ↔ `001.jpg`; cùng số ảnh thì
   ghép theo thứ tự). Bản redraw phải cùng khung với raw (khác cỡ thì tự co). Chữ vẫn được nhận diện trên raw, bản dịch
   type lên bản redraw; chỗ bản redraw còn sót chữ Nhật thì tool tự xoá như thường. PSD: Background = raw,
-  lớp "Xoá chữ" = bản redraw, rồi các lớp chữ.
+  lớp "Redraw" = bản redraw, rồi các lớp chữ.
 
 Đo trên chương 18.1 (10 trang, 48 câu, so với PSD typeset tay): tự điền đúng 48/48 câu, xoá hết chữ Nhật trong các
 vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. Công cụ đo: `tools/evaluate.py`.
@@ -81,7 +97,8 @@ vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. C
 6. **Xử lý** (Ctrl+Enter): xoá chữ gốc, vẽ lại nền, chèn bản dịch. Tool tự chuyển sang vùng tiếp theo.
    - Bóng thoại trắng / nền trơn: tô lại màu nền (tức thì).
    - Nền có hoạ tiết (tranh, lưới chấm, SFX đè lên tranh): vẽ lại theo lựa chọn ở mục **Vẽ lại nền**:
-     - *Chỉ xoá chỗ đơn giản*: không vẽ lại nền khó, để bạn tự redraw (xem mục trên).
+     - *Tự động* (mặc định): SFX nhỏ và vùng tự khoanh vẽ lại bằng LaMa; chữ trên tranh, SFX lớn để bạn tự redraw.
+     - *Chỉ xoá chỗ đơn giản*: không vẽ lại nền khó nào, để bạn tự redraw (xem mục trên).
      - *Thường (OpenCV)*: nhanh, nền tranh hơi mờ.
      - *AI LaMa* (mặc định): chạy trên máy, miễn phí, không cần mạng (vài giây mỗi vùng, model nạp ngầm khi mở ảnh).
      - *AI Google Gemini* / *AI OpenAI (ChatGPT)*: bấm **API key…** để nhập key và chọn model, có nút *Kiểm tra key*.
@@ -90,7 +107,7 @@ vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. C
        Chọn nhiều vùng gần nhau rồi Xử lý → **gom chung 1 lần gọi API**. Tính phí theo nhà cung cấp.
        Gemini cần tài khoản đã bật thanh toán (gói miễn phí không dùng được model sửa ảnh).
        Key được cất trong Windows Credential Manager, không ghi ra file.
-7. **Xuất ảnh** (Ctrl+S).
+7. **Xuất JPEG** (Ctrl+S) hoặc **Xuất PSD** (Ctrl+Shift+S).
 
 Vùng đã xử lý vẫn sửa được: chọn lại rồi đổi chữ/font, ảnh cập nhật ngay. *Hoàn tác vùng* (Ctrl+Z) trả lại ảnh gốc
 (hoặc bản redraw đã nạp) ở vùng đó.
@@ -127,6 +144,7 @@ Chọn **1** vùng đã xử lý → hiện khung tím quanh chữ:
 | Chuột phải hoặc giữa + kéo | Di chuyển ảnh |
 | R / L | Công cụ khung chữ nhật / lasso |
 | Ctrl+Shift+R | Redraw vùng đang chọn qua ChatGPT / Gemini (copy–dán) |
+| Ctrl+Shift+A | Chọn mọi khung đã có bản dịch (đổi font hàng loạt) |
 | Ctrl / Shift + bấm, Ctrl+A | Chọn nhiều vùng / chọn dải / chọn tất cả |
 | Mũi tên (Shift) | Nhích khung chữ 1px (10px) |
 | Tab | Sang vùng tiếp theo |

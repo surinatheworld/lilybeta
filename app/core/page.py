@@ -9,7 +9,7 @@ import numpy as np
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage, QPainter
 
-from .clean import MARGIN, clean_local, text_area_candidates
+from .clean import MARGIN, clean_local, fill_bubble, is_small_sfx, text_area_candidates
 from .detect import TextDetector, sort_reading_order
 from .typeset import TextStyle, best_rect, draw_text
 
@@ -155,10 +155,32 @@ class Page:
             return None
         need = clean_local(self.working, self.text_mask, region.box, self.area_mask(region), self.inpainter,
                            whole_box=region.kind == "text")
-        if need is not None and getattr(self.inpainter, "skip", False):
+        skip = getattr(self.inpainter, "skip", False)
+        if need is not None and (skip(self, region) if callable(skip) else skip):
             region.needs_redraw = True
             return None
         return need
+
+    def auto_clean(self, small_sfx: bool = True, fit_bubble: bool = True) -> int:
+        """Xoá ngay những chỗ chắc ăn, chưa cần câu dịch: chữ trong bóng thoại / hộp dẫn truyện sáng khép kín,
+        chỗ bản redraw đã xoá, và (nếu `small_sfx`) SFX nhỏ bằng `self.inpainter`. Chữ đè lên tranh, SFX lớn,
+        chữ ngoài bóng (tên tác giả…) để nguyên. Trả về số vùng đã xoá."""
+        n = 0
+        for r in self.regions:
+            if r.cleaned or r.polygon:
+                continue
+            if self.redrawn_covers(r) or fill_bubble(self.working, self.text_mask, r.box):
+                pass
+            elif small_sfx and is_small_sfx(r, self.size):
+                need = clean_local(self.working, self.text_mask, r.box, None, self.inpainter)
+                if need is not None:
+                    self.inpainter(self.working, need)
+            else:
+                continue
+            r.cleaned = True
+            self.clean(r, fit_bubble)  # đã xoá: chỉ tính khung đặt chữ
+            n += 1
+        return n
 
     def _clean_pixels(self, region: Region) -> None:
         need = self._clean_local(region)
@@ -258,7 +280,7 @@ class Page:
         return img
 
     def export(self, path: str) -> None:
-        if not self.render().save(path):
+        if not self.render().save(path, None, 95):  # JPEG chất lượng 95
             raise IOError(f"Không lưu được: {path}")
 
 

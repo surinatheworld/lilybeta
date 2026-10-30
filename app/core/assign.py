@@ -15,6 +15,7 @@ import numpy as np
 MAX_LINES_PER_REGION = 3
 MERGE_PENALTY = 1.2  # mỗi câu thêm vào cùng một vùng
 SKIP_COST = 2.5  # bỏ qua một vùng chữ bình thường
+SFX_MAX_CHARS = 10  # bản dịch SFX ngắn dù chữ gốc vẽ to
 
 
 def region_ink(page, r) -> float:
@@ -47,6 +48,12 @@ def skip_cost(page, r) -> float:
     return cost
 
 
+def _space_penalty(lines: list[str]) -> float:
+    """Câu có nhiều từ ít khi là SFX; SFX dịch hai từ ("Ôm chặt", "Khẽ bước") vẫn thường gặp."""
+    words = max(len(s.split()) for s in lines)
+    return 0.0 if words <= 1 else (0.5 if words == 2 else 1.0)
+
+
 def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str]]]:
     """Trả về [(vùng, [các câu])] theo thứ tự đọc; vùng bị bỏ qua không có trong danh sách."""
     n, m = len(regions), len(lines)
@@ -57,6 +64,8 @@ def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str
     chars = [max(1, len(s.strip())) for s in lines]
     # Hệ số đổi lượng chữ Nhật → số ký tự tiếng Việt, ước lượng trên cả trang.
     alpha = sum(chars) / sum(ink)
+    # Lượng nét của một bóng thoại điển hình trên trang: SFX nhỏ hơn hẳn thường là dấu "!!", vạch hiệu ứng.
+    text_ink = float(np.median([ink[i] for i, r in enumerate(regions) if r.kind != "sfx"] or ink))
 
     def match(i, a, b):
         got = sum(chars[a:b])
@@ -64,8 +73,12 @@ def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str
         fit = math.log((got + 6) / (exp + 6)) ** 2
         cost = fit + (b - a - 1) * MERGE_PENALTY
         if regions[i].kind == "sfx":
-            # Bản dịch SFX ngắn và khớp cỡ chữ gốc ("Vụt", "Khẽ bước"); câu thoại hiếm khi rơi vào SFX.
-            cost += 3 * fit + 0.4 + (1.0 if any(" " in s.strip() for s in lines[a:b]) else 0)
+            # Bản dịch SFX ngắn ("Vụt", "Ôm chặt") dù chữ gốc vẽ to: độ dài kỳ vọng có trần; câu thoại hiếm khi
+            # rơi vào SFX. SFX nhỏ (dấu "!!", vạch hiệu ứng) ít khi được dịch: ưu tiên SFX lớn.
+            sfit = math.log((got + 6) / (min(exp, SFX_MAX_CHARS) + 6)) ** 2
+            space = _space_penalty(lines[a:b])
+            cost = (sfit * 4 + (b - a - 1) * MERGE_PENALTY + 0.4 + space
+                    + (0.8 * max(0.0, 1 - ink[i] / text_ink) if space else 0.0))
         return cost
 
     INF = float("inf")
@@ -183,10 +196,13 @@ def apply_plan(page, plan, style=None) -> int:
     Trả về số vùng có chữ."""
     n = 0
     for r, ls in plan:
-        parts = split_region(page, r, ls) if len(ls) > 1 and not r.cleaned else None
+        parts = split_region(page, r, ls) if len(ls) > 1 else None
         if parts:
             i = page.regions.index(r)
             page.regions[i:i + 1] = parts
+            for part in parts:
+                if part.cleaned:  # bóng đã xoá chữ sẵn: tính lại khung đặt chữ cho từng phần
+                    page.clean(part)
             targets = list(zip(parts, [[s] for s in ls]))
         else:
             targets = [(r, ls)]

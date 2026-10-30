@@ -70,13 +70,12 @@ class Chapter:
         return []
 
     def auto_fill(self, path: str, style: TextStyle | None = None) -> list:
-        """Ghép câu dịch của trang vào các vùng chữ (chưa xoá chữ). Trả về [(vùng, [câu])]."""
+        """Ghép câu dịch của trang vào các vùng chữ chưa có chữ. Trả về [(vùng, [câu])]."""
         page = self.page(path)
         lines = self.lines_for(path)
-        free = [r for r in page.regions if not r.cleaned]
+        had = {id(r) for r in page.regions if r.text.strip()}
+        free = [r for r in page.regions if id(r) not in had]
         plan = assign_lines(page, free, lines)
-        for r in free:
-            r.text = ""
         apply_plan(page, plan, style)
         self.filled.add(path)
-        return [(r, r.text.split("\n")) for r in page.regions if r.text and not r.cleaned]
+        return [(r, r.text.split("\n")) for r in page.regions if r.text and id(r) not in had]
