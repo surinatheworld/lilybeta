@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from dataclasses import asdict
 
-from PySide6.QtCore import QSettings, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QEventLoop, QSettings, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -50,6 +51,7 @@ from ..core.typeset import TextStyle, layout, make_font, missing_chars
 from ..core import manual_ai
 from .ai_bridge import AiBridgeDialog
 from .api_dialog import PROVIDERS, ApiDialog, model_for
+from .documents import OpenDocument
 from .image_view import (
     PAINT_TOOLS,
     TOOL_BRUSH,
@@ -124,11 +126,13 @@ class BatchWorker(QThread):
     def __init__(self, parent, job):
         super().__init__(parent)
         self.job = job
+        self.error = None
 
     def run(self):
         try:
             self.job(self.progress.emit)
         except Exception as e:  # noqa: BLE001 - báo lỗi cho người dùng
+            self.error = str(e)
             self.failed.emit(str(e))
 
 
@@ -232,6 +236,8 @@ class MainWindow(QMainWindow):
         self.clone_offset: tuple[int, int] | None = None
         self.paint_opts = {k: list(v) for k, v in PAINT_DEFAULTS.items()}
         self._busy = False
+        self._active_document: OpenDocument | None = None
+        self._detect_queue = []
 
         self.view = ImageView()
         self.view.regionClicked.connect(self._region_clicked)
@@ -264,7 +270,12 @@ class MainWindow(QMainWindow):
         self.document_tab = QTabBar()
         self.document_tab.setObjectName("documentTabs")
         self.document_tab.setExpanding(False)
-        self.document_tab.addTab("Chưa mở tài liệu")
+        self.document_tab.setTabsClosable(True)
+        self.document_tab.setMovable(True)
+        self.document_tab.setUsesScrollButtons(True)
+        self.document_tab.currentChanged.connect(self._document_changed)
+        self.document_tab.tabCloseRequested.connect(self.close_document)
+        self.document_tab.hide()
         self.document_tab.setDrawBase(False)
         canvas_layout.addWidget(self.document_tab)
         self.canvas_stack = QStackedWidget()
@@ -399,11 +410,15 @@ class MainWindow(QMainWindow):
         A(m, "Upload bản redraw…", self.open_redrawn, "Ctrl+Shift+U",
           tip="Ảnh đã xoá chữ/redraw sẵn thành layer Redraw (trên raw, dưới chữ)")
         m.addSeparator()
-        A(m, "Lưu dự án", self.save_project, "Ctrl+S", tip="Lưu .lzp để mở lại làm tiếp (giữ mọi layer, khung chữ)")
-        A(m, "Lưu dự án thành…", lambda: self.save_project(ask=True), "Ctrl+Shift+S")
-        A(m, "Lưu PSD…", self.export_psd_page, "Ctrl+Alt+S")
+        A(m, "Lưu", self.save_document, ["Ctrl+S", "Ctrl+Alt+S"], tip="Lưu tài liệu đang chọn dưới dạng Photoshop PSD")
+        A(m, "Lưu thành…", lambda: self.save_document(ask=True), "Ctrl+Shift+S")
+        A(m, "Lưu dự án Lilyzono (.lzp)…", self.save_project, "Ctrl+Alt+Shift+S",
+          tip="Giữ khung nhận diện, bản dịch và toàn bộ chương để tiếp tục trong Lilyzono")
         A(m, "Xuất JPEG…", self.export_image, "Ctrl+Alt+Shift+W")
         self.act_export_all = A(m, "Xuất cả chương (PSD / JPEG)…", self.export_psd_chapter)
+        A(m, "Đóng tài liệu", lambda: self.close_document(self.document_tab.currentIndex()), "Ctrl+W")
+        A(m, "Tài liệu tiếp theo", lambda: self._step_document(1), "Ctrl+Tab")
+        A(m, "Tài liệu trước", lambda: self._step_document(-1), "Ctrl+Shift+Tab")
         m.addSeparator()
         A(m, "Thoát", self.close, "Ctrl+Q")
 
@@ -640,8 +655,9 @@ class MainWindow(QMainWindow):
             "Ctrl+] / Ctrl+[\tĐưa layer lên / xuống", "F5\tNhận diện chữ", "Ctrl+Enter\tXử lý khung đang chọn",
             "Tab\tKhung tiếp theo", "Ctrl+Shift+A\tChọn mọi khung có bản dịch",
             "Ctrl+T (Enter / Esc)\tFree Transform (áp dụng / huỷ)", "Bấm đúp khung chữ\tGõ chữ ngay trên ảnh",
-            "Ctrl+O\tMở ảnh / dự án / PSD", "Ctrl+S / Ctrl+Shift+S\tLưu dự án / lưu thành…",
-            "Ctrl+Alt+S\tLưu PSD", "Ctrl+Alt+Shift+W\tXuất JPEG"]
+            "Ctrl+O\tMở nhiều ảnh / dự án / PSD", "Ctrl+S / Ctrl+Shift+S\tLưu PSD / lưu PSD thành…",
+            "Ctrl+Alt+Shift+S\tLưu dự án .lzp", "Ctrl+Alt+Shift+W\tXuất JPEG",
+            "Ctrl+W\tĐóng tab", "Ctrl+Tab / Ctrl+Shift+Tab\tChuyển tab tiếp theo / trước"]
         QMessageBox.information(self, "Phím tắt", "\n".join(rows))
 
     def _build_panel(self) -> tuple[QWidget, QWidget]:
@@ -1142,69 +1158,227 @@ class MainWindow(QMainWindow):
 
     # --- mở file -------------------------------------------------------------
     def open_image(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Mở", self.settings.value("dir/image", ""), OPEN_FILTER)
-        if path:
+        paths, _ = QFileDialog.getOpenFileNames(self, "Mở", self.settings.value("dir/image", ""), OPEN_FILTER)
+        for path in paths:
             self.load_image(path)
 
     def _confirm_discard(self) -> bool:
-        """Còn thay đổi chưa lưu: hỏi lưu dự án trước (như Photoshop). False = huỷ thao tác."""
-        pages = list(self.chapter.pages.values()) if self.chapter else ([self.page] if self.page else [])
-        if not any(getattr(pg, "doc", None) is not None and pg.doc.dirty for pg in pages):
+        """Save/discard/cancel for the active tab; opening another file never asks."""
+        if self.doc is None or not self.doc.dirty:
             return True
-        btn = QMessageBox.question(self, "Lilyzono", "Lưu thay đổi vào dự án trước khi đóng?",
+        name = os.path.basename(self._active_document.psd_path or self.page.path)
+        btn = QMessageBox.question(self, "Lilyzono", f"Lưu thay đổi của {name} vào PSD trước khi đóng?",
                                    QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
         if btn == QMessageBox.Cancel:
             return False
-        return self.save_project() if btn == QMessageBox.Save else True
+        return self.save_document(wait=True) if btn == QMessageBox.Save else True
 
     def closeEvent(self, e):
-        if self._confirm_discard():
-            self.settings.setValue("workspace/geometry", self.saveGeometry())
-            self.settings.setValue("workspace/state", self.saveState(1))
-            e.accept()
-        else:
+        if not self._can_switch_document() or (self.worker is not None and self.worker.isRunning()):
+            self.statusBar().showMessage("Đang xử lý tài liệu, hãy đợi hoàn tất trước khi đóng.", 5000)
             e.ignore()
+            return
+        self.view.end_text_edit()
+        # Include edited chapter pages that have not yet been opened as tabs.
+        chapters = {d.chapter for d in self.documents if d.chapter is not None}
+        for chapter in chapters:
+            for page in list(chapter.pages.values()):
+                if doc_for(page).dirty and not any(d.page is page for d in self.documents):
+                    self._show_page(page, chapter=chapter)
+        original = self._active_document
+        for document in self.documents:
+            self._activate_document(document)
+            if not self._confirm_discard():
+                e.ignore()
+                return
+        if original is not None:
+            self._activate_document(original)
+        self.settings.setValue("workspace/geometry", self.saveGeometry())
+        self.settings.setValue("workspace/state", self.saveState(1))
+        e.accept()
 
-    def load_image(self, path: str):
-        ext = os.path.splitext(path)[1].lower()
+    @property
+    def documents(self) -> list[OpenDocument]:
+        return [self.document_tab.tabData(i) for i in range(self.document_tab.count())]
+
+    def _can_switch_document(self) -> bool:
+        if self.clean_worker is not None or self.batch is not None or self._busy or self.stroke is not None \
+                or self._move is not None or self._tf is not None:
+            self.statusBar().showMessage("Hoàn tất thao tác đang chạy trước khi đổi hoặc đóng tài liệu.", 5000)
+            return False
+        return True
+
+    def _stash_document(self):
+        state = self._active_document
+        if state is None:
+            return
+        state.project_path = self.project_path
+        state.selected, state.selection = self.selected, list(self.selection)
+        state.lines, state.used_lines = list(self.lines), set(self.used_lines)
+        state.doc_pages, state.doc_flat = getattr(self, "_doc_pages", {}), getattr(self, "_doc_flat", None)
+        state.page_lines, state.direction = self.page_lines, self.direction.currentIndex()
+        state.docs_label = self.lbl_docs.text()
+        state.style = self.current_style()
+        state.transform = self.view.transform()
+        state.center = self.view.mapToScene(self.view.viewport().rect().center())
+        state.clone_src, state.clone_offset = self.clone_src, self.clone_offset
+
+    def _document_changed(self, index: int):
+        if index < 0:
+            return
+        document = self.document_tab.tabData(index)
+        if document is self._active_document:
+            return
+        if not self._can_switch_document():
+            self.document_tab.blockSignals(True)
+            self.document_tab.setCurrentIndex(self.documents.index(self._active_document))
+            self.document_tab.blockSignals(False)
+            return
+        self._activate_document(document)
+
+    def _step_document(self, delta: int):
+        if self.document_tab.count():
+            self.document_tab.setCurrentIndex((self.document_tab.currentIndex() + delta) % self.document_tab.count())
+
+    def _activate_document(self, state: OpenDocument):
+        if state is self._active_document:
+            return
+        self.view.end_text_edit()
+        self._stash_document()
+        self._active_document = state
+        self.page, self.chapter, self.project_path = state.page, state.chapter, state.project_path
+        self.doc = doc_for(state.page)
+        self.selected, self.selection = state.selected, list(state.selection)
+        self.lines, self.used_lines = list(state.lines), set(state.used_lines)
+        self._doc_pages, self._doc_flat = state.doc_pages, state.doc_flat
+        self.page_lines = state.page_lines
+        self.lbl_docs.setText(state.docs_label)
+        self.clone_src, self.clone_offset = state.clone_src, state.clone_offset
+        self.direction.setCurrentIndex(state.direction)
+        if state.style is not None:
+            self._apply_style_to_ui(state.style)
+        self.document_tab.blockSignals(True)
+        self.document_tab.setCurrentIndex(self.documents.index(state))
+        self.document_tab.blockSignals(False)
+        self.document_tab.show()
+        self.canvas_stack.setCurrentWidget(self.view)
+        self.page_list.blockSignals(True)
+        self.page_list.clear()
+        if self.chapter is not None:
+            self.page_list.addItems([os.path.basename(p) for p in self.chapter.paths])
+            self.page_list.setCurrentRow(self.chapter.paths.index(self.page.path))
+        self.page_list.blockSignals(False)
+        self.page_dock.setVisible(self.chapter is not None)
+        w, h = self.page.size
+        self.lbl_size.setText(f"{w} × {h} px")
+        self._lines_for_page()
+        if self.page.detected:
+            self._auto_fill()
+        self.refresh()
+        if state.transform is None:
+            self.view.fit_page()
+        else:
+            self.view.setTransform(state.transform)
+            self.view.centerOn(state.center)
+            self.view.zoomChanged.emit(self.view.zoom)
+        selected = state.selected if 0 <= state.selected < len(self.page.regions) else (0 if self.page.regions else -1)
+        selection = [i for i in state.selection if 0 <= i < len(self.page.regions)]
+        self.select_region(selected, selection or None)
+        if not self.page.detected:
+            self.run_detect()
+        self._update_document_enabled()
+        if self.engine in LOCAL_AI:
+            self._preload_lama()
+
+    def close_document(self, index: int):
+        if not (0 <= index < self.document_tab.count()) or not self._can_switch_document():
+            return
+        state = self.document_tab.tabData(index)
+        if self.worker is not None and self.worker.isRunning() and self.worker.page is state.page:
+            self.statusBar().showMessage("Đang nhận diện tài liệu này, hãy đợi hoàn tất trước khi đóng.", 5000)
+            return
+        self._activate_document(state)
+        self.view.end_text_edit()
         if not self._confirm_discard():
             return
+        if state.chapter is not None and not any(d is not state and d.chapter is state.chapter for d in self.documents):
+            for page in list(state.chapter.pages.values()):
+                if page is not state.page and doc_for(page).dirty:
+                    self._show_page(page, chapter=state.chapter, project_path=state.project_path)
+            self._activate_document(state)
+        self._detect_queue = [job for job in self._detect_queue if job[0] is not state.page]
+        self._active_document = None
+        self.document_tab.blockSignals(True)
+        self.document_tab.removeTab(index)
+        self.document_tab.blockSignals(False)
+        if self.documents:
+            self._activate_document(self.document_tab.tabData(min(index, self.document_tab.count() - 1)))
+        else:
+            self.page = self.doc = self.chapter = self.project_path = None
+            self.selected, self.selection = -1, []
+            self.lines, self.used_lines = [], set()
+            self._doc_pages, self._doc_flat = {}, None
+            self.page_lines = False
+            self._loading_ui = True
+            self.txt.clear()
+            self._loading_ui = False
+            self.lbl_region.setText("Chưa chọn vùng.")
+            self.lbl_docs.setText("Chưa có file bản dịch (.docx / .txt).")
+            self.layers_panel.set_doc(None)
+            self.history_panel.set_doc(None)
+            self.page_list.clear()
+            self.page_dock.hide()
+            self.view.set_selection_outline([])
+            self.canvas_stack.setCurrentIndex(0)
+            self.document_tab.hide()
+            self.lbl_size.clear()
+            self.lbl_pos.clear()
+            self.lbl_zoom.clear()
+            self.setWindowTitle("Lilyzono – Tool type truyện")
+
+    def load_image(self, path: str):
+        if not self._can_switch_document():
+            return
+        normalized = os.path.normcase(os.path.abspath(path))
+        for state in self.documents:
+            if normalized in {os.path.normcase(os.path.abspath(p)) for p in
+                              (state.source_path, state.psd_path) if p}:
+                self._activate_document(state)
+                return
+        ext = os.path.splitext(path)[1].lower()
         if ext == ".lzp":
             self.open_project(path)
             return
         if ext == ".psd":
             self.open_psd_file(path)
             return
-        self.project_path = None
         try:
             page = Page(path)
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "Lỗi", str(e))
             return
-        self.chapter = None
-        self.page_dock.hide()
         self.settings.setValue("dir/image", os.path.dirname(path))
         self._show_page(page)
 
-    def _show_page(self, page: Page):
-        # Finish the previous inline editor while it still points at its page.
-        self.view.end_text_edit()
-        self.page = page
-        self.selected, self.selection = -1, []
-        self.doc = doc_for(page)
-        self._update_title()
-        self.canvas_stack.setCurrentWidget(self.view)
-        w, h = page.size
-        self.lbl_size.setText(f"{w} × {h} px")
-        self._lines_for_page()
-        self.refresh()
-        self.view.fit_page()
-        if page.detected:
-            self.select_region(0 if page.regions else -1)
-        else:
-            self.run_detect()
-        if self.engine in LOCAL_AI:
-            self._preload_lama()
+    def _show_page(self, page: Page, *, chapter=None, project_path=None, psd_path=None, direction=None):
+        if not self._can_switch_document():
+            return
+        for state in self.documents:
+            if state.page is page:
+                self._activate_document(state)
+                return
+        state = OpenDocument(page, chapter=chapter, project_path=project_path, psd_path=psd_path,
+                             source_path=psd_path or page.path,
+                             direction=self.direction.currentIndex() if direction is None else direction,
+                             style=self.current_style(),
+                             docs_label=self.lbl_docs.text(),
+                             doc_pages=getattr(self, "_doc_pages", {}) if project_path is None else {},
+                             doc_flat=getattr(self, "_doc_flat", None) if project_path is None else None)
+        self.document_tab.blockSignals(True)
+        index = self.document_tab.addTab(os.path.basename(psd_path or page.path))
+        self.document_tab.setTabData(index, state)
+        self.document_tab.blockSignals(False)
+        self._activate_document(state)
 
     # --- chương -------------------------------------------------------------------------
     def open_chapter(self):
@@ -1214,35 +1388,23 @@ class MainWindow(QMainWindow):
             self.load_chapter(folder)
 
     def load_chapter(self, folder: str, chapter: Chapter | None = None):
+        if not self._can_switch_document():
+            return
         if chapter is None:
-            if not self._confirm_discard():
-                return
-            self.project_path = None
             try:
                 chapter = Chapter(folder)
             except Exception as e:  # noqa: BLE001
                 QMessageBox.warning(self, "Lỗi", str(e))
                 return
-        old = self.chapter
-        self.chapter = chapter
-        if old and old.translations and not chapter.translations:
-            chapter.translations = old.translations
         self.settings.setValue("dir/image", folder)
-        self.page_list.blockSignals(True)
-        self.page_list.clear()
-        for path in chapter.paths:
-            self.page_list.addItem(os.path.basename(path))
-        self.page_list.blockSignals(False)
-        self.page_dock.show()
-        self.page_list.setCurrentRow(0)
-        self._page_row_changed(0)
+        self._show_page(chapter.page(chapter.paths[0]), chapter=chapter)
 
     def _page_row_changed(self, row: int):
         if self.chapter is None or not (0 <= row < len(self.chapter.paths)):
             return
         if self.page is not None and self.page.path == self.chapter.paths[row]:
             return
-        self._show_page(self.chapter.page(self.chapter.paths[row]))
+        self._show_page(self.chapter.page(self.chapter.paths[row]), chapter=self.chapter, project_path=self.project_path)
 
     def _update_page_list(self):
         if self.chapter is None:
@@ -1302,6 +1464,8 @@ class MainWindow(QMainWindow):
             self.load_docs(path)
 
     def load_docs(self, path: str):
+        if not self._can_switch_document() or self._page_detecting(self.page):
+            return
         try:
             pages = load_pages(path)
             flat = load_lines(path)
@@ -1349,15 +1513,45 @@ class MainWindow(QMainWindow):
 
     # --- nhận diện -----------------------------------------------------------
     def run_detect(self):
-        if self.page is None or (self.worker and self.worker.isRunning()):
+        if self.page is None or self._page_detecting(self.page):
             return
-        self.act_detect.setEnabled(False)
+        self._detect_queue.append((self.page, self.direction.currentIndex() == 0, self._auto_clean_args()))
+        self._start_next_detection()
+        self._update_document_enabled()
+
+    def _page_detecting(self, page):
+        return page is not None and ((self.worker is not None and self.worker.page is page)
+                                     or any(job[0] is page for job in self._detect_queue))
+
+    def _update_document_enabled(self):
+        enabled = not self._page_detecting(self.page)
+        for widget in (self.view, self.d_lily, self.d_text, self.d_layers, self.d_history):
+            widget.setEnabled(enabled)
+        for toolbar in self.findChildren(QToolBar):
+            toolbar.setEnabled(enabled)
+        self.act_detect.setEnabled(enabled)
+        for action in self.menuBar().actions():
+            if action.text() in ("&Sửa", "&Layer", "&Chọn", "C&hữ"):
+                action.setEnabled(enabled)
+
+    def _start_next_detection(self):
+        if self.worker is not None or not self._detect_queue:
+            return
+        page, rtl, auto = self._detect_queue.pop(0)
         self.statusBar().showMessage("Đang nhận diện chữ…")
-        doc_for(self.page).begin("Nhận diện chữ", ["redraw"])
-        self.worker = DetectWorker(self, self.page, self.direction.currentIndex() == 0, self._auto_clean_args())
-        self.worker.finished_ok.connect(self._detect_done)
-        self.worker.failed.connect(self._detect_failed)
-        self.worker.start()
+        doc_for(page).begin("Nhận diện chữ", ["redraw"])
+        worker = self.worker = DetectWorker(self, page, rtl, auto)
+        worker.finished_ok.connect(lambda: self._detect_done(worker))
+        worker.failed.connect(lambda msg: self._detect_failed(msg, worker))
+
+        def finished():
+            self.worker = None
+            self._update_document_enabled()
+            self._start_next_detection()
+
+        worker.finished.connect(finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
 
     def _auto_clean_args(self):
         """Thông số tự xoá sau khi nhận diện: bóng thoại luôn xoá; SFX nhỏ xoá bằng AI trên máy (không tự gọi AI
@@ -1366,24 +1560,23 @@ class MainWindow(QMainWindow):
             return (skip_hard, False, self.chk_bubble.isChecked())
         return (lama.inpaint if self.engine in LOCAL_AI else None, True, self.chk_bubble.isChecked())
 
-    def _detect_done(self):
-        self.act_detect.setEnabled(True)
-        if self.worker is not None:
-            doc_for(self.worker.page).end()
-        n = len(self.page.regions)
-        k = self.worker.cleaned if self.worker else 0
+    def _detect_done(self, worker):
+        doc_for(worker.page).end()
+        self._update_title()
+        if worker.page is not self.page:
+            return
+        n = len(worker.page.regions)
+        k = worker.cleaned
         self.statusBar().showMessage(f"Tìm thấy {n} vùng chữ, đã tự xoá chữ {k} bóng thoại / SFX nhỏ. "
                                      "Chọn khung rồi gõ bản dịch; chỗ còn lại: Xử lý (Ctrl+Enter) hoặc upload bản redraw.")
         self._auto_fill()
         self.refresh()
         self.select_region(0 if n else -1)
 
-    def _detect_failed(self, msg: str):
-        self.act_detect.setEnabled(True)
-        if self.worker is not None:
-            doc_for(self.worker.page).end()
+    def _detect_failed(self, msg: str, worker):
+        doc_for(worker.page).end()
         self.statusBar().showMessage("Nhận diện lỗi.")
-        QMessageBox.warning(self, "Lỗi nhận diện", msg)
+        QMessageBox.warning(self, "Lỗi nhận diện", f"{os.path.basename(worker.page.path)}:\n{msg}")
 
     # --- vùng chữ ------------------------------------------------------------
     @property
@@ -1495,7 +1688,7 @@ class MainWindow(QMainWindow):
             return
         self._update_warning()
         r = self.region
-        if r is not None and r.cleaned:
+        if r is not None:
             before = self.doc.text_bounds([r])
             with self.doc.step("Gõ chữ", merge=f"text:{r.uid}"):
                 if not r.text.strip():
@@ -1652,7 +1845,7 @@ class MainWindow(QMainWindow):
                 self.select_region(i)
                 return
         self.select_region(self.selected)
-        self.statusBar().showMessage("Đã xử lý hết các vùng. Bấm Xuất ảnh (Ctrl+S) để lưu.")
+        self.statusBar().showMessage("Đã xử lý hết các vùng. Bấm Ctrl+S để lưu PSD.")
 
     # --- danh sách bản dịch ------------------------------------------------
     def _next_unused_line(self) -> int | None:
@@ -1690,17 +1883,21 @@ class MainWindow(QMainWindow):
     # --- hiển thị & xuất -----------------------------------------------------
     # --- dự án (.lzp) / PSD -------------------------------------------------------------
     def _update_title(self):
+        for i, state in enumerate(self.documents):
+            dirty = "*" if doc_for(state.page).dirty else ""
+            path = state.psd_path or state.page.path
+            self.document_tab.setTabText(i, f"{os.path.basename(path)}{dirty}  (RGB/8)")
+            self.document_tab.setTabToolTip(i, path)
         if self.page is None:
             return
-        name = os.path.basename(self.project_path) if self.project_path else os.path.basename(self.page.path)
+        path = self._active_document.psd_path or self.project_path or self.page.path
+        name = os.path.basename(path)
         where = f" ({os.path.basename(self.chapter.folder)})" if self.chapter and not self.project_path else ""
         dirty = "*" if self.doc is not None and self.doc.dirty else ""
         self.setWindowTitle(f"Lilyzono – {name}{dirty}{where}")
-        self.document_tab.setTabText(0, f"{os.path.basename(self.page.path)}{dirty}  (RGB/8)")
-        self.document_tab.setTabToolTip(0, self.page.path)
 
     def save_project(self, ask: bool = False) -> bool:
-        if self.page is None:
+        if self.page is None or not self._can_switch_document() or self.worker is not None:
             return False
         path = self.project_path
         if ask or not path:
@@ -1723,11 +1920,16 @@ class MainWindow(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
         self.project_path = path
+        for state in self.documents:
+            if state is self._active_document or (self.chapter is not None and state.chapter is self.chapter):
+                state.project_path = path
         self._update_title()
         self.statusBar().showMessage(f"Đã lưu dự án: {path}", 6000)
         return True
 
     def open_project(self, path: str):
+        if not self._can_switch_document():
+            return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             data = project.load(path)
@@ -1737,8 +1939,6 @@ class MainWindow(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
         self.settings.setValue("dir/image", os.path.dirname(path))
-        self.direction.setCurrentIndex(data["direction"])
-        self.project_path = path
         pages = data["pages"]
         if data["chapter_folder"]:
             ch = Chapter(data["chapter_folder"])
@@ -1750,17 +1950,17 @@ class MainWindow(QMainWindow):
                     ch.pages[pth] = pg
             ch.translations = data["translations"]
             ch.filled = {pth for pth in ch.paths if os.path.basename(pth) in data["filled"]}
-            self.chapter = None
-            self.load_chapter(ch.folder, ch)
+            self._show_page(ch.page(ch.paths[0]), chapter=ch, project_path=path, direction=data["direction"])
         else:
-            self.chapter = None
-            self.page_dock.hide()
-            self._show_page(pages[0])
+            self._show_page(pages[0], project_path=path, direction=data["direction"])
+        self._active_document.source_path = path
         self.statusBar().showMessage(f"Đã mở dự án: {path}", 6000)
 
     def open_psd_file(self, path: str):
         from ..core.psd_import import open_psd
 
+        if not self._can_switch_document():
+            return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             page, notes = open_psd(path)
@@ -1769,11 +1969,8 @@ class MainWindow(QMainWindow):
             return
         finally:
             QApplication.restoreOverrideCursor()
-        self.project_path = None
-        self.chapter = None
-        self.page_dock.hide()
         self.settings.setValue("dir/image", os.path.dirname(path))
-        self._show_page(page)
+        self._show_page(page, psd_path=path)
         msg = f"Đã mở PSD: {len(page.regions)} layer chữ, {len(page.doc.layers)} layer."
         if notes:
             QMessageBox.information(self, "Mở PSD", "\n".join(notes))
@@ -2288,26 +2485,43 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     # --- cả chương / PSD ----------------------------------------------------------------
-    def _run_batch(self, title: str, job, done_msg: str, extra=None):
-        if self.batch is not None:
-            return
+    def _run_batch(self, title: str, job, done_msg: str, extra=None, on_success=None, on_finished=None):
+        if not self._can_switch_document() or self.worker is not None:
+            self.statusBar().showMessage("Đợi tác vụ đang chạy hoàn tất trước khi lưu hoặc xử lý tiếp.", 5000)
+            return None
         self.centralWidget().setEnabled(False)
+        self.menuBar().setEnabled(False)
+        for toolbar in self.findChildren(QToolBar):
+            toolbar.setEnabled(False)
+        for dock in (self.d_lily, self.d_text, self.d_layers, self.d_history, self.page_dock):
+            dock.setEnabled(False)
         self.statusBar().showMessage(title)
-        self.batch = BatchWorker(self, job)
-        self.batch.progress.connect(lambda m: self.statusBar().showMessage(f"{title} {m}"))
-        self.batch.failed.connect(lambda m: QMessageBox.warning(self, "Lỗi", m))
+        worker = self.batch = BatchWorker(self, job)
+        worker.progress.connect(lambda m: self.statusBar().showMessage(f"{title} {m}"))
+        worker.failed.connect(lambda m: QMessageBox.warning(self, "Lỗi", m))
 
         def finished():
             self.batch = None
+            success = worker.error is None
+            if success and on_success is not None:
+                on_success()
             self.centralWidget().setEnabled(True)
+            self.menuBar().setEnabled(True)
+            self.page_dock.setEnabled(True)
+            self._update_document_enabled()
             if self.page is not None:
                 self._lines_for_page()
                 self.refresh()
                 self.select_region(self.selected if self.page.regions else -1)
-            self.statusBar().showMessage(done_msg + (extra() if extra else ""), 15000)
+            self.statusBar().showMessage(done_msg + (extra() if extra else "") if success
+                                         else f"Không hoàn tất: {worker.error}", 15000)
+            if on_finished is not None:
+                on_finished(success)
 
-        self.batch.finished.connect(finished)
-        self.batch.start()
+        worker.finished.connect(finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        return worker
 
     def process_chapter(self):
         if self.chapter is None:
@@ -2354,6 +2568,8 @@ class MainWindow(QMainWindow):
 
     def open_redrawn(self):
         """Nạp bản đã redraw làm nền: chữ vẫn nhận diện trên raw, câu dịch type lên bản redraw."""
+        if not self._can_switch_document() or self._page_detecting(self.page):
+            return
         if self.page is None and self.chapter is None:
             QMessageBox.information(self, "Nạp bản redraw", "Mở ảnh raw hoặc chương trước, rồi nạp bản redraw.")
             return
@@ -2431,21 +2647,68 @@ class MainWindow(QMainWindow):
         self._run_batch("Đang xuất:", job, f"Đã xuất {len(pages)} trang ({what}{how}) → {out_dir}")
 
     def export_psd_page(self):
-        if self.page is None:
-            return
-        base, _ = os.path.splitext(self.page.path)
-        path, _ = QFileDialog.getSaveFileName(self, "Xuất PSD", base + ".psd", "Photoshop (*.psd)")
-        if not path:
-            return
+        return self.save_document(ask=True)
+
+    def save_document(self, ask: bool = False, *, wait: bool = False) -> bool:
+        """Ctrl+S saves the active document as PSD; subsequent saves reuse its path."""
+        if self.page is None or not self._can_switch_document() or self.worker is not None:
+            return False
+        self.view.end_text_edit()
+        state, page, doc = self._active_document, self.page, self.doc
+        if any(r.text.strip() and not r.cleaned for r in page.regions):
+            self.statusBar().showMessage("Còn bản dịch ở khung chưa xử lý: xử lý khung trước khi lưu PSD, "
+                                         "hoặc lưu dự án .lzp để giữ bản nháp.", 10000)
+            return False
+        path = state.psd_path
+        if ask or not path:
+            base = os.path.splitext(page.path)[0] + ".psd"
+            path, _ = QFileDialog.getSaveFileName(self, "Lưu thành PSD", path or base, "Photoshop (*.psd)")
+            if not path:
+                return False
+            if not path.lower().endswith(".psd"):
+                path += ".psd"
+        normalized = os.path.normcase(os.path.abspath(path))
+        if any(d is not state and normalized in {os.path.normcase(os.path.abspath(p)) for p in
+                                                (d.psd_path, d.source_path) if p} for d in self.documents):
+            QMessageBox.warning(self, "Tệp đang mở", "PSD này đang mở ở tab khác. Hãy chọn tên khác để lưu.")
+            return False
 
         def job(report):
-            if photoshop_available():
-                report("đang điều khiển Photoshop…")
-                PhotoshopExporter().export(self.page, path)
-            else:
-                export_without_photoshop(self.page, path)
+            # Replace the destination only after a complete export; a failed save
+            # must leave the previous PSD intact.
+            with tempfile.TemporaryDirectory(prefix=".lilyzono-", dir=os.path.dirname(os.path.abspath(path))) as folder:
+                temporary = os.path.join(folder, "document.psd")
+                if photoshop_available():
+                    report("đang điều khiển Photoshop…")
+                    PhotoshopExporter().export(page, temporary)
+                else:
+                    export_without_photoshop(page, temporary)
+                os.replace(temporary, path)
 
-        self._run_batch("Đang xuất PSD:", job, f"Đã lưu: {path}")
+        def saved():
+            state.psd_path = path
+            state.source_path = path
+            doc.saved_index = doc.index
+            self._update_title()
+
+        loop = QEventLoop(self)
+        result = []
+
+        def finished(success):
+            result.append(success)
+            loop.quit()
+
+        worker = self._run_batch("Đang lưu PSD:", job, f"Đã lưu: {path}", on_success=saved, on_finished=finished)
+        if worker is None:
+            loop.deleteLater()
+            return False
+        if wait and not result:
+            loop.exec()
+        if wait:
+            loop.deleteLater()
+            return bool(result and result[0])
+        worker.finished.connect(loop.deleteLater)
+        return True
 
     def export_psd_chapter(self):
         if self.chapter is None:
@@ -2465,7 +2728,7 @@ class MainWindow(QMainWindow):
         self._export_pages(pages, out_dir, psd="PSD" in kind, jpeg="JPEG" in kind)
 
     def export_image(self):
-        if self.page is None:
+        if self.page is None or not self._can_switch_document() or self._page_detecting(self.page):
             return
         base, _ = os.path.splitext(self.page.path)
         path, _ = QFileDialog.getSaveFileName(self, "Xuất JPEG", base + "_typed.jpg", "JPEG (*.jpg);;PNG (*.png)")
