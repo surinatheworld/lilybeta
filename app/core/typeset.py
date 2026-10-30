@@ -36,7 +36,6 @@ BREAK_PARTICLE = 0.3  # phạt nhẹ để tiểu từ kết câu ("ạ.") khôn
 BREAK_CLAUSE = 0.15  # thưởng xuống dòng sau dấu phẩy / chấm
 SHRINK_MAX = 0.15  # được nhỏ chữ tối đa 15% so với cỡ lớn nhất vừa khung…
 SHRINK_COST = 1.2  # …nếu điểm dáng tốt lên hơn 0,12 cho mỗi 10% nhỏ đi
-MOVE_COST = 0.4  # phạt dời khối chữ khỏi chỗ chữ gốc về giữa bóng (dời hẳn = 0,4)
 SCRIPT_SIZE = 0.583  # cỡ chỉ số trên/dưới so với cỡ chữ (mặc định Photoshop 58.3%)
 SCRIPT_POS = 0.333  # độ nâng/hạ chỉ số trên/dưới (mặc định Photoshop 33.3%)
 
@@ -370,13 +369,12 @@ def _shape_lines(text: str, style: TextStyle, style_key: tuple, size: int, iw: f
 _PLACED: dict[tuple, tuple] = {}
 
 
-def place_in_shape(text: str, style: TextStyle, shape, anchor=None) -> tuple[int, int, int, int] | None:
+def place_in_shape(text: str, style: TextStyle, shape) -> tuple[int, int, int, int] | None:
     """Dàn chữ theo đúng hình lòng bóng `shape` = (cx, cy, ((y, trái, phải), …)) (xem clean.text_area):
-    mỗi dòng được rộng bằng lòng bóng ở độ cao của nó. Khối chữ đặt đúng chỗ chữ gốc `anchor` (tâm khung chữ Nhật)
-    rồi nở dần ra; chỗ đó chật quá thì mới dời dần về giữa thân bóng.
+    mỗi dòng được rộng bằng lòng bóng ở độ cao của nó, khối chữ đặt chính giữa lòng bóng.
     Trả về khung chữ (để vẽ/xuất như khung thường) hoặc None nếu không dàn được theo dáng."""
     key = astuple(style)
-    res = _place(text, key, shape, tuple(anchor) if anchor else None)
+    res = _place(text, key, shape)
     if res is None:
         return None
     rect, size, lines = res
@@ -387,7 +385,7 @@ def place_in_shape(text: str, style: TextStyle, shape, anchor=None) -> tuple[int
 
 
 @lru_cache(maxsize=4096)
-def _place(text: str, style_key: tuple, shape, anchor=None):
+def _place(text: str, style_key: tuple, shape):
     style = TextStyle(*style_key)
     text = prepare(text, style)
     words = tuple(text.split())
@@ -395,43 +393,37 @@ def _place(text: str, style_key: tuple, shape, anchor=None):
         return None
     cx, cy, rows = shape
     y0 = min(r[0] for r in rows)
-    bh = max(r[0] for r in rows) + 1 - y0
-    lefts, rights = [math.inf] * bh, [-math.inf] * bh
+    half = [0.0] * (max(r[0] for r in rows) + 1 - y0)
     for y, left, right in rows:
-        lefts[y - y0], rights[y - y0] = left, right
-    bw = max(r[2] - r[1] for r in rows)
+        half[y - y0] = max(0.0, min(cx - left, right - cx))
+    bw = 2 * max(half)
+    bh = len(half)
     pad = max(2.0, min(bw, bh) * style.padding) + style.stroke_width
     k = len(words)
     want = math.log(max(bw, 1) / max(bh, 1))
-    # Tâm khối chữ: từ chỗ chữ gốc (t = 0) dời dần về giữa thân bóng (t = 1).
-    ax, ay = anchor or (cx, cy)
-    steps = (0.0,) if (ax, ay) == (cx, cy) else (0.0, .25, .5, .75, 1.0)
-    centers = [(ax + (cx - ax) * t, ay + (cy - ay) * t, t) for t in steps]
 
     def fit(size: int):
         m = _Metrics(style, size)
         seg = _segments(words, style_key, size)
         widest_word = max(seg[i][i + 1] for i in range(k))
         best = None
-        for x, y, t in centers:
-            for n in range(1, min(k, (2 * k + 2) // 3 + 2) + 1):
-                top = y - n * m.lh / 2
-                if top < y0 + pad or top + n * m.lh > y0 + bh - pad:
-                    break
-                caps = []
-                for i in range(n):  # lòng bóng hẹp nhất quanh tâm x trong dải của dòng (bỏ phần đệm trên/dưới dòng)
-                    a = max(0, int(top + (i + .1) * m.lh) - y0)
-                    b = min(bh, int(math.ceil(top + (i + .9) * m.lh)) - y0)
-                    half = min((min(x - lefts[j], rights[j] - x) for j in range(a, b)), default=0)
-                    caps.append(float(int(2 * max(0.0, half) - 2 * pad)))
-                if max(caps) < widest_word:
-                    continue
-                res = _break(words, style_key, size, tuple(caps))
-                if res is None:
-                    continue
-                score = _score(style, seg, res, m.lh, want, k) + MOVE_COST * t
-                if best is None or score < best[0] - 1e-6:
-                    best = (score, size, res[1], m, x, y)
+        for n in range(1, min(k, (2 * k + 2) // 3 + 2) + 1):
+            top = cy - n * m.lh / 2
+            if top < y0 + pad or top + n * m.lh > y0 + bh - pad:
+                break
+            caps = []
+            for i in range(n):  # bề ngang lòng bóng hẹp nhất trong dải của dòng (bỏ phần đệm trên/dưới dòng)
+                a = max(0, int(top + (i + .1) * m.lh) - y0)
+                b = min(bh, int(math.ceil(top + (i + .9) * m.lh)) - y0)
+                caps.append(float(int(2 * min(half[a:b], default=0) - 2 * pad)))
+            if max(caps) < widest_word:
+                continue
+            res = _break(words, style_key, size, tuple(caps))
+            if res is None:
+                continue
+            score = _score(style, seg, res, m.lh, want, k)
+            if best is None or score < best[0] - 1e-6:
+                best = (score, size, res[1], m)
         return best
 
     if style.size > 0:
@@ -447,8 +439,7 @@ def _place(text: str, style_key: tuple, shape, anchor=None):
             else:
                 hi = mid - 1
         if best is not None:
-            # Như người typeset: chịu nhỏ chữ đi chút (≤15%) nếu nhờ đó khối chữ tròn hơn, không cắt đôi từ ghép,
-            # hoặc nằm đúng chỗ chữ gốc hơn.
+            # Như người typeset: chịu nhỏ chữ đi chút (≤15%) nếu nhờ đó khối chữ tròn hơn, không cắt đôi từ ghép.
             top = best[1]
             for size in range(top - 1, max(MIN_SIZE, int(top * (1 - SHRINK_MAX))) - 1, -1):
                 res = fit(size)
@@ -456,14 +447,14 @@ def _place(text: str, style_key: tuple, shape, anchor=None):
                     best = res
     if best is None:
         return None
-    _, size, cuts, m, x, y = best
+    _, size, cuts, m = best
     lines = _lines_of(words, cuts)
     seg = _segments(words, style_key, size)
     widest = max(seg[a][b] for a, b in zip(cuts, cuts[1:]))
     # Khung chữ đủ rộng cho dòng dài nhất sau khi trừ lề (style.padding) và chừa thêm chút cho Photoshop đo lệch.
     w = int(math.ceil(widest / (1 - 2 * style.padding))) + 6
     h = int(math.ceil(_block_height(lines, m, style) / (1 - 2 * style.padding))) + 4
-    x1, y1 = int(round(x - w / 2)), int(round(y - h / 2))
+    x1, y1 = int(round(cx - w / 2)), int(round(cy - h / 2))
     return (x1, y1, x1 + w, y1 + h), size, lines
 
 
