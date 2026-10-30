@@ -13,6 +13,7 @@ from PySide6.QtGui import QImage, QPainter
 from .clean import MARGIN, clean_local, fill_bubble, is_small_sfx, text_area_candidates
 from .detect import TextDetector, sort_reading_order
 from .typeset import TextStyle, best_rect, draw_text
+from .typeset_profiles import apply_profile, profile_style
 
 Box = tuple[int, int, int, int]
 AUTO_CAP_FRAC = 0.031
@@ -42,6 +43,7 @@ class Region:
     manual_rect: Box | None = None  # khung chữ người dùng tự kéo/căn chỉnh (ưu tiên hơn khung tự động)
     needs_redraw: bool = False  # nền khó, tool để nguyên chữ gốc cho người dùng tự redraw
     uid: int = field(default_factory=new_uid)  # định danh bền (layer chữ, lịch sử hoàn tác trỏ tới vùng qua uid)
+    typeset_kind: str = "auto"  # automatic balloon shape, or a user-selected font category
 
     @property
     def text_rect(self) -> Box:
@@ -77,6 +79,7 @@ class Page:
         self.text_mask = np.zeros(img.shape[:2], np.float32)
         self.regions: list[Region] = []
         self.detected = False
+        self.typeset_profile = ""
         self.inpainter = None  # hàm inpaint(img, mask) bằng AI cho nền có hoạ tiết; None = OpenCV
 
     @property
@@ -139,6 +142,7 @@ class Page:
         boxes = sort_reading_order(boxes, right_to_left, self.original)
         self.regions = [r for r in self.regions if r.cleaned]
         self.regions += [Region((b.x1, b.y1, b.x2, b.y2), kind=b.kind) for b in boxes]
+        apply_profile(self)
         self.detected = True
 
     def add_region(self, box: Box) -> Region:
@@ -146,6 +150,7 @@ class Page:
         w, h = self.size
         box = (max(0, min(x1, x2)), max(0, min(y1, y2)), min(w, max(x1, x2)), min(h, max(y1, y2)))
         r = Region(box, kind="manual")
+        r.style = profile_style(self, r, r.style)
         self.regions.append(r)
         return r
 
@@ -213,6 +218,7 @@ class Page:
         return round(self.size[0] * AUTO_CAP_FRAC)
 
     def clean(self, region: Region, fit_bubble: bool = True) -> None:
+        region.style = profile_style(self, region, region.style)
         region.auto_cap = self.auto_cap
         if not region.cleaned:
             self._clean_pixels(region)

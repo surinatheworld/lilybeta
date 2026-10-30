@@ -31,10 +31,12 @@ class Chapter:
         self.translations: dict[int, list[str]] = {}
         self.filled: set[str] = set()  # trang đã tự điền câu dịch
         self.redrawn: dict[str, str] = {}  # ảnh raw → ảnh đã redraw nạp từ ngoài
+        self.typeset_profile = ""
 
     def page(self, path: str) -> Page:
         if path not in self.pages:
             page = self.pages[path] = Page(path)
+            page.typeset_profile = self.typeset_profile
             if path in self.redrawn:
                 page.set_redrawn(self.redrawn[path])
         return self.pages[path]

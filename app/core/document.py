@@ -491,7 +491,7 @@ class Document:
             "regions": copy.deepcopy(p.regions),
             "layers": [(L, L.name, L.visible, L.opacity, L.locked, L.blend, L.custom_name) for L in self.layers],
             "active": self.active, "selection": self.selection, "redrawn": p.redrawn, "text_mask": p.text_mask,
-            "detected": p.detected,
+            "detected": p.detected, "typeset_profile": p.typeset_profile,
         }
 
     def _restore_meta(self, m: dict) -> None:
@@ -504,6 +504,7 @@ class Document:
         self.active = m["active"] if m["active"] in self.layers else self.layers[1]
         self.selection = m["selection"]
         p.redrawn, p.text_mask, p.detected = m["redrawn"], m["text_mask"], m["detected"]
+        p.typeset_profile = m["typeset_profile"]
 
     def _targets(self, layers) -> list[tuple[object, str]]:
         out = []
@@ -750,7 +751,8 @@ def _union(a: Box | None, b: Box | None) -> Box | None:
 def _same_meta(a: dict, b: dict) -> bool:
     return (a["regions"] == b["regions"] and a["layers"] == b["layers"] and a["active"] is b["active"]
             and a["selection"] is b["selection"] and a["redrawn"] is b["redrawn"]
-            and a["text_mask"] is b["text_mask"] and a["detected"] == b["detected"])
+            and a["text_mask"] is b["text_mask"] and a["detected"] == b["detected"]
+            and a["typeset_profile"] == b["typeset_profile"])
 
 
 def affine(src_box, dst_box, angle: float = 0.0) -> np.ndarray:

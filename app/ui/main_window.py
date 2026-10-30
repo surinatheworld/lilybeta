@@ -48,6 +48,7 @@ from ..core.docs import load_lines, load_pages, page_number
 from ..core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available
 from ..core.page import Page, Region
 from ..core.typeset import TextStyle, layout, make_font, missing_chars
+from ..core.typeset_profiles import FONTS, GAI_BANG, KINDS, apply_profile, profile_style, region_kind
 from ..core import manual_ai
 from .ai_bridge import AiBridgeDialog
 from .api_dialog import PROVIDERS, ApiDialog, model_for
@@ -374,6 +375,7 @@ class MainWindow(QMainWindow):
             self.statusBar().addPermanentWidget(w)
         self._load_style_settings()
         self._update_ai_label()
+        self._sync_typeset_controls()
         self.layers_panel.set_doc(None)
         geometry = self.settings.value("workspace/geometry")
         state = self.settings.value("workspace/state")
@@ -468,6 +470,7 @@ class MainWindow(QMainWindow):
         A(m, "Chọn mọi khung đã có bản dịch", self.select_translated, "Ctrl+Shift+A")
         A(m, "Khung tiếp theo", lambda: self._step_region(1), "Tab")
         A(m, "Tự điền bản dịch cho trang này", self._auto_fill)
+        A(m, "Typeset Gái Băng", self._enable_gai_bang)
         m.addSeparator()
         self.act_process_all = A(m, "Xử lý cả chương", self.process_chapter)
 
@@ -583,7 +586,8 @@ class MainWindow(QMainWindow):
         i_paint = page(labeled("Cỡ:", self.opt_size), labeled("Độ cứng:", self.opt_hard),
                        labeled("Opacity:", self.opt_opacity), "|", self.opt_paint_hint)
         # Chữ
-        i_text = page(hint("Bấm vào bóng thoại để tạo chữ rồi gõ ở ô nội dung (panel Lilyzono) · kéo chuột để tạo "
+        i_text = page(button("Typeset Gái Băng", self._enable_gai_bang), "|",
+                      hint("Bấm vào bóng thoại để tạo chữ rồi gõ ở ô nội dung (panel Lilyzono) · kéo chuột để tạo "
                            "khung đoạn văn · font/cỡ/căn lề ở panel Character / Paragraph"), "|",
                       button("Xử lý (Ctrl+Enter)", self.process_selected))
         # Khung chữ
@@ -672,6 +676,29 @@ class MainWindow(QMainWindow):
         drow.addWidget(QLabel("Raw:"))
         drow.addWidget(self.direction, 1)
         lay.addLayout(drow)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Typeset:"))
+        self.typeset_mode = QComboBox()
+        self.typeset_mode.addItem("Tự do", "")
+        self.typeset_mode.addItem("Typeset Gái Băng", GAI_BANG)
+        self.typeset_mode.currentIndexChanged.connect(self._typeset_mode_changed)
+        row.addWidget(self.typeset_mode, 1)
+        lay.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Loại khung:"))
+        self.typeset_kind = QComboBox()
+        for key, label in KINDS.items():
+            self.typeset_kind.addItem(label, key)
+        self.typeset_kind.setToolTip("Tự nhận dạng hình bóng thoại trên ảnh gốc. Chọn lại nếu nhận dạng nhầm; áp cho các khung đang chọn.")
+        self.typeset_kind.setEnabled(False)
+        self.typeset_kind.currentIndexChanged.connect(self._typeset_kind_changed)
+        row.addWidget(self.typeset_kind, 1)
+        lay.addLayout(row)
+        self.lbl_typeset = QLabel()
+        self.lbl_typeset.setWordWrap(True)
+        self.lbl_typeset.setStyleSheet("color:#a5a5a5;")
+        lay.addWidget(self.lbl_typeset)
 
         # Vùng chữ đang chọn
         g_region = QGroupBox("Vùng chữ")
@@ -872,6 +899,65 @@ class MainWindow(QMainWindow):
         return panel, panel2
 
     # --- kiểu chữ ------------------------------------------------------------
+    def _enable_gai_bang(self):
+        self.typeset_mode.setCurrentIndex(self.typeset_mode.findData(GAI_BANG))
+        self.set_tool(TOOL_TEXT)
+
+    def _typeset_mode_changed(self):
+        if not self._can_switch_document():
+            self._sync_typeset_controls()
+            return
+        profile = self.typeset_mode.currentData()
+        self.settings.setValue("typeset/profile", profile)
+        if self.page is None:
+            self._sync_typeset_controls()
+            return
+        self.view.end_text_edit()
+        with self.doc.step("Typeset Gái Băng" if profile else "Typeset tự do"):
+            self.page.typeset_profile = profile
+            apply_profile(self.page)
+        if self.chapter is not None:
+            self.chapter.typeset_profile = profile
+        self.refresh()
+        self.select_region(self.selected, list(self.selection))
+        if profile:
+            from ..core.fonts import files_for
+            missing = [family for family in FONTS.values() if not files_for(family)]
+            self.statusBar().showMessage("Typeset Gái Băng đã bật." +
+                                         (" Chưa tìm thấy font: " + ", ".join(missing) if missing else " Tự chọn font theo khung thoại / SFX."), 10000)
+
+    def _typeset_kind_changed(self):
+        if self.page is None or not self.selection or not self._can_switch_document():
+            return
+        self.view.end_text_edit()
+        regions = self.selected_regions
+        before = self.doc.text_bounds(regions)
+        with self.doc.step("Đổi loại thoại"):
+            for region in regions:
+                region.typeset_kind = self.typeset_kind.currentData()
+                region.style = profile_style(self.page, region, region.style)
+        self._refresh_text(regions, before)
+        self.select_region(self.selected, list(self.selection))
+
+    def _sync_typeset_controls(self):
+        profile = self.page.typeset_profile if self.page is not None else self.settings.value("typeset/profile", "")
+        self.typeset_mode.blockSignals(True)
+        self.typeset_mode.setCurrentIndex(max(0, self.typeset_mode.findData(profile)))
+        self.typeset_mode.blockSignals(False)
+        region = self.region
+        self.typeset_kind.blockSignals(True)
+        self.typeset_kind.setCurrentIndex(max(0, self.typeset_kind.findData(region.typeset_kind if region else "auto")))
+        self.typeset_kind.blockSignals(False)
+        self.typeset_kind.setEnabled(bool(profile and region))
+        if profile and region:
+            kind = region_kind(self.page, region)
+            self.lbl_typeset.setText(f"{KINDS[kind]} → {FONTS[kind]}" + (" · nghiêng" if kind == "thought" else ""))
+        else:
+            self.lbl_typeset.setText("Gái Băng: tự chọn font cho thoại thường, suy nghĩ, ô vuông và SFX." if profile else "")
+
+    def _style_for(self, region, base=None):
+        return profile_style(self.page, region, base if base is not None else self.current_style())
+
     def current_style(self) -> TextStyle:
         return TextStyle(
             **self.text_panel.fields(),
@@ -928,7 +1014,7 @@ class MainWindow(QMainWindow):
             self.doc.begin("Đổi kiểu chữ", merge="style")
         for r in self.selected_regions:
             if r.cleaned or r.text.strip():
-                r.style = style.copy()
+                r.style = self._style_for(r, style)
                 changed = changed or r.cleaned
         if self.doc is not None:
             self.doc.end()
@@ -1354,6 +1440,7 @@ class MainWindow(QMainWindow):
             return
         try:
             page = Page(path)
+            page.typeset_profile = self.settings.value("typeset/profile", "")
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "Lỗi", str(e))
             return
@@ -1393,6 +1480,7 @@ class MainWindow(QMainWindow):
         if chapter is None:
             try:
                 chapter = Chapter(folder)
+                chapter.typeset_profile = self.settings.value("typeset/profile", "")
             except Exception as e:  # noqa: BLE001
                 QMessageBox.warning(self, "Lỗi", str(e))
                 return
@@ -1648,13 +1736,14 @@ class MainWindow(QMainWindow):
                     self._highlight_line(nxt)
             self.txt.setPlainText(text)
         self._loading_ui = False
-        if r is not None and r.cleaned:
+        if r is not None and (r.cleaned or self.page.typeset_profile):
             self._apply_style_to_ui(r.style)
         if r is not None and self.doc is not None:
             L = self.doc.text_layer(r)
             if L is not None and self.doc.active is not L:
                 self.doc.active = L
                 self.layers_panel.set_doc(self.doc)
+        self._sync_typeset_controls()
         self._update_warning()
         self._draw_overlays()
 
@@ -1692,7 +1781,7 @@ class MainWindow(QMainWindow):
             before = self.doc.text_bounds([r])
             with self.doc.step("Gõ chữ", merge=f"text:{r.uid}"):
                 if not r.text.strip():
-                    r.style = self.current_style()  # khung mới gõ chữ: dùng font/kiểu đang chọn
+                    r.style = self._style_for(r)  # new text uses the active series font rules
                 r.text = self.txt.toPlainText()
             self._refresh_text([r], before)
 
@@ -1705,7 +1794,7 @@ class MainWindow(QMainWindow):
             self._process_many()
             return
         r.text = self.txt.toPlainText()
-        r.style = self.current_style()
+        r.style = self._style_for(r)
 
         def after():
             line = self._line_of_text(r.text)
@@ -1739,7 +1828,7 @@ class MainWindow(QMainWindow):
             line = self._line_of_text(reg.text)
             if line is not None:
                 self.used_lines.add(line)
-            reg.style = style.copy()
+            reg.style = self._style_for(reg, style)
             queue.append(i)
         self._fill_lines()
         selection = list(self.selection)
@@ -1765,7 +1854,7 @@ class MainWindow(QMainWindow):
         style = self.current_style()
         for r in regs:
             if not r.cleaned:
-                r.style = style.copy()
+                r.style = self._style_for(r, style)
         try:
             job = manual_ai.prepare(self.page, regs)
         except ValueError as e:
@@ -1942,6 +2031,7 @@ class MainWindow(QMainWindow):
         pages = data["pages"]
         if data["chapter_folder"]:
             ch = Chapter(data["chapter_folder"])
+            ch.typeset_profile = pages[0].typeset_profile
             by_name = {os.path.basename(pg.path): pg for pg in pages}
             for pth in ch.paths:
                 pg = by_name.get(os.path.basename(pth))
@@ -2002,6 +2092,7 @@ class MainWindow(QMainWindow):
             return
         self.doc = doc_for(self.page)
         self.doc.sync()
+        self._sync_typeset_controls()
         self.view.set_image(self.doc.render())
         self._draw_overlays()
         self._update_page_list()
@@ -2279,7 +2370,7 @@ class MainWindow(QMainWindow):
             r = self.page.add_region(box)
             r.cleaned = True  # khung gõ chữ thuần: không xoá gì bên dưới
             r.manual_rect = tuple(box)
-            r.style = self.current_style()
+            r.style = self._style_for(r)
             r.auto_cap = self.page.auto_cap
             r.text_rects = [tuple(box)]
         self.refresh()
@@ -2297,10 +2388,10 @@ class MainWindow(QMainWindow):
         if r is None or self.doc is None:
             return
         if not r.cleaned:  # bóng còn chữ gốc: xoá chữ trước rồi mới gõ
-            r.style = self.current_style()
+            r.style = self._style_for(r)
             self._clean_then(r, self._inline_edit)
             return
-        st = r.effective_style if r.text.strip() else self.current_style()
+        st = r.effective_style if r.text.strip() else self._style_for(r)
         rect, size = self._inline_geometry(r, st)
         self.view.end_text_edit()
         before = self.doc.text_bounds([r])
@@ -2537,6 +2628,7 @@ class MainWindow(QMainWindow):
         style, fit, rtl = self.current_style(), self.chk_bubble.isChecked(), self.direction.currentIndex() == 0
         auto = self._auto_clean_args()
         ch = self.chapter
+        profile = self.page.typeset_profile
 
         def job(report):
             if self.detector is None:
@@ -2547,6 +2639,7 @@ class MainWindow(QMainWindow):
                 page.inpainter = inpainter
                 doc = doc_for(page)
                 doc.begin("Xử lý cả chương", ["redraw"])
+                page.typeset_profile = profile
                 if not page.detected:
                     page.detect(self.detector, rtl)
                     page.inpainter, small, _ = auto
@@ -2554,6 +2647,7 @@ class MainWindow(QMainWindow):
                     page.inpainter = inpainter
                 if path not in ch.filled and ch.lines_for(path):
                     ch.auto_fill(path, style)
+                apply_profile(page)
                 regs = [r for r in page.regions if r.text.strip() and not r.cleaned]
                 page.clean_many(regs, fit)
                 doc.end()

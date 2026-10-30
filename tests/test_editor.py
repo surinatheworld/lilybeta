@@ -24,6 +24,8 @@ from app.core import project
 from app.core.chapter import Chapter
 from app.core.document import BLENDS, Document, _blend, _checker, doc_for
 from app.core.page import Page, Region
+from app.core.typeset import TextStyle
+from app.core.typeset_profiles import FONTS, GAI_BANG
 from app.ui.image_view import CanvasImageItem
 from app.ui.main_window import DetectWorker, MainWindow
 from app.ui.theme import apply_dark
@@ -81,6 +83,7 @@ class EditorTests(unittest.TestCase):
         cls.temp.cleanup()
 
     def setUp(self):
+        QSettings("Lilyzono", "Lilyzono").setValue("typeset/profile", "")
         preloader = patch.object(MainWindow, "_preload_lama")
         preloader.start()
         self.addCleanup(preloader.stop)
@@ -520,6 +523,93 @@ class EditorTests(unittest.TestCase):
         self.assertIs(window.page, first)
         window._activate_document(window.documents[0])
         self.assertIsNone(window.chapter)
+
+    def enable_series_profile(self):
+        self.page.regions = [Region((40 + i * 145, 100, 170 + i * 145, 230), text="Bản dịch",
+                                    cleaned=True, typeset_kind=kind) for i, kind in enumerate(FONTS)]
+        self.doc.sync()
+        window = self.editor()
+        window.typeset_mode.setCurrentIndex(window.typeset_mode.findData(GAI_BANG))
+        return window
+
+    def test_gai_bang_applies_all_font_rules_and_preserves_them_during_typing_and_batch(self):
+        window = self.enable_series_profile()
+        for i, (kind, family) in enumerate(FONTS.items()):
+            window.select_region(i)
+            self.assertEqual(window.current_style().family, family)
+            window.txt.setPlainText(f"Gõ thêm {i}")
+            self.assertEqual(window.region.style.family, family)
+            self.assertEqual(window.region.style.italic, kind == "thought")
+        window.select_all()
+        window.process_selected()
+        for region, (kind, family) in zip(self.page.regions, FONTS.items()):
+            self.assertEqual(region.style.family, family)
+            self.assertEqual(region.style.italic, kind == "thought")
+
+    def test_profile_and_balloon_override_support_undo_and_project_roundtrip(self):
+        window = self.enable_series_profile()
+        window.select_region(0)
+        window.typeset_kind.setCurrentIndex(window.typeset_kind.findData("thought"))
+        self.assertEqual(window.region.style.family, FONTS["thought"])
+        window.undo()
+        self.assertEqual(window.region.typeset_kind, "normal")
+        self.assertEqual(window.region.style.family, FONTS["normal"])
+        window.redo()
+        self.assertTrue(window.region.style.italic)
+        path = str(Path(self.temp.name) / "gai-bang.lzp")
+        project.save(path, [self.page])
+        loaded = project.load(path)["pages"][0]
+        self.assertEqual(loaded.typeset_profile, GAI_BANG)
+        self.assertEqual(loaded.regions[0].typeset_kind, "thought")
+        self.assertEqual(loaded.regions[0].style.family, FONTS["thought"])
+        window.typeset_mode.setCurrentIndex(0)
+        self.assertEqual(self.page.typeset_profile, "")
+        window.undo()
+        self.assertEqual(self.page.typeset_profile, GAI_BANG)
+        self.assertEqual(window.typeset_mode.currentData(), GAI_BANG)
+
+    def test_gai_bang_inline_text_uses_the_thought_font_and_italic(self):
+        window = self.enable_series_profile()
+        window.select_region(1)
+        window._inline_edit()
+        window._inline_text_changed("Đang suy nghĩ")
+        window.view.end_text_edit()
+        self.assertEqual(window.region.style.family, FONTS["thought"])
+        self.assertTrue(window.region.style.italic)
+        self.assert_canvas()
+
+    def test_auto_fill_honors_the_profile_and_mode_is_independent_per_tab(self):
+        from app.core.assign import apply_plan
+
+        window = self.enable_series_profile()
+        first = window._active_document
+        apply_plan(self.page, [(region, ["Tự điền"]) for region in self.page.regions], TextStyle(family="Arial"))
+        self.assertEqual([r.style.family for r in self.page.regions], list(FONTS.values()))
+        window._show_page(self.other_page())
+        self.assertEqual(window.typeset_mode.currentData(), "")
+        window._activate_document(first)
+        self.assertEqual(window.typeset_mode.currentData(), GAI_BANG)
+
+    def test_chapter_processing_applies_each_region_font_on_every_page(self):
+        import copy
+
+        window = self.enable_series_profile()
+        first = self.other_page("series-ch1.png")
+        first.regions = copy.deepcopy(self.page.regions)
+        first.typeset_profile = GAI_BANG
+        second = self.other_page("series-ch2.png")
+        second.regions[0].kind = "sfx"
+        chapter = Chapter.__new__(Chapter)
+        chapter.folder, chapter.paths = self.temp.name, [first.path, second.path]
+        chapter.pages = {first.path: first, second.path: second}
+        chapter.translations, chapter.filled, chapter.redrawn, chapter.typeset_profile = {}, set(), {}, GAI_BANG
+        window.load_chapter(chapter.folder, chapter)
+        window.detector = object()  # both fixture pages have already been detected
+        window.process_chapter()
+        self.drain_jobs()
+        self.assertEqual([r.style.family for r in first.regions], list(FONTS.values()))
+        self.assertEqual(second.regions[0].style.family, FONTS["sfx"])
+        self.assertEqual(second.typeset_profile, GAI_BANG)
 
 
 if __name__ == "__main__":

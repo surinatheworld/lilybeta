@@ -195,6 +195,7 @@ def apply_plan(page, plan, style=None) -> int:
     """Ghi câu dịch vào các vùng theo `plan`; vùng nhận nhiều câu thì tách thành từng khối nếu được.
     Trả về số vùng có chữ."""
     from .page import new_uid
+    from .typeset_profiles import profile_style
 
     n = 0
     for r, ls in plan:
@@ -212,6 +213,6 @@ def apply_plan(page, plan, style=None) -> int:
         for reg, lines in targets:
             reg.text = "\n".join(lines)
             if style is not None:
-                reg.style = style.copy()
+                reg.style = profile_style(page, reg, style)
             n += 1
     return n

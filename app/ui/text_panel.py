@@ -348,7 +348,7 @@ class TextPanel(QTabWidget):
         align, justify, _ = next((ALIGNS[i] for i, b in enumerate(self.align_buttons) if b.isChecked()), ALIGNS[1])
         style = self.style_box.currentText()
         d = {
-            "family": self.font_box.currentFont().family(),
+            "family": self.font_box.currentText().strip() or self.font_box.currentFont().family(),
             "style_name": "" if style in ("", "Regular") else style,
             "size": int(round(_combo_value(self.size_box))),
             "leading": _combo_value(self.leading_box),
@@ -374,6 +374,7 @@ class TextPanel(QTabWidget):
     def set_style(self, s: TextStyle):
         self._loading = True
         self.font_box.setCurrentFont(QFont(s.family))
+        self.font_box.setEditText(s.family)  # keep bracketed/custom family names even if Qt cannot match its model entry
         self._fill_styles(QFont(s.family))
         self.style_box.setCurrentText(s.style_name or "Regular")
         _set_combo(self.size_box, s.size, "Tự động", " px")

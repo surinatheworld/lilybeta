@@ -58,6 +58,25 @@ Bố cục và thao tác quen thuộc của Photoshop 2023 (giao diện tối), 
 - **Mở PSD** (Ctrl+O): Background thành raw, layer ảnh giữ tên / ẩn hiện / opacity / blend, layer chữ thành khung
   chữ sửa được (nội dung, font, cỡ, màu, căn lề, xoay, Stroke, Drop Shadow) – sửa tiếp PSD đã type tay.
 
+### Typeset Gái Băng
+
+Chọn **Typeset → Typeset Gái Băng** trong panel Lilyzono, hoặc **Chữ → Typeset Gái Băng** (cũng có nút trên
+thanh tuỳ chọn của công cụ T). Font được áp cho các khung của trang và tiếp tục dùng khi gõ, tự điền bản dịch,
+xử lý nhiều khung hoặc xử lý cả chương:
+
+| Loại khung | Font | Kiểu |
+|---|---|---|
+| Bóng thoại tròn kín | 000 WildWords2 TB | Thường |
+| Suy nghĩ hình mây / bóng thoại có tia | 000 AnimeAce3 [TeddyBear] | Nghiêng |
+| Khung ô vuông | 00 CE Scriptorama Markdown JF | Thường |
+| SFX | MTO augie | Thường |
+
+Tool xét hình khung trên **ảnh gốc**; SFX dùng nhãn nhận diện SFX. Đây là nhận dạng hình học nên khung méo,
+hở hoặc dính nét tranh có thể bị nhận nhầm: chọn khung rồi đổi **Loại khung** (chọn nhiều khung để đổi cùng lúc).
+Chọn **Tự nhận dạng** để bỏ lựa chọn thủ công. Font/kiểu mới hỗ trợ Ctrl+Z; chế độ và loại khung được lưu trong `.lzp`.
+Cỡ chữ, màu, viền, bóng đổ và căn lề vẫn giữ theo thiết lập của bạn. Chọn Typeset **Tự do** để dùng font tuỳ ý.
+Các font cần được cài trên máy; tool báo những font còn thiếu, không tự tải font.
+
 ### Giao diện và hiệu năng
 
 - Thanh công cụ dùng icon nét đơn sắc, tab tài liệu có tên ảnh và dấu `*` khi chưa lưu; màu panel, ô nhập,
