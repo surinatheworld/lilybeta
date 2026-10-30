@@ -11,8 +11,11 @@ Tạo một nhóm **Lilyzono · Typeset Gái Băng** ngay trong tài liệu đan
 1. Mở ảnh trong Photoshop.
 2. **File → Scripts → Browse…**, chọn `Lilyzono.jsx` trong thư mục này.
 3. Dán bản dịch, **mỗi câu một dòng theo thứ tự đọc**, không thêm số thứ tự. Có thể mở file `.txt` UTF-8.
-4. Chọn LaMa / OpenCV / chỉ nền đơn giản, bấm **Nhận diện và xem trước**.
-5. Kiểm tra ảnh và danh sách thoại, bấm **Tạo layer trong Photoshop**. Sửa/căn lại chữ trực tiếp trong Photoshop nếu cần.
+4. Chọn LaMa / OpenCV / chỉ nền đơn giản, bấm **Nhận diện và xem trước**. Hộp thoại đóng ngay và **Photoshop
+   dùng tiếp được bình thường**; bộ xử lý chạy riêng với cửa sổ tiến độ (bấm **Huỷ** để dừng bất cứ lúc nào).
+   Lần đầu nạp AI mất ~20–30 giây.
+5. Xong, Photoshop tự hiện bảng xem trước. Kiểm tra ảnh và danh sách thoại, bấm **Tạo layer trong Photoshop**
+   (mất vài giây). Sửa/căn lại chữ trực tiếp trong Photoshop nếu cần.
 6. **Ctrl+S** để lưu PSD theo cách thông thường của Photoshop.
 
 Có thể dùng Actions để gán phím tắt cho lần chạy script bằng Browse. Giữ file JSX cạnh bộ xử lý,
@@ -20,7 +23,11 @@ hoặc trong thư mục `photoshop` của repo khi chạy từ mã nguồn.
 
 ## Bộ xử lý
 
-- Từ mã nguồn: giữ cấu trúc repo, cài môi trường bằng `run.bat`. JSX dùng `.venv/Scripts/pythonw.exe` của dự án.
+- Từ mã nguồn: giữ cấu trúc repo, cài môi trường bằng `run.bat`. JSX (trong `photoshop/` hoặc
+  `dist/LilyzonoPhotoshop/`) ưu tiên `.venv/Scripts/pythonw.exe` của dự án – luôn chạy code mới nhất và không bị
+  Smart App Control chặn như exe tự build.
+- Dán bản dịch: nếu các câu bị dính liền thành một dòng (một số nguồn copy chỉ xuống dòng kiểu LF), copy lại từ
+  Notepad / Word, hoặc dùng **Mở bản dịch .txt…**.
 - Bản độc lập: chạy `build_photoshop.bat`, gửi cả thư mục `dist/LilyzonoPhotoshop`. Không cần Python trên máy dùng.
 - Cần Windows Script Host để khởi động bộ xử lý ẩn. Tool không thay đổi thiết lập bảo mật hay cần mở máy chủ HTTP.
 - Model ONNX nằm trong thư mục `models` cạnh bộ xử lý. Xử lý trên máy, không gửi ảnh/bản dịch qua mạng.

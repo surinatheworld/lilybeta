@@ -21,4 +21,12 @@ assert.ok(!source.includes('eval('));
 assert.equal(JSON.stringify(tool.translationLines('13\nCảm ơn anh.\n14\nKhông có gì.', '013.psd')), '["Cảm ơn anh."]');
 assert.equal(JSON.stringify(tool.translationLines('Ôm chặt\n\nỪ.', 'page.psd')), '["Ôm chặt","Ừ."]');
 assert.throws(() => tool.translationLines('13\nCảm ơn anh.\n14\nKhông có gì.', '015.psd'));
+// Photoshop 2023 (ExtendScript) treo vô hạn khi regex /i gặp câu "Tr" + chữ có dấu ("Trở nên…"): không dùng regex
+// để đọc thoại. Node không tái hiện được lỗi đó nên kiểm tra mã nguồn và kết quả.
+assert.ok(!source.includes('(?:trang|page'), 'không dùng lại regex /i nhận dòng số trang');
+assert.equal(JSON.stringify(tool.translationLines('Trở nên đáng trân trọng\r\nTrang trí nhà\r\n12 giờ rồi\r\nTrước khi đi', '013.jpg')),
+  '["Trở nên đáng trân trọng","Trang trí nhà","12 giờ rồi","Trước khi đi"]');
+for (const [s, n] of [['13', '13'], ['Trang 13', '13'], ['TR.13', '13'], ['page 2', '2'], ['p.5', '5'], ['#4', '4'], ['13 –', '13'], ['12345', null]]) {
+  assert.equal(tool.pageHeader(s), n);
+}
 console.log('Photoshop script: JSON, invalid data rejection, Unicode launcher and page translations passed.');
