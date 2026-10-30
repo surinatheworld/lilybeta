@@ -9,11 +9,10 @@ import cv2
 import numpy as np
 
 from .inpaint_util import blend_back, resize_to, square_around
+from .paths import model_path
 
 MODEL_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx"
-MODEL_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "models", "lama_fp32.onnx")
-)
+MODEL_PATH = model_path("lama_fp32.onnx")
 SIZE = 512  # model nhận đúng ảnh 512x512
 
 _session = None
