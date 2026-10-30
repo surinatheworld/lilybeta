@@ -9,6 +9,7 @@ from PySide6.QtCore import QSettings, Qt, QThread, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QDockWidget,
     QInputDialog,
     QCheckBox,
     QColorDialog,
@@ -36,7 +37,10 @@ from PySide6.QtWidgets import (
 
 from ..core import cloud, lama, secrets
 from ..core.detect import TextDetector
-from ..core.docs import load_lines
+from ..core.assign import assign_lines
+from ..core.chapter import Chapter
+from ..core.docs import load_lines, load_pages, page_number
+from ..core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available
 from ..core.page import Page, Region
 from ..core.typeset import TextStyle, missing_chars
 from .api_dialog import PROVIDERS, ApiDialog, model_for
@@ -78,6 +82,23 @@ class LamaLoader(QThread):
             self.done.emit("")
         except Exception as e:  # noqa: BLE001
             self.done.emit(str(e))
+
+
+class BatchWorker(QThread):
+    """Tác vụ dài cho cả chương (nhận diện, xử lý, xuất PSD) ở luồng nền; báo tiến độ từng bước."""
+
+    progress = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, parent, job):
+        super().__init__(parent)
+        self.job = job
+
+    def run(self):
+        try:
+            self.job(self.progress.emit)
+        except Exception as e:  # noqa: BLE001 - báo lỗi cho người dùng
+            self.failed.emit(str(e))
 
 
 class CleanWorker(QThread):
@@ -136,6 +157,9 @@ class MainWindow(QMainWindow):
         self.worker: DetectWorker | None = None
         self.clean_worker: CleanWorker | None = None
         self.page: Page | None = None
+        self.chapter: Chapter | None = None
+        self.batch: BatchWorker | None = None
+        self.page_lines = False  # danh sách câu đang hiện là câu của riêng trang này (docs chia theo trang)
         self.selected = -1  # vùng chính (bấm sau cùng)
         self.selection: list[int] = []  # các vùng đang chọn (chọn nhiều bằng Ctrl/Shift + bấm)
         self.lines: list[str] = []
@@ -162,6 +186,13 @@ class MainWindow(QMainWindow):
         splitter.setSizes([1000, 460])
         self.setCentralWidget(splitter)
         self._build_toolbar()
+        self.page_list = QListWidget()
+        self.page_list.currentRowChanged.connect(self._page_row_changed)
+        self.page_dock = QDockWidget("Trang", self)
+        self.page_dock.setWidget(self.page_list)
+        self.page_dock.setFeatures(QDockWidget.DockWidgetMovable)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.page_dock)
+        self.page_dock.hide()
         self._load_style_settings()
         self._update_ai_label()
         self.statusBar().showMessage("Mở ảnh raw (Ctrl+O) hoặc kéo thả ảnh vào cửa sổ.")
@@ -180,6 +211,8 @@ class MainWindow(QMainWindow):
             tb.addAction(a)
             return a
 
+        act("Mở chương", self.open_chapter, "Ctrl+Shift+O").setToolTip(
+            "Mở cả thư mục ảnh raw của một chương")
         act("Mở ảnh", self.open_image, "Ctrl+O")
         act("Mở bản dịch", self.open_docs, "Ctrl+D")
         tb.addSeparator()
@@ -207,6 +240,12 @@ class MainWindow(QMainWindow):
         self.view.set_tool(TOOL_RECT)
         tb.addSeparator()
         act("Xuất ảnh", self.export_image, "Ctrl+S")
+        act("Xuất PSD", self.export_psd_page, "Ctrl+Shift+S").setToolTip(
+            "Xuất trang này ra PSD có lớp (có Photoshop: lớp chữ sửa được)")
+        tb.addSeparator()
+        self.act_process_all = act("Xử lý cả chương", self.process_chapter)
+        self.act_process_all.setToolTip("Nhận diện, tự điền câu dịch theo trang, xoá chữ và đặt chữ cho mọi trang")
+        self.act_export_all = act("Xuất PSD cả chương", self.export_psd_chapter)
 
     def _build_panel(self) -> QWidget:
         panel = QWidget()
@@ -252,7 +291,7 @@ class MainWindow(QMainWindow):
         self.list_lines.itemClicked.connect(self._line_clicked)
         self.list_lines.itemDoubleClicked.connect(self._line_double_clicked)
         dl.addWidget(self.list_lines)
-        hint = QLabel("Bấm một câu để gán cho vùng đang chọn · bấm đúp để gán và xử lý luôn.")
+        hint = QLabel("Bấm một câu để gán cho vùng đang chọn · Ctrl+bấm để nối thêm câu · bấm đúp để gán và xử lý luôn.")
         hint.setStyleSheet("color:#888;")
         hint.setWordWrap(True)
         dl.addWidget(hint)
@@ -613,18 +652,115 @@ class MainWindow(QMainWindow):
 
     def load_image(self, path: str):
         try:
-            self.page = Page(path)
+            page = Page(path)
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "Lỗi", str(e))
             return
+        self.chapter = None
+        self.page_dock.hide()
         self.settings.setValue("dir/image", os.path.dirname(path))
-        self.setWindowTitle(f"EditManga – {os.path.basename(path)}")
-        self.selected = -1
+        self._show_page(page)
+
+    def _show_page(self, page: Page):
+        self.page = page
+        name = os.path.basename(page.path)
+        self.setWindowTitle(f"EditManga – {name}" + (f" ({os.path.basename(self.chapter.folder)})" if self.chapter else ""))
+        self.selected, self.selection = -1, []
         self.view.set_image(self.page.render(), fit=True)
+        self._lines_for_page()
         self.refresh()
-        self.run_detect()
+        if page.detected:
+            self.select_region(0 if page.regions else -1)
+        else:
+            self.run_detect()
         if self.engine == "lama":
             self._preload_lama()
+
+    # --- chương -------------------------------------------------------------------------
+    def open_chapter(self):
+        folder = QFileDialog.getExistingDirectory(self, "Mở thư mục ảnh raw của chương",
+                                                  self.settings.value("dir/image", ""))
+        if folder:
+            self.load_chapter(folder)
+
+    def load_chapter(self, folder: str):
+        try:
+            chapter = Chapter(folder)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Lỗi", str(e))
+            return
+        old = self.chapter
+        self.chapter = chapter
+        if old and old.translations:
+            chapter.translations = old.translations
+        self.settings.setValue("dir/image", folder)
+        self.page_list.blockSignals(True)
+        self.page_list.clear()
+        for path in chapter.paths:
+            self.page_list.addItem(os.path.basename(path))
+        self.page_list.blockSignals(False)
+        self.page_dock.show()
+        self.page_list.setCurrentRow(0)
+        self._page_row_changed(0)
+
+    def _page_row_changed(self, row: int):
+        if self.chapter is None or not (0 <= row < len(self.chapter.paths)):
+            return
+        if self.page is not None and self.page.path == self.chapter.paths[row]:
+            return
+        self._show_page(self.chapter.page(self.chapter.paths[row]))
+
+    def _update_page_list(self):
+        if self.chapter is None:
+            return
+        for i, path in enumerate(self.chapter.paths):
+            page = self.chapter.pages.get(path)
+            label = os.path.basename(path)
+            if page is not None and page.detected:
+                todo = [r for r in page.regions if r.text.strip()]
+                done = sum(1 for r in todo if r.done)
+                label += f"   {done}/{len(todo)}" + (" ✓" if todo and done == len(todo) else "")
+            self.page_list.item(i).setText(label)
+
+    def _lines_for_page(self):
+        """Danh sách câu dịch cho trang đang mở (cả file, hoặc riêng trang nếu docs chia theo trang)."""
+        if self.page is None:
+            return
+        pages = self.chapter.translations if self.chapter else getattr(self, "_doc_pages", {})
+        n = page_number(self.page.path)
+        if pages and (n in pages or (len(pages) == 1 and 0 in pages)):
+            self.lines = pages.get(n, pages.get(0, []))
+            self.page_lines = n in pages
+        elif not self.chapter and getattr(self, "_doc_flat", None) is not None:
+            self.lines, self.page_lines = self._doc_flat, False
+        else:
+            self.lines, self.page_lines = ([], False) if self.chapter else (self.lines, False)
+        self._sync_used_lines()
+        self._fill_lines()
+
+    def _sync_used_lines(self):
+        """Câu đã nằm trong một khung thì đánh dấu đã dùng."""
+        texts = [t for r in (self.page.regions if self.page else []) for t in r.text.split("\n") if t.strip()]
+        self.used_lines = {i for i, line in enumerate(self.lines) if line in texts}
+
+    def _auto_fill(self):
+        """Docs chia theo trang: tự ghép câu của trang vào các khung theo thứ tự đọc."""
+        if not (self.page_lines and self.lines and self.page and self.page.detected):
+            return
+        free = [r for r in self.page.regions if not r.cleaned]
+        plan = assign_lines(self.page, free, self.lines)
+        for r in free:
+            r.text = ""
+        style = self.current_style()
+        for r, ls in plan:
+            r.text = "\n".join(ls)
+            r.style = style.copy()
+        if self.chapter:
+            self.chapter.filled.add(self.page.path)
+        self._sync_used_lines()
+        self._fill_lines()
+        self.statusBar().showMessage(f"Đã tự điền {sum(len(ls) for _, ls in plan)}/{len(self.lines)} câu vào "
+                                     f"{len(plan)} khung. Kiểm tra rồi bấm Xử lý (chọn tất cả: Ctrl+A).", 8000)
 
     def open_docs(self):
         path, _ = QFileDialog.getOpenFileName(self, "Mở bản dịch", self.settings.value("dir/docs", ""), DOCS_FILTER)
@@ -633,14 +769,24 @@ class MainWindow(QMainWindow):
 
     def load_docs(self, path: str):
         try:
-            self.lines = load_lines(path)
+            pages = load_pages(path)
+            flat = load_lines(path)
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "Lỗi", f"Không đọc được bản dịch:\n{e}")
             return
         self.settings.setValue("dir/docs", os.path.dirname(path))
-        self.used_lines.clear()
-        self.lbl_docs.setText(f"{os.path.basename(path)} – {len(self.lines)} câu")
-        self._fill_lines()
+        by_page = not (len(pages) == 1 and 0 in pages)
+        if self.chapter:
+            self.chapter.translations = pages
+            self.chapter.filled.clear()
+        self._doc_pages, self._doc_flat = (pages if by_page else {}), flat
+        info = (f"{len(pages)} trang / {sum(map(len, pages.values()))} câu – tự điền theo trang"
+                if by_page else f"{len(flat)} câu")
+        self.lbl_docs.setText(f"{os.path.basename(path)} – {info}")
+        self._lines_for_page()
+        if by_page and self.page and self.page.detected and not any(r.text for r in self.page.regions):
+            self._auto_fill()
+        self.refresh()
 
     def _fill_lines(self):
         self.list_lines.clear()
@@ -660,7 +806,9 @@ class MainWindow(QMainWindow):
         for url in e.mimeData().urls():
             path = url.toLocalFile()
             ext = os.path.splitext(path)[1].lower()
-            if ext in IMAGE_EXTS:
+            if os.path.isdir(path):
+                self.load_chapter(path)
+            elif ext in IMAGE_EXTS:
                 self.load_image(path)
             elif ext in DOCS_EXTS:
                 self.load_docs(path)
@@ -680,6 +828,8 @@ class MainWindow(QMainWindow):
         self.act_detect.setEnabled(True)
         n = len(self.page.regions)
         self.statusBar().showMessage(f"Tìm thấy {n} vùng chữ. Bấm vào một khung để chọn, kéo chuột để vẽ thêm.")
+        self._auto_fill()
+        self.refresh()
         self.select_region(0 if n else -1)
 
     def _detect_failed(self, msg: str):
@@ -918,7 +1068,13 @@ class MainWindow(QMainWindow):
             self.list_lines.scrollToItem(item)
 
     def _line_clicked(self, item: QListWidgetItem):
-        self.txt.setPlainText(self.lines[item.data(Qt.UserRole)])
+        line = self.lines[item.data(Qt.UserRole)]
+        cur = self.txt.toPlainText().strip()
+        # Ctrl + bấm: nối thêm câu vào khung (bóng mà người dịch tách thành nhiều câu).
+        if QApplication.keyboardModifiers() & Qt.ControlModifier and cur and line not in cur.split("\n"):
+            self.txt.setPlainText(cur + "\n" + line)
+        else:
+            self.txt.setPlainText(line)
 
     def _line_double_clicked(self, item: QListWidgetItem):
         self._line_clicked(item)
@@ -934,6 +1090,100 @@ class MainWindow(QMainWindow):
             return
         self.view.set_image(self.page.render())
         self._draw_overlays()
+        self._update_page_list()
+
+    # --- cả chương / PSD ----------------------------------------------------------------
+    def _run_batch(self, title: str, job, done_msg: str):
+        if self.batch is not None:
+            return
+        self.centralWidget().setEnabled(False)
+        self.statusBar().showMessage(title)
+        self.batch = BatchWorker(self, job)
+        self.batch.progress.connect(lambda m: self.statusBar().showMessage(f"{title} {m}"))
+        self.batch.failed.connect(lambda m: QMessageBox.warning(self, "Lỗi", m))
+
+        def finished():
+            self.batch = None
+            self.centralWidget().setEnabled(True)
+            if self.page is not None:
+                self._lines_for_page()
+                self.refresh()
+                self.select_region(self.selected if self.page.regions else -1)
+            self.statusBar().showMessage(done_msg, 10000)
+
+        self.batch.finished.connect(finished)
+        self.batch.start()
+
+    def process_chapter(self):
+        if self.chapter is None:
+            if self.page is not None:
+                self.select_all()
+                self.process_selected()
+            return
+        try:
+            inpainter = self._make_inpainter()
+        except cloud.CloudError as e:
+            QMessageBox.warning(self, "AI vẽ nền", str(e))
+            return
+        style, fit, rtl = self.current_style(), self.chk_bubble.isChecked(), self.direction.currentIndex() == 0
+        ch = self.chapter
+
+        def job(report):
+            if self.detector is None:
+                self.detector = TextDetector()
+            for i, path in enumerate(ch.paths):
+                report(f"trang {i + 1}/{len(ch.paths)} ({os.path.basename(path)})…")
+                page = ch.page(path)
+                page.inpainter = inpainter
+                if not page.detected:
+                    page.detect(self.detector, rtl)
+                if path not in ch.filled and ch.lines_for(path):
+                    ch.auto_fill(path, style)
+                regs = [r for r in page.regions if r.text.strip() and not r.cleaned]
+                page.clean_many(regs, fit)
+
+        self._run_batch("Đang xử lý cả chương:", job, "Đã xử lý xong cả chương. Kiểm tra từng trang rồi Xuất PSD.")
+
+    def _export_pages(self, pages: list[Page], out_dir: str):
+        def job(report):
+            exporter = PhotoshopExporter() if photoshop_available() else None
+            for i, page in enumerate(pages):
+                report(f"{i + 1}/{len(pages)} ({os.path.basename(page.path)})…")
+                out = os.path.join(out_dir, os.path.splitext(os.path.basename(page.path))[0] + ".psd")
+                if exporter:
+                    exporter.export(page, out)
+                else:
+                    export_without_photoshop(page, out)
+
+        how = "lớp chữ sửa được (Photoshop)" if photoshop_available() else "lớp chữ dạng ảnh (máy không có Photoshop)"
+        self._run_batch("Đang xuất PSD:", job, f"Đã xuất {len(pages)} file PSD, {how} → {out_dir}")
+
+    def export_psd_page(self):
+        if self.page is None:
+            return
+        base, _ = os.path.splitext(self.page.path)
+        path, _ = QFileDialog.getSaveFileName(self, "Xuất PSD", base + ".psd", "Photoshop (*.psd)")
+        if not path:
+            return
+
+        def job(report):
+            if photoshop_available():
+                report("đang điều khiển Photoshop…")
+                PhotoshopExporter().export(self.page, path)
+            else:
+                export_without_photoshop(self.page, path)
+
+        self._run_batch("Đang xuất PSD:", job, f"Đã lưu: {path}")
+
+    def export_psd_chapter(self):
+        if self.chapter is None:
+            self.export_psd_page()
+            return
+        out_dir = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu PSD", self.chapter.folder)
+        if not out_dir:
+            return
+        pages = [self.chapter.page(p) for p in self.chapter.paths if p in self.chapter.pages]
+        self._export_pages(pages, out_dir)
 
     def export_image(self):
         if self.page is None:

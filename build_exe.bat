@@ -10,6 +10,9 @@ if not exist .venv (
   --name EditManga ^
   --icon assets\icon.ico ^
   --collect-submodules keyring.backends ^
+  --collect-submodules win32com ^
+  --hidden-import fontTools.ttLib ^
+  --collect-data psd_tools ^
   EditManga.py || goto :err
 
 rem Bieu tuong va model AI dat canh EditManga.exe (model co san thi chep sang, khoi phai tai lai).

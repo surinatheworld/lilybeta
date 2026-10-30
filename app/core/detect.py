@@ -60,7 +60,7 @@ class TextDetector:
             np.maximum(mask[y0:y1], tile_mask, out=mask[y0:y1])
             for b in tile_boxes:
                 boxes.append(TextBox(b.x1, b.y1 + y0, b.x2, b.y2 + y0, b.score))
-        boxes = split_double_bubbles(_nms(boxes), mask)
+        boxes = grow_to_strokes(split_double_bubbles(_nms(boxes), mask), mask)
         return boxes + find_sfx(mask, boxes), mask
 
     def _infer(self, img: np.ndarray) -> tuple[list[TextBox], np.ndarray]:
@@ -126,6 +126,32 @@ def split_double_bubbles(boxes: list[TextBox], mask: np.ndarray) -> list[TextBox
     return out
 
 
+def grow_to_strokes(boxes: list[TextBox], mask: np.ndarray) -> list[TextBox]:
+    """Nới khung cho trùm cả nét chữ dính liền mà model khoanh hụt (vd chữ đầu cột nét mờ).
+
+    Chỉ lấy cụm nét chạm khung gốc, trong phạm vi nửa cạnh ngắn của khung, không lấn sang khung khác.
+    """
+    h, w = mask.shape[:2]
+    out = []
+    for b in boxes:
+        e = int(max(12, 0.5 * min(b.x2 - b.x1, b.y2 - b.y1)))
+        wx1, wy1, wx2, wy2 = max(0, b.x1 - e), max(0, b.y1 - e), min(w, b.x2 + e), min(h, b.y2 + e)
+        strokes = (mask[wy1:wy2, wx1:wx2] > 0.2).astype(np.uint8)
+        for o in boxes:  # không lấn sang chữ của khung khác
+            if o is not b:
+                strokes[max(0, o.y1 - wy1):max(0, o.y2 - wy1), max(0, o.x1 - wx1):max(0, o.x2 - wx1)] = 0
+        n, lab = cv2.connectedComponents(cv2.dilate(strokes, np.ones((7, 7), np.uint8)))
+        inner = lab[b.y1 - wy1:b.y2 - wy1, b.x1 - wx1:b.x2 - wx1]
+        keep = np.isin(lab, np.unique(inner[inner > 0])) & (strokes > 0)
+        ys, xs = np.nonzero(keep)
+        if len(xs):
+            out.append(TextBox(min(b.x1, int(xs.min()) + wx1), min(b.y1, int(ys.min()) + wy1),
+                               max(b.x2, int(xs.max()) + 1 + wx1), max(b.y2, int(ys.max()) + 1 + wy1), b.score, b.kind))
+        else:
+            out.append(b)
+    return out
+
+
 def find_sfx(mask: np.ndarray, boxes: list[TextBox]) -> list[TextBox]:
     """Cụm nét chữ model nhìn thấy nhưng không khoanh khung (SFX, chữ nhỏ ngoài bóng).
 
@@ -185,8 +211,65 @@ def _inside_ratio(a: TextBox, b: TextBox) -> float:
     return ix * iy / max(1, a.area)
 
 
-def sort_reading_order(boxes: list[TextBox], right_to_left: bool = True) -> list[TextBox]:
-    """Sắp theo thứ tự đọc: từ trên xuống, trong cùng một hàng thì phải→trái (manga) hoặc trái→phải."""
+def sort_reading_order(boxes: list[TextBox], right_to_left: bool = True, img: np.ndarray | None = None) -> list[TextBox]:
+    """Sắp theo thứ tự đọc. Có ảnh thì đọc hết từng khung tranh (panel) trước: các hàng panel từ trên
+    xuống, trong hàng thì phải→trái (manga) hoặc trái→phải; trong một panel thì sắp theo hàng chữ."""
+    if img is not None and len(boxes) > 1:
+        gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        return _xy_cut(gray >= 235, boxes, (0, 0, gray.shape[1], gray.shape[0]), right_to_left, 0)
+    return _row_order(boxes, right_to_left)
+
+
+def _gutters(white: np.ndarray, axis: int, lo: int, hi: int) -> list[int]:
+    """Vị trí giữa các dải trắng (khe giữa panel) chạy hết bề ngang/dọc của khối."""
+    frac = white.mean(axis=axis)
+    is_white = frac >= 0.995  # khe thật giữa panel trắng gần như tuyệt đối
+    cuts, start = [], None
+    for i, wv in enumerate(np.append(is_white, False)):
+        if wv and start is None:
+            start = i
+        elif not wv and start is not None:
+            if i - start >= 4 and start > 0 and i < len(is_white):
+                cuts.append(lo + (start + i) // 2)
+            start = None
+    return [c for c in cuts if lo < c < hi]
+
+
+def _xy_cut(white, boxes, area, rtl, depth):
+    x1, y1, x2, y2 = area
+    if len(boxes) <= 1 or depth > 10:
+        return _row_order(boxes, rtl)
+    sub = white[y1:y2, x1:x2]
+    for axis in (1, 0):  # 1: cắt ngang (hàng panel), 0: cắt dọc (panel trong hàng)
+        lo, hi = (y1, y2) if axis == 1 else (x1, x2)
+        cuts = []
+        for c in _gutters(sub, axis, lo, hi):
+            # Chỉ cắt ở khe không chạy xuyên qua khung chữ nào; phần không có chữ sẽ bị bỏ đi,
+            # nhờ vậy panel không có thoại (vd panel đầu trang) không làm dính các panel còn lại.
+            spans = [(b.y1, b.y2) if axis == 1 else (b.x1, b.x2) for b in boxes]
+            if not any(s0 + 2 < c < s1 - 2 for s0, s1 in spans):
+                cuts.append(c)
+        if not cuts:
+            continue
+        edges = [lo] + cuts + [hi]
+        parts = []
+        for a, b in zip(edges, edges[1:]):
+            mid = [bx for bx in boxes if a <= ((bx.y1 + bx.y2) / 2 if axis == 1 else (bx.x1 + bx.x2) / 2) < b]
+            if mid:
+                parts.append(((x1, a, x2, b) if axis == 1 else (a, y1, b, y2), mid))
+        if len(parts) == 1 and parts[0][0] == area:
+            continue
+        if axis == 0 and rtl:
+            parts.reverse()
+        out = []
+        for part_area, part in parts:
+            out += _xy_cut(white, part, part_area, rtl, depth + 1)
+        return out
+    return _row_order(boxes, rtl)
+
+
+def _row_order(boxes: list[TextBox], right_to_left: bool = True) -> list[TextBox]:
+    """Trong một panel: từ trên xuống, cùng một hàng thì phải→trái (manga) hoặc trái→phải."""
     rows: list[list[TextBox]] = []
     for b in sorted(boxes, key=lambda b: b.y1):
         cy = (b.y1 + b.y2) / 2

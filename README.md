@@ -24,7 +24,30 @@ python -m venv .venv
 .venv\Scripts\python -m app.main
 ```
 
-## Cách dùng
+## Cách dùng nhanh: type cả chương
+
+1. **Mở chương** (Ctrl+Shift+O): chọn thư mục ảnh raw (001.jpg, 002.jpg…). Danh sách trang hiện bên trái.
+2. **Mở bản dịch** (Ctrl+D): file `.docx`/`.txt` chia theo trang – dòng chỉ có số là tên trang, các dòng sau là câu dịch
+   của trang đó theo thứ tự đọc:
+   ```
+   1
+   Không cần phải làm thế đâu ạ.
+   Một Nagi đã nghe được tâm tư của cha mình…
+   2
+   Nagi…
+   ```
+   Mỗi trang tự nhận diện chữ và **tự điền câu vào từng khung**: đọc theo panel (phải → trái, trên → dưới), tự bỏ qua
+   chỗ không dịch (logo, tên tác giả, SFX nhỏ), tự cho một bóng nhận 2–3 câu khi người dịch tách câu.
+3. Chọn font/kiểu chữ, rồi **Xử lý cả chương** → xoá chữ + vẽ lại nền + đặt chữ mọi trang.
+4. Kiểm tra từng trang (sửa tay nếu cần), rồi **Xuất PSD cả chương**: mỗi trang một file PSD gồm Background (raw),
+   lớp "Xoá chữ" và **lớp chữ thật sửa được trong Photoshop** (máy có Photoshop). Không có Photoshop thì lớp chữ là ảnh.
+
+Không cần giao diện: `python tools/run_chapter.py <thư mục raw> <file docs> <thư mục PSD> --font "000 WildWords2 TB"`.
+
+Đo trên chương 18.1 (10 trang, 48 câu, so với PSD typeset tay): tự điền đúng 48/48 câu, xoá hết chữ Nhật trong các
+vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. Công cụ đo: `tools/evaluate.py`.
+
+## Cách dùng chi tiết
 
 1. **Mở ảnh raw** (Ctrl+O hoặc kéo thả ảnh vào cửa sổ). Tool tự nhận diện chữ và khoanh các vùng, đánh số theo thứ tự đọc (chọn *Manga: phải → trái* hoặc *Manhwa: trái → phải* trên thanh công cụ).
 2. **Mở bản dịch** (Ctrl+D): file `.docx` hoặc `.txt`, mỗi đoạn là một câu. Dòng bắt đầu bằng `//` bị bỏ qua. Xuống dòng mềm (Shift+Enter trong Word) hoặc dấu `|` để ép xuống dòng trong bóng thoại.

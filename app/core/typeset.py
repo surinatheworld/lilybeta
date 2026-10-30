@@ -21,6 +21,8 @@ from PySide6.QtGui import (
     QTransform,
 )
 
+from .fonts import qt_family
+
 MIN_SIZE = 8
 MAX_SIZE = 150
 SCRIPT_SIZE = 0.583  # cỡ chỉ số trên/dưới so với cỡ chữ (mặc định Photoshop 58.3%)
@@ -38,7 +40,8 @@ class TextStyle:
     stroke_color: str = "#ffffff"
     stroke_width: float = 0.0
     line_spacing: float = 1.0  # hệ số khoảng cách dòng khi leading = Tự động
-    padding: float = 0.06  # chừa lề theo tỉ lệ cạnh ngắn của khung
+    padding: float = 0.04  # chừa lề theo tỉ lệ cạnh ngắn của khung
+    max_size: float = 0.0  # cỡ tối đa khi tự co (0 = không giới hạn); trang tự đặt theo bề ngang ảnh
     align: str = "center"  # "left" | "center" | "right"
     rotation: float = 0.0  # độ, xoay quanh tâm khung chữ
     # --- Character ---
@@ -74,7 +77,8 @@ def _is_script(style: TextStyle) -> bool:
 
 def make_font(style: TextStyle, size: float) -> QFont:
     px = max(1, round(size * (SCRIPT_SIZE if _is_script(style) else 1)))
-    f = QFontDatabase.font(style.family, style.style_name, 12) if style.style_name else QFont(style.family)
+    family = qt_family(style.family)
+    f = QFontDatabase.font(family, style.style_name, 12) if style.style_name else QFont(family)
     f.setPixelSize(px)
     if style.bold:
         f.setBold(True)
@@ -113,7 +117,8 @@ class _Metrics:
         self.fm = QFontMetricsF(self.font)
         self.hs, self.vs = style.hscale / 100, style.vscale / 100
         self.size = size
-        auto = self.fm.height() / (SCRIPT_SIZE if _is_script(style) else 1) * style.line_spacing * self.vs
+        # Khoảng cách dòng tự động như Photoshop: 120% cỡ chữ (đủ chỗ cho dấu tiếng Việt chồng tầng).
+        auto = 1.2 * size * style.line_spacing * self.vs
         self.lh = style.leading if style.leading > 0 else auto
 
     def adv(self, s: str) -> float:
@@ -190,7 +195,8 @@ def _layout(text: str, style_key: tuple, w: int, h: int):
     if style.size > 0:
         return fit(style.size)
 
-    lo, hi = MIN_SIZE, max(MIN_SIZE, min(MAX_SIZE, int(ih)))
+    cap = int(style.max_size) if style.max_size > 0 else MAX_SIZE
+    lo, hi = MIN_SIZE, max(MIN_SIZE, min(MAX_SIZE, cap, int(ih)))
     best = None
     while lo <= hi:
         mid = (lo + hi) // 2
@@ -203,14 +209,21 @@ def _layout(text: str, style_key: tuple, w: int, h: int):
 
 
 def best_rect(text: str, style: TextStyle, rects: list[tuple[int, int, int, int]]):
-    """Trong các khung ứng viên, chọn khung đặt được chữ to nhất (cùng cỡ thì khung rộng hơn)."""
+    """Trong các khung ứng viên, chọn khung đặt được chữ to nhất. Cùng cỡ (thường gặp khi chạm cỡ tối đa)
+    thì chọn khung mà khối chữ lấp đều nhất – dáng khối chữ gần dáng khung, như người typeset hay làm."""
     key = astuple(style)
     t = prepare(text, style)
+    metrics: dict[int, _Metrics] = {}
 
     def score(r):
         x1, y1, x2, y2 = r
-        ok, size, _ = _layout(t, key, x2 - x1, y2 - y1)
-        return (ok, size, (x2 - x1) * (y2 - y1))
+        w, h = x2 - x1, y2 - y1
+        ok, size, lines = _layout(t, key, w, h)
+        m = metrics.setdefault(size, _Metrics(style, size))
+        bw = max((m.adv(ln) for ln, _, _ in lines), default=1)
+        bh = _block_height(lines, m, style)
+        fill = min(bw / max(w, 1), bh / max(h, 1)) / max(bw / max(w, 1), bh / max(h, 1), 1e-6)
+        return (ok, size, w * h * fill)
 
     return max(rects, key=score)
 
@@ -289,3 +302,25 @@ def draw_text(p: QPainter, text: str, style: TextStyle, rect: QRectF) -> None:
         p.strokePath(path, QPen(color, max(0.6, m.size * 0.025)))
     p.fillPath(path, QBrush(color))
     p.restore()
+
+
+def text_block(text: str, style: TextStyle, rect: tuple[float, float, float, float]) -> dict:
+    """Bố cục đã dàn (để xuất sang Photoshop dựng lại y hệt): cỡ chữ, các dòng, khung, đường cơ sở."""
+    x1, y1, x2, y2 = rect
+    w, h = x2 - x1, y2 - y1
+    m, lines = layout(text, style, w, h)
+    pad, iw, _ = _inner(style, w, h)
+    bh = _block_height(lines, m, style)
+    top = (y1 + y2) / 2 - bh / 2
+    # Photoshop: "\r" = sang đoạn mới, "\u0003" = xuống dòng trong cùng đoạn.
+    parts = []
+    for ln, start, _ in lines:
+        if parts:
+            parts.append("\r" if start else "\u0003")
+        parts.append(ln)
+    return {
+        "size": m.size, "contents": "".join(parts), "lines": len(lines), "leading": m.lh,
+        "left": x1 + pad + style.indent_left, "width": iw, "top": top, "block_height": bh,
+        "first_baseline": top + (m.lh - m.fm.height() * m.vs) / 2 + m.fm.ascent() * m.vs,
+        "ascent": m.fm.ascent() * m.vs,
+    }
