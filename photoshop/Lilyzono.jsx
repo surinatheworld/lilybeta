@@ -3,6 +3,8 @@
 // Lilyzono: add editable typesetting layers to the current Photoshop document.
 var LilyzonoPS = (function () {
     var context = null;
+    // Đường dẫn file script này: bộ xử lý dùng để gọi lại Photoshop khi xong.
+    var SCRIPT_FILE = (typeof $ !== "undefined" && $.fileName) ? $.fileName : "";
 
     function encode(value) {
         if (value === null) return "null";
@@ -104,11 +106,16 @@ var LilyzonoPS = (function () {
     }
 
     function workerCommand(folder, job) {
+        // Máy có sẵn dự án (photoshop/ hoặc dist/LilyzonoPhotoshop/ trong repo): ưu tiên Python của dự án – luôn chạy
+        // code mới nhất và không bị Smart App Control chặn như exe tự build. Không có dự án: dùng exe đóng gói kèm.
+        var root = folder.parent, python, entry;
+        for (var up = 0; up < 2 && root; up++, root = root.parent) {
+            python = new File(root.fsName + "/.venv/Scripts/pythonw.exe");
+            entry = new File(root.fsName + "/LilyzonoPhotoshop.py");
+            if (python.exists && entry.exists) return quote(python.fsName) + " " + quote(entry.fsName) + " --job " + quote(job.fsName);
+        }
         var exe = new File(folder.fsName + "/LilyzonoPhotoshop.exe");
         if (exe.exists) return quote(exe.fsName) + " --job " + quote(job.fsName);
-        var root = folder.parent, python = new File(root.fsName + "/.venv/Scripts/pythonw.exe");
-        var entry = new File(root.fsName + "/LilyzonoPhotoshop.py");
-        if (python.exists && entry.exists) return quote(python.fsName) + " " + quote(entry.fsName) + " --job " + quote(job.fsName);
         throw new Error("Không tìm thấy bộ xử lý. Giữ Lilyzono.jsx cạnh LilyzonoPhotoshop.exe, hoặc chạy build_photoshop.bat.");
     }
 
@@ -131,13 +138,63 @@ var LilyzonoPS = (function () {
         } finally { app.preferences.rulerUnits = old; }
     }
 
+    // Không dùng regex /i với chữ tiếng Việt: engine ExtendScript của Photoshop 2023 lặp vô hạn với câu bắt đầu
+    // bằng "Tr" + chữ có dấu (vd "Trở nên…") khiến Photoshop treo cứng. Tách dòng / bỏ khoảng trắng / nhận dòng số
+    // trang ("13", "Trang 13", "tr.13", "page 2", "p.5", "#4", "13:") đều làm bằng tay, từng ký tự.
+    function isSpace(code) {
+        return code <= 32 || code === 0xA0 || code === 0xFEFF || code === 0x3000 || (code >= 0x2000 && code <= 0x200B);
+    }
+    function trim(text) {
+        var a = 0, b = text.length;
+        while (a < b && isSpace(text.charCodeAt(a))) a++;
+        while (b > a && isSpace(text.charCodeAt(b - 1))) b--;
+        return text.substring(a, b);
+    }
+    function splitLines(text) {
+        var out = [], start = 0, i, code;
+        for (i = 0; i < text.length; i++) {
+            code = text.charCodeAt(i);
+            if (code === 13 || code === 10) {
+                out.push(text.substring(start, i));
+                if (code === 13 && text.charCodeAt(i + 1) === 10) i++;
+                start = i + 1;
+            }
+        }
+        out.push(text.substring(start));
+        return out;
+    }
+    function startsWithAscii(text, prefix) {
+        if (text.length < prefix.length) return false;
+        for (var i = 0; i < prefix.length; i++) {
+            var c = text.charCodeAt(i);
+            if (c >= 65 && c <= 90) c += 32;  // chỉ đổi hoa → thường với chữ ASCII
+            if (c !== prefix.charCodeAt(i)) return false;
+        }
+        return true;
+    }
+    function pageHeader(line) {
+        var prefixes = ["trang", "page", "tr.", "tr", "p.", "p", ""], k, rest, j, tail;
+        for (k = 0; k < prefixes.length; k++) {
+            if (!startsWithAscii(line, prefixes[k])) continue;
+            rest = trim(line.substring(prefixes[k].length));
+            if (rest.charAt(0) === "#") rest = trim(rest.substring(1));
+            j = 0;
+            while (j < rest.length && rest.charCodeAt(j) >= 48 && rest.charCodeAt(j) <= 57) j++;
+            if (j < 1 || j > 4) continue;
+            tail = trim(rest.substring(j));
+            if (tail === "" || (tail.length === 1 && ":.-\u2013".indexOf(tail) >= 0)) return String(Number(rest.substring(0, j)));
+        }
+        return null;
+    }
+
     function translationLines(text, name) {
-        var raw = text.replace(/^\uFEFF/, "").split(/\r\n|\r|\n/), pages = {}, page = "0", header = false, i, line, match;
+        var raw = splitLines(text.charCodeAt(0) === 0xFEFF ? text.substring(1) : text), pages = {}, page = "0";
+        var header = false, i, line, number;
         for (i = 0; i < raw.length; i++) {
-            line = raw[i].replace(/^\s+|\s+$/g, "");
+            line = trim(raw[i]);
             if (!line || line.indexOf("//") === 0) continue;
-            match = /^(?:(?:trang|page|p\.?|tr\.?)\s*)?#?\s*(\d{1,4})\s*[:.\-–]?\s*$/i.exec(line);
-            if (match) { page = String(Number(match[1])); header = true; }
+            number = pageHeader(line);
+            if (number !== null) { page = number; header = true; }
             else { if (!pages[page]) pages[page] = []; pages[page].push(line); }
         }
         if (!header) return pages["0"] || [];
@@ -183,7 +240,24 @@ var LilyzonoPS = (function () {
         return win.result;
     }
 
+    // Chạy bộ xử lý ngầm và trả quyền cho Photoshop NGAY (không chờ trong Photoshop: chờ ở đây làm Photoshop
+    // đứng hình cả phút, không bấm Huỷ hay tắt được). Bộ xử lý có cửa sổ tiến độ + nút Huỷ riêng, xong thì tự gọi
+    // lại Photoshop (LilyzonoPS.finish) để xem trước và tạo layer.
+    function launchAsync(scriptFolder, folder, request) {
+        var file = new File(folder.fsName + "/request.json");
+        write(file, encode(request));
+        var launcher = new File(folder.fsName + "/run.vbs");
+        var code = 'On Error Resume Next\r\n' +
+            'CreateObject("WScript.Shell").Run ' + vbsString(workerCommand(scriptFolder, file)) + ', 1, False\r\n' +
+            'If Err.Number <> 0 Then MsgBox ' + vbsString("Không khởi động được bộ xử lý Lilyzono: ") +
+            ' & Err.Description, 16, "Lilyzono"\r\n';
+        write(launcher, code, "ASCII");
+        if (!launcher.execute()) throw new Error("Không khởi động được bộ xử lý cục bộ (Windows Script Host).");
+        return null;
+    }
+
     function runWorker(scriptFolder, folder, request, interactive) {
+        if (interactive !== false) return launchAsync(scriptFolder, folder, request);
         var file = new File(folder.fsName + "/request.json"), result = new File(folder.fsName + "/result.json");
         write(file, encode(request));
         var launcher = new File(folder.fsName + "/run.vbs");
@@ -198,40 +272,16 @@ var LilyzonoPS = (function () {
         function checkExit() {
             if (exitFile.exists && !result.exists) throw new Error("Bộ xử lý dừng trước khi trả kết quả (mã " + read(exitFile) + "). Thư mục: " + folder.fsName);
         }
-        if (interactive === false) {
-            if (!launcher.execute()) throw new Error("Không khởi động được bộ xử lý cục bộ (Windows Script Host).");
-            var started = new Date().getTime();
-            while (!result.exists) {
-                checkExit();
-                if (new Date().getTime() - started > 600000) throw new Error("Xử lý quá 10 phút. Xem thư mục: " + folder.fsName);
-                $.sleep(150);
-            }
-            var backgroundData = decode(read(result));
-            if (backgroundData.protocol !== 1 || !backgroundData.ok) throw new Error(backgroundData.error || "Bộ xử lý trả về lỗi.");
-            return backgroundData;
+        if (!launcher.execute()) throw new Error("Không khởi động được bộ xử lý cục bộ (Windows Script Host).");
+        var started = new Date().getTime();
+        while (!result.exists) {
+            checkExit();
+            if (new Date().getTime() - started > 600000) throw new Error("Xử lý quá 10 phút. Xem thư mục: " + folder.fsName);
+            $.sleep(150);
         }
-        var progress = new Window("dialog", "Lilyzono đang xử lý");
-        progress.add("statictext", undefined, "Nhận diện, xoá chữ và dàn bản dịch trên máy…");
-        progress.add("statictext", undefined, "Chưa thêm layer vào tài liệu. Có thể huỷ trước khi áp dụng.");
-        var cancel = progress.add("button", undefined, "Huỷ", {name:"cancel"});
-        var cancelled = false, failure = null;
-        cancel.onClick = function () { cancelled = true; progress.close(0); };
-        progress.onShow = function () {
-            try {
-                if (!launcher.execute()) throw new Error("Không khởi động được bộ xử lý cục bộ (Windows Script Host).");
-                var start = new Date().getTime();
-                while (!result.exists && !cancelled) {
-                    checkExit();
-                    if (new Date().getTime() - start > 600000) throw new Error("Xử lý quá 10 phút. Xem thư mục: " + folder.fsName);
-                    $.sleep(150); progress.update();
-                }
-                if (!cancelled) progress.close(1);
-            } catch (error) { failure = error; progress.close(0); }
-        };
-        if (progress.show() !== 1) { if (failure) throw failure; return null; }
-        var data = decode(read(result));
-        if (data.protocol !== 1 || !data.ok) throw new Error(data.error || "Bộ xử lý trả về lỗi.");
-        return data;
+        var backgroundData = decode(read(result));
+        if (backgroundData.protocol !== 1 || !backgroundData.ok) throw new Error(backgroundData.error || "Bộ xử lý trả về lỗi.");
+        return backgroundData;
     }
 
     function preview(data, display) {
@@ -305,6 +355,10 @@ var LilyzonoPS = (function () {
         var input = new File(folder.fsName + "/input.png");
         snapshot(doc, input);
         request.image = input.fsName; request.size = pixelSize(doc);
+        request.doc_name = doc.name;
+        try { request.doc_id = doc.id; } catch (error) { request.doc_id = null; }
+        request.callback = interactive !== false;
+        request.script = SCRIPT_FILE ? new File(SCRIPT_FILE).fsName : scriptFolder.fsName + "/Lilyzono.jsx";
         return runWorker(scriptFolder, folder, request, interactive);
     }
 
@@ -323,16 +377,40 @@ var LilyzonoPS = (function () {
         finally { context = null; }
     }
 
+    function findDocument(id, name) {
+        var i, doc;
+        for (i = 0; i < app.documents.length; i++) {
+            doc = app.documents[i];
+            try { if (id !== null && id !== undefined && doc.id === id) return doc; } catch (error) {}
+        }
+        for (i = 0; i < app.documents.length; i++) if (app.documents[i].name === name) return app.documents[i];
+        throw new Error("Tài liệu " + name + " đã bị đóng trong lúc xử lý.");
+    }
+
+    // Bộ xử lý gọi hàm này (qua scripting của Photoshop) khi đã có kết quả.
+    function finish(folderPath) {
+        var data = decode(read(new File(folderPath + "/result.json")));
+        if (data.protocol !== 1 || !data.ok) throw new Error(data.error || "Bộ xử lý trả về lỗi.");
+        var doc = findDocument(data.doc_id, data.doc_name);
+        try { app.bringToFront(); } catch (error) {}
+        app.activeDocument = doc;
+        if (!preview(data)) return "cancel";
+        applyToDocument(doc, data);
+        // Được gọi từ bộ xử lý (ngoài Photoshop): Photoshop không tự vẽ lại màn hình/bảng Layers cho tới khi người
+        // dùng đụng chuột, trông như chưa tạo gì. Buộc vẽ lại ngay.
+        try { app.refresh(); } catch (error) {}
+        return "ok";
+    }
+
     function main(scriptFolder) {
         if (!/windows/i.test($.os)) throw new Error("Bản này hỗ trợ Photoshop 2023 trên Windows.");
         if (!app.documents.length) throw new Error("Mở ảnh cần type trong Photoshop trước.");
         var doc = app.activeDocument, request = options(doc);
         if (!request) return;
-        var data = prepare(doc, request, scriptFolder, true);
-        if (!data || !preview(data)) return;
-        applyToDocument(doc, data);
+        // Không chờ: bộ xử lý chạy ngầm rồi tự gọi finish() – trong lúc đó Photoshop vẫn dùng bình thường.
+        prepare(doc, request, scriptFolder, true);
     }
-    return {main:main, apply:apply, prepare:prepare, applyToDocument:applyToDocument,
+    return {main:main, finish:finish, apply:apply, prepare:prepare, applyToDocument:applyToDocument, pageHeader:pageHeader,
             options:options, preview:preview, pixelSize:pixelSize, translationLines:translationLines,
             encode:encode, decode:decode, vbsString:vbsString};
 }());
