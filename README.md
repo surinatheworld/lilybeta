@@ -2,7 +2,16 @@
 
 Thay chữ gốc (tiếng Nhật, Hàn, Trung…) trên ảnh truyện bằng bản dịch, dùng font có sẵn trên máy, tự xoá chữ cũ và vẽ lại nền.
 
-## Cài đặt & chạy (Windows)
+## Chạy bằng EditManga.exe (không cần cài Python)
+
+1. Bấm đúp **`build_exe.bat`** (một lần, trên máy có Python) → tạo thư mục `dist\EditManga\`.
+2. Mở **`dist\EditManga\EditManga.exe`**. Có thể chuột phải → *Send to → Desktop (create shortcut)* để có biểu tượng ngoài màn hình.
+3. Muốn dùng trên máy khác: nén cả thư mục `dist\EditManga` thành .zip rồi gửi, giải nén ra là chạy (không cần Python).
+   Thư mục `models` bên trong chứa sẵn model AI; nếu thiếu, tool tự tải lần đầu.
+
+Gặp lỗi trên máy khác: chạy `EditManga.exe --selftest` (có thể thêm đường dẫn một ảnh) rồi xem file `selftest.log` cạnh exe.
+
+## Cài đặt & chạy từ mã nguồn (Windows)
 
 Cần Python 3.10 trở lên ([python.org](https://www.python.org/downloads/), nhớ tick *Add Python to PATH*).
 

@@ -4,3 +4,7 @@ __pycache__/
 models/*.onnx
 output/
 vidu/
+build/
+dist/
+*.spec
+selftest.log

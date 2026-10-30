@@ -8,13 +8,13 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from .paths import model_path
+
 MODEL_URL = (
     "https://github.com/zyddnys/manga-image-translator/releases/download/"
     "beta-0.3/comictextdetector.pt.onnx"
 )
-MODEL_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "models", "comictextdetector.pt.onnx")
-)
+MODEL_PATH = model_path("comictextdetector.pt.onnx")
 INPUT_SIZE = 1024
 CONF_THRESH = 0.4
 NMS_THRESH = 0.35
