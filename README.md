@@ -10,6 +10,8 @@ Thay chữ gốc (tiếng Nhật, Hàn, Trung…) trên ảnh truyện bằng b�
    Thư mục `models` bên trong chứa sẵn model AI; nếu thiếu, tool tự tải lần đầu.
 
 Gặp lỗi trên máy khác: chạy `Lilyzono.exe --selftest` (có thể thêm đường dẫn một ảnh) rồi xem file `selftest.log` cạnh exe.
+Nếu bản exe cũ báo lỗi DLL khi khởi động, đóng gói lại bằng `build_exe.bat`: bước build ưu tiên DLL của Windows,
+tránh lấy nhầm `icuuc.dll` từ phần mềm khác trong `PATH` gây lỗi import QtGui.
 
 ## Cài đặt & chạy từ mã nguồn (Windows)
 
