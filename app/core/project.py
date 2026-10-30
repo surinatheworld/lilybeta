@@ -85,7 +85,8 @@ def save(path: str, pages: list[Page], chapter=None, direction: int = 0) -> None
                 layers.append(item)
             meta["pages"].append({
                 "name": os.path.basename(page.path), "raw_path": os.path.abspath(page.path), "raw": base + "raw" + ext,
-                "detected": page.detected, "regions": [_region_dict(r) for r in page.regions], "layers": layers,
+                "detected": page.detected, "typeset_profile": page.typeset_profile,
+                "regions": [_region_dict(r) for r in page.regions], "layers": layers,
                 "active": doc.layers.index(doc.active) if doc.active in doc.layers else 1,
             })
         z.writestr("project.json", json.dumps(meta, ensure_ascii=False, indent=1))
@@ -128,6 +129,7 @@ def load(path: str) -> dict:
                 page.redrawn = _img(z.read(base + "redrawn.png"), cv2.IMREAD_COLOR)
             page.text_mask = np.load(io.BytesIO(z.read(base + "text_mask.npz")))["text_mask"].astype(np.float32)
             page.detected = info["detected"]
+            page.typeset_profile = info.get("typeset_profile", "")
             page.regions = [_region_from(d) for d in info["regions"]]
             max_uid = max([max_uid] + [r.uid for r in page.regions])
             doc = Document(page)
