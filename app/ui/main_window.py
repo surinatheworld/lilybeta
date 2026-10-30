@@ -43,6 +43,8 @@ from ..core.docs import load_lines, load_pages, page_number
 from ..core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available
 from ..core.page import Page, Region
 from ..core.typeset import TextStyle, missing_chars
+from ..core import manual_ai
+from .ai_bridge import AiBridgeDialog
 from .api_dialog import PROVIDERS, ApiDialog, model_for
 from .image_view import TOOL_LASSO, TOOL_RECT, ImageView
 from .text_panel import TextPanel
@@ -277,6 +279,11 @@ class MainWindow(QMainWindow):
         for b in (self.btn_process, btn_clean, btn_reset, btn_del):
             row.addWidget(b)
         rl.addLayout(row)
+        btn_ai = QPushButton("Redraw bằng ChatGPT / Gemini…  (Ctrl+Shift+R)")
+        btn_ai.setToolTip("Cắt sẵn vùng quanh chữ để dán vào ChatGPT/Gemini (gói Plus/Pro trên web), "
+                          "rồi dán kết quả về: tool tự căn khớp và chỉ thay phần chữ")
+        btn_ai.clicked.connect(self.open_ai_bridge)
+        rl.addWidget(btn_ai)
         lay.addWidget(g_region)
 
         # Bản dịch
@@ -391,6 +398,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+Return"), self, self.process_selected)
         QShortcut(QKeySequence("Ctrl+Enter"), self, self.process_selected)
         QShortcut(QKeySequence("Ctrl+Z"), self, self.reset_selected)
+        QShortcut(QKeySequence("Ctrl+Shift+R"), self, self.open_ai_bridge)
         QShortcut(QKeySequence(Qt.Key_Delete), self.view, self.delete_selected)
         QShortcut(QKeySequence(Qt.Key_Tab), self.view, lambda: self._step_region(1))
         QShortcut(QKeySequence("Ctrl+A"), self.view, self.select_all)
@@ -986,6 +994,39 @@ class MainWindow(QMainWindow):
 
         # Cả nhóm chạy một lượt: vùng gần nhau dùng chung một lần gọi AI trên mạng.
         self._clean_then([self.page.regions[i] for i in queue], done)
+
+    def open_ai_bridge(self):
+        """Redraw vùng đang chọn qua ChatGPT/Gemini trên web bằng copy–dán."""
+        regs = self.selected_regions
+        if not regs:
+            QMessageBox.information(self, "Chưa chọn vùng", "Hãy chọn (Ctrl+bấm để chọn nhiều) vùng chữ cần redraw.")
+            return
+        primary = self.region
+        typed = self.txt.toPlainText()
+        if primary is not None and typed.strip() and not primary.cleaned:
+            primary.text = typed
+        style = self.current_style()
+        for r in regs:
+            if not r.cleaned:
+                r.style = style.copy()
+        try:
+            job = manual_ai.prepare(self.page, regs)
+        except ValueError as e:
+            QMessageBox.information(self, "Redraw", str(e))
+            return
+        selection = list(self.selection)
+
+        def applied(res):
+            self._sync_used_lines()
+            self._fill_lines()
+            self.refresh()
+            self.select_region(self.selected, selection)
+            self.statusBar().showMessage(f"Đã dán kết quả AI cho {len(regs)} vùng.", 8000)
+
+        self._ai_dialog = AiBridgeDialog(job, self.chk_bubble.isChecked(), self)
+        self._ai_dialog.applied.connect(applied)
+        self._ai_dialog.show()
+        self._ai_dialog.copy_image()
 
     def clean_selected(self):
         r = self.region
