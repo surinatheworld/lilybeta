@@ -34,7 +34,13 @@ ASPECT_WEIGHT = 0.3  # mức ưu tiên khối chữ cùng tỉ lệ với khung 
 BREAK_WORD = 0.8  # phạt xuống dòng giữa từ ghép, tính như dòng lệch dáng 80%
 BREAK_PARTICLE = 0.3  # phạt nhẹ để tiểu từ kết câu ("ạ.") không đứng trơ một mình
 BREAK_CLAUSE = 0.15  # thưởng xuống dòng sau dấu phẩy / chấm
-BUBBLE_FILL = 0.8  # chữ dàn trong bóng thu nhỏ còn 80% (lề dòng, dáng bo tròn) → nét chữ phủ ~70% bề ngang lòng bóng
+BUBBLE_FILL = 0.8  # mỗi dòng ≤ 80% bề ngang bóng ở độ cao của nó (lề dòng, dáng bo tròn) → chữ phủ ~70% bề ngang bóng
+BUBBLE_VPAD = 0.06  # lề trên/dưới: 6% bề cao bóng
+BUBBLE_FILL_NARROW = (0.86, 0.92)  # bóng hẹp mà chữ bị teo: nới lề dần theo các mức này…
+MIN_SIZE_RATIO = 0.85  # …tới khi chữ ≥ 85% cỡ chuẩn của trang
+SHORT_FILL = 0.6  # câu ngắn được to hơn cỡ chuẩn tới khi phủ nửa bề ngang bóng…
+SHORT_GROW = 1.5  # …nhưng không quá 1,5 lần cỡ chuẩn (bản typeset tay: "Vâng", "Nagi" 30px khi cỡ chuẩn 24px)
+SYMMETRY_WEIGHT = 0.6  # phạt khối bo tròn lệch: dòng trên và dòng dưới tương ứng dài khác nhau
 SHRINK_MAX = 0.15  # được nhỏ chữ tối đa 15% so với cỡ lớn nhất vừa khung…
 SHRINK_COST = 1.2  # …nếu điểm dáng tốt lên hơn 0,12 cho mỗi 10% nhỏ đi
 SCRIPT_SIZE = 0.583  # cỡ chỉ số trên/dưới so với cỡ chữ (mặc định Photoshop 58.3%)
@@ -318,6 +324,9 @@ def _score(style: TextStyle, seg, res, lh: float, want: float, k: int) -> float:
         mid = (n - 1) / 2
         dent = sum(max(0.0, widths[i] - widths[i + (1 if i < mid else -1)]) for i in range(n) if abs(i - mid) > .5)
         score += 2 * dent / widest
+        # …và cân hai đầu: dòng trên và dòng dưới tương ứng dài gần bằng nhau (không chỉ một chữ trơ trọi ở đỉnh).
+        pairs = n // 2
+        score += SYMMETRY_WEIGHT * sum(abs(widths[i] - widths[n - 1 - i]) for i in range(pairs)) / (pairs * widest)
     if n > max(1, (2 * k + 2) // 3):
         score += 1.0  # trung bình mỗi dòng dưới 1,5 từ: chỉ dùng khi không còn cách khác
     return score
@@ -402,14 +411,16 @@ def _place(text: str, style_key: tuple, shape):
     pad = 1.0 + style.stroke_width
     k = len(words)
     want = math.log(max(bw, 1) / max(bh, 1))
-    # Chữ chỉ chiếm ~BUBBLE_FILL lòng bóng: dàn trong bóng thu nhỏ còn BUBBLE_FILL quanh tâm (giữ nguyên dáng bóng).
-    lo_y, hi_y = cy - (cy - y0) * BUBBLE_FILL, cy + (y0 + bh - cy) * BUBBLE_FILL
+    # Bề ngang: mỗi dòng chỉ chiếm ~fill lòng bóng ở độ cao của nó. Bề cao: chỉ chừa lề nhỏ (thu cả chiều
+    # dọc thì bóng thấp / bóng bầu dục bị bóp đầu đuôi, chữ teo lại).
+    vpad = bh * BUBBLE_VPAD
+    lo_y, hi_y = y0 + vpad, y0 + bh - vpad
+    fill = BUBBLE_FILL
 
     def inner_half(ya: float, yb: float) -> float:
-        """Nửa bề ngang hẹp nhất của bóng thu nhỏ trong dải [ya, yb]."""
-        a = max(0, int(cy + (ya - cy) / BUBBLE_FILL) - y0)
-        b = min(bh, int(math.ceil(cy + (yb - cy) / BUBBLE_FILL)) - y0)
-        return BUBBLE_FILL * min(half[a:b], default=0)
+        """Nửa bề ngang dành cho chữ trong dải [ya, yb]."""
+        a, b = max(0, int(ya) - y0), min(bh, int(math.ceil(yb)) - y0)
+        return fill * min(half[a:b], default=0)
 
     def fit(size: int):
         m = _Metrics(style, size)
@@ -434,25 +445,51 @@ def _place(text: str, style_key: tuple, shape):
                 best = (score, size, res[1], m)
         return best
 
-    if style.size > 0:
-        best = fit(style.size)
-    else:
-        cap = int(style.max_size) if style.max_size > 0 else MAX_SIZE
-        lo, hi, best = MIN_SIZE, max(MIN_SIZE, min(MAX_SIZE, cap, int(bh))), None
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            res = fit(mid)
-            if res:
-                best, lo = res, mid + 1
-            else:
-                hi = mid - 1
-        if best is not None:
-            # Như người typeset: chịu nhỏ chữ đi chút (≤15%) nếu nhờ đó khối chữ tròn hơn, không cắt đôi từ ghép.
-            top = best[1]
-            for size in range(top - 1, max(MIN_SIZE, int(top * (1 - SHRINK_MAX))) - 1, -1):
-                res = fit(size)
-                if res and res[0] + SHRINK_COST * (1 - size / top) < best[0] + SHRINK_COST * (1 - best[1] / top):
+    def solve():
+        if style.size > 0:
+            best = fit(style.size)
+        else:
+            cap = int(style.max_size) if style.max_size > 0 else MAX_SIZE
+            lo, hi, best = MIN_SIZE, max(MIN_SIZE, min(MAX_SIZE, cap, int(bh))), None
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                res = fit(mid)
+                if res:
+                    best, lo = res, mid + 1
+                else:
+                    hi = mid - 1
+            if best is not None and best[1] >= cap:
+                # Câu ngắn trong bóng rộng ("Ừ.", "Vâng"): người typeset để chữ to hơn cỡ chuẩn của trang (tới ~1,4 lần)
+                # cho khỏi lọt thỏm – to dần tới khi chữ phủ được SHORT_FILL bề ngang bóng.
+                for size in range(cap + 1, int(cap * SHORT_GROW) + 1):
+                    cuts, m = best[2], best[3]
+                    seg = _segments(words, style_key, best[1])
+                    widest = max(seg[a][b] for a, b in zip(cuts, cuts[1:]))
+                    if widest >= SHORT_FILL * bw:
+                        break
+                    res = fit(size)
+                    if not res:
+                        break
                     best = res
+            if best is not None:
+                # Như người typeset: chịu nhỏ chữ đi chút (≤15%) nếu nhờ đó khối chữ tròn hơn, không cắt đôi từ ghép.
+                top = best[1]
+                for size in range(top - 1, max(MIN_SIZE, int(top * (1 - SHRINK_MAX))) - 1, -1):
+                    res = fit(size)
+                    if res and res[0] + SHRINK_COST * (1 - size / top) < best[0] + SHRINK_COST * (1 - best[1] / top):
+                        best = res
+        return best
+
+    best = solve()
+    if style.size <= 0 and style.max_size > 0:
+        # Bóng hẹp: giữ đúng lề 80% thì chữ teo hẳn (vd 17px khi cỡ chuẩn 26px). Nới dần lề cho bóng hẹp được phủ
+        # nhiều hơn, tới khi chữ về lại ≥ MIN_SIZE_RATIO cỡ chuẩn.
+        for fill in BUBBLE_FILL_NARROW:
+            if best is not None and best[1] >= MIN_SIZE_RATIO * style.max_size:
+                break
+            res = solve()
+            if res is not None and (best is None or res[1] > best[1]):
+                best = res
     if best is None:
         return None
     _, size, cuts, m = best
