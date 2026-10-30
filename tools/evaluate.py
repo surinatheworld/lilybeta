@@ -1,4 +1,4 @@
-"""So sánh kết quả tự động của EditManga với bộ PSD bản Việt làm tay.
+"""So sánh kết quả tự động của Lilyzono với bộ PSD bản Việt làm tay.
 
 Cách dùng:
     python tools/evaluate.py <thư mục raw> <thư mục PSD mẫu> <thư mục kết quả>

@@ -179,7 +179,7 @@ class PhotoshopExporter:
 
         pythoncom.CoInitialize()
         self.app = win32com.client.Dispatch("Photoshop.Application")
-        self.tmp = tempfile.mkdtemp(prefix="editmanga_")
+        self.tmp = tempfile.mkdtemp(prefix="lilyzono_")
 
     def export(self, page, out_path: str) -> None:
         clean_png = os.path.join(self.tmp, "clean.png")
