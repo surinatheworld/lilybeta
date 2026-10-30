@@ -1,40 +1,91 @@
-"""Dàn chữ bản dịch vào một khung bằng font hệ thống (cần QGuiApplication đã khởi tạo)."""
+"""Dàn chữ bản dịch vào một khung bằng font hệ thống (cần QGuiApplication đã khởi tạo).
+
+Các thông số chữ theo kiểu bảng Character / Paragraph của Photoshop. Đơn vị là px của ảnh
+(tương đương pt ở 72 ppi).
+"""
 from __future__ import annotations
 
 from dataclasses import asdict, astuple, dataclass
 from functools import lru_cache
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QFontDatabase,
+    QFontMetricsF,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QTransform,
+)
 
 MIN_SIZE = 8
 MAX_SIZE = 150
+SCRIPT_SIZE = 0.583  # cỡ chỉ số trên/dưới so với cỡ chữ (mặc định Photoshop 58.3%)
+SCRIPT_POS = 0.333  # độ nâng/hạ chỉ số trên/dưới (mặc định Photoshop 33.3%)
 
 
 @dataclass
 class TextStyle:
     family: str = "Arial"
     size: int = 0  # 0 = tự co cho vừa khung
-    bold: bool = False
-    italic: bool = False
-    uppercase: bool = False
+    bold: bool = False  # giả đậm (Faux Bold)
+    italic: bool = False  # giả nghiêng (Faux Italic)
+    uppercase: bool = False  # IN HOA (All Caps)
     color: str = "#000000"
     stroke_color: str = "#ffffff"
     stroke_width: float = 0.0
-    line_spacing: float = 1.0
+    line_spacing: float = 1.0  # hệ số khoảng cách dòng khi leading = Tự động
     padding: float = 0.06  # chừa lề theo tỉ lệ cạnh ngắn của khung
     align: str = "center"  # "left" | "center" | "right"
     rotation: float = 0.0  # độ, xoay quanh tâm khung chữ
+    # --- Character ---
+    style_name: str = ""  # kiểu mặt chữ của font (Regular, Light, Bold…); "" = mặc định
+    leading: float = 0.0  # khoảng cách giữa các dòng (px); 0 = Tự động
+    tracking: int = 0  # giãn đều các ký tự, đơn vị 1/1000 em
+    kerning: str = "metrics"  # "metrics" (theo font) | "none" (0)
+    vscale: float = 100.0  # co giãn dọc (%)
+    hscale: float = 100.0  # co giãn ngang (%)
+    baseline_shift: float = 0.0  # dịch đường cơ sở (px, dương = lên)
+    small_caps: bool = False
+    superscript: bool = False
+    subscript: bool = False
+    underline: bool = False
+    strike: bool = False
+    antialias: str = "smooth"  # "none" | "sharp" | "crisp" | "strong" | "smooth"
+    # --- Paragraph ---
+    justify: str = ""  # "" = không dàn đều; dàn đều với dòng cuối "left" | "center" | "right" | "all"
+    indent_left: float = 0.0
+    indent_right: float = 0.0
+    indent_first: float = 0.0
+    space_before: float = 0.0
+    space_after: float = 0.0
+    hyphenate: bool = False  # ngắt từ quá dài kèm dấu gạch nối
 
     def copy(self) -> "TextStyle":
         return TextStyle(**asdict(self))
 
 
-def make_font(style: TextStyle, size: int) -> QFont:
-    f = QFont(style.family)
-    f.setPixelSize(max(1, size))
-    f.setBold(style.bold)
-    f.setItalic(style.italic)
+def _is_script(style: TextStyle) -> bool:
+    return style.superscript or style.subscript
+
+
+def make_font(style: TextStyle, size: float) -> QFont:
+    px = max(1, round(size * (SCRIPT_SIZE if _is_script(style) else 1)))
+    f = QFontDatabase.font(style.family, style.style_name, 12) if style.style_name else QFont(style.family)
+    f.setPixelSize(px)
+    if style.bold:
+        f.setBold(True)
+    if style.italic:
+        f.setItalic(True)
+    if style.small_caps:
+        f.setCapitalization(QFont.SmallCaps)
+    if style.tracking:
+        f.setLetterSpacing(QFont.AbsoluteSpacing, px * style.tracking / 1000)
+    f.setKerning(style.kerning != "none")
+    f.setUnderline(False)  # gạch chân/ngang tự vẽ để có cả viền
     f.setHintingPreference(QFont.PreferNoHinting)
     return f
 
@@ -49,56 +100,92 @@ def missing_chars(style: TextStyle, text: str) -> str:
     return "".join(seen)
 
 
-def wrap(text: str, fm: QFontMetricsF, max_w: float) -> list[str]:
-    lines: list[str] = []
-    for para in text.split("\n"):
-        cur = ""
-        for word in para.split():
-            cand = f"{cur} {word}" if cur else word
-            if fm.horizontalAdvance(cand) <= max_w + 0.5:
-                cur = cand
-                continue
-            if cur:
-                lines.append(cur)
-            # Từ đơn dài hơn cả khung thì cắt theo ký tự.
-            cur = ""
-            for ch in word:
-                if cur and fm.horizontalAdvance(cur + ch) > max_w:
-                    lines.append(cur)
-                    cur = ""
-                cur += ch
-        lines.append(cur)
-    return lines
-
-
 def prepare(text: str, style: TextStyle) -> str:
     text = text.replace("|", "\n").replace("\\n", "\n").strip()
     return text.upper() if style.uppercase else text
 
 
-def layout(text: str, style: TextStyle, w: float, h: float) -> tuple[QFont, list[str], float]:
-    """Chọn cỡ chữ lớn nhất vừa khung. Trả về (font, các dòng, chiều cao dòng)."""
-    _, size, lines, lh = _layout(text, astuple(style), int(w), int(h))
-    return make_font(style, size), list(lines), lh
+class _Metrics:
+    """Đo chữ có tính co giãn ngang/dọc và khoảng cách dòng."""
+
+    def __init__(self, style: TextStyle, size: float):
+        self.font = make_font(style, size)
+        self.fm = QFontMetricsF(self.font)
+        self.hs, self.vs = style.hscale / 100, style.vscale / 100
+        self.size = size
+        auto = self.fm.height() / (SCRIPT_SIZE if _is_script(style) else 1) * style.line_spacing * self.vs
+        self.lh = style.leading if style.leading > 0 else auto
+
+    def adv(self, s: str) -> float:
+        return self.fm.horizontalAdvance(s) * self.hs
+
+
+def wrap(text: str, m: _Metrics, max_w: float, first_w: float, hyphenate: bool = False):
+    """Xuống dòng theo từ. Trả về [(dòng, đầu đoạn?, cuối đoạn?)]."""
+    out: list[tuple[str, bool, bool]] = []
+    for para in text.split("\n"):
+        lines: list[str] = []
+        cur = ""
+
+        def width():
+            return first_w if not lines else max_w
+
+        for word in para.split():
+            cand = f"{cur} {word}" if cur else word
+            if m.adv(cand) <= width() + 0.5:
+                cur = cand
+                continue
+            if cur:
+                lines.append(cur)
+                cur = ""
+            if m.adv(word) <= width() + 0.5:
+                cur = word
+                continue
+            # Từ dài hơn cả dòng thì cắt theo ký tự (có gạch nối nếu bật).
+            dash = "-" if hyphenate else ""
+            for ch in word:
+                if cur and m.adv(cur + ch + dash) > width():
+                    lines.append(cur + dash)
+                    cur = ""
+                cur += ch
+        lines.append(cur)
+        out += [(ln, i == 0, i == len(lines) - 1) for i, ln in enumerate(lines)]
+    return out
+
+
+def _inner(style: TextStyle, w: float, h: float):
+    pad = min(w, h) * style.padding
+    iw = max(1.0, w - 2 * pad - style.indent_left - style.indent_right)
+    return pad, iw, max(1.0, h - 2 * pad)
+
+
+def _block_height(lines, m: _Metrics, style: TextStyle) -> float:
+    paras = sum(1 for _, start, _ in lines if start)
+    return len(lines) * m.lh + max(0, paras - 1) * (style.space_before + style.space_after)
+
+
+def layout(text: str, style: TextStyle, w: float, h: float):
+    """Chọn cỡ chữ lớn nhất vừa khung. Trả về (_Metrics, các dòng)."""
+    _, size, lines = _layout(text, astuple(style), int(w), int(h))
+    return _Metrics(style, size), list(lines)
 
 
 @lru_cache(maxsize=20000)
-def _layout(text: str, style_key: tuple, w: int, h: int) -> tuple[bool, int, tuple[str, ...], float]:
-    """(vừa khung?, cỡ chữ, các dòng, chiều cao dòng) – có cache vì được gọi rất nhiều lần."""
+def _layout(text: str, style_key: tuple, w: int, h: int):
+    """(vừa khung?, cỡ chữ, các dòng) – có cache vì được gọi rất nhiều lần."""
     style = TextStyle(*style_key)
     text = prepare(text, style)
-    pad = min(w, h) * style.padding
-    iw, ih = max(1.0, w - 2 * pad), max(1.0, h - 2 * pad)
+    _, iw, ih = _inner(style, w, h)
+    first_w = max(1.0, iw - style.indent_first)
 
     def fit(size: int):
-        fm = QFontMetricsF(make_font(style, size))
-        lines = wrap(text, fm, iw)
-        lh = fm.height() * style.line_spacing
-        widest = max((fm.horizontalAdvance(l) for l in lines), default=0)
+        m = _Metrics(style, size)
+        lines = wrap(text, m, iw, first_w, style.hyphenate)
+        widest = max((m.adv(ln) for ln, _, _ in lines), default=0)
         # Không cắt đôi một từ (vd "Chu|yện"): từ dài nhất phải vừa một dòng.
-        longest_word = max((fm.horizontalAdvance(wd) for wd in text.split()), default=0)
-        ok = len(lines) * lh <= ih and widest <= iw + 0.5 and longest_word <= iw + 0.5
-        return ok, size, tuple(lines), lh
+        longest_word = max((m.adv(wd) for wd in text.split()), default=0)
+        ok = _block_height(lines, m, style) <= ih and widest <= iw + 0.5 and longest_word <= first_w + 0.5
+        return ok, size, tuple(lines)
 
     if style.size > 0:
         return fit(style.size)
@@ -122,35 +209,72 @@ def best_rect(text: str, style: TextStyle, rects: list[tuple[int, int, int, int]
 
     def score(r):
         x1, y1, x2, y2 = r
-        ok, size, _, _ = _layout(t, key, x2 - x1, y2 - y1)
+        ok, size, _ = _layout(t, key, x2 - x1, y2 - y1)
         return (ok, size, (x2 - x1) * (y2 - y1))
 
     return max(rects, key=score)
 
 
+def _line_path(text: str, m: _Metrics, gap: float = 0.0) -> QPainterPath:
+    """Đường nét của một dòng tại gốc (0, đường cơ sở); `gap` = khoảng thêm giữa các từ khi dàn đều."""
+    path = QPainterPath()
+    if gap <= 0:
+        path.addText(QPointF(0, 0), m.font, text)
+    else:
+        x = 0.0
+        for word in text.split(" "):
+            path.addText(QPointF(x, 0), m.font, word)
+            x += m.fm.horizontalAdvance(word + " ") + gap / m.hs
+    return path
+
+
 def draw_text(p: QPainter, text: str, style: TextStyle, rect: QRectF) -> None:
-    """Vẽ chữ trong `rect` (căn giữa theo chiều dọc, căn ngang theo style.align), có viền nếu
+    """Vẽ chữ trong `rect`: căn giữa theo chiều dọc, căn/dàn đều theo chiều ngang, có viền nếu
     stroke_width > 0, xoay quanh tâm khung nếu style.rotation khác 0."""
     if not text.strip():
         return
-    font, lines, lh = layout(text, style, rect.width(), rect.height())
-    fm = QFontMetricsF(font)
-    pad = min(rect.width(), rect.height()) * style.padding
+    m, lines = layout(text, style, rect.width(), rect.height())
+    pad, iw, _ = _inner(style, rect.width(), rect.height())
+    left = rect.left() + pad + style.indent_left
+    right = left + iw
+    fm = m.fm
+    shift = style.baseline_shift
+    if style.superscript:
+        shift += m.size * SCRIPT_POS
+    elif style.subscript:
+        shift -= m.size * SCRIPT_POS * 0.5
+
     path = QPainterPath()
-    top = rect.center().y() - len(lines) * lh / 2
-    for i, line in enumerate(lines):
-        adv = fm.horizontalAdvance(line)
-        if style.align == "left":
-            x = rect.left() + pad
-        elif style.align == "right":
-            x = rect.right() - pad - adv
+    y = rect.center().y() - _block_height(lines, m, style) / 2
+    first_para = True
+    for ln, start, end in lines:
+        if start and not first_para:
+            y += style.space_before + style.space_after
+        first_para = False
+        lx = left + (style.indent_first if start else 0)
+        avail = right - lx
+        adv = m.adv(ln)
+        gap = 0.0
+        if style.justify and (not end or style.justify == "all") and " " in ln:
+            gap = (avail - adv) / ln.count(" ")
+            x = lx
         else:
-            x = rect.center().x() - adv / 2
-        baseline = top + i * lh + (lh - fm.height()) / 2 + fm.ascent()
-        path.addText(QPointF(x, baseline), font, line)
+            align = style.justify if style.justify in ("left", "center", "right") else style.align
+            x = lx if align == "left" else (lx + avail - adv if align == "right" else lx + (avail - adv) / 2)
+        baseline = y + (m.lh - fm.height() * m.vs) / 2 + fm.ascent() * m.vs - shift
+        lp = _line_path(ln, m, gap)
+        if style.underline or style.strike:
+            width = fm.horizontalAdvance(ln) + (gap / m.hs) * ln.count(" ")
+            t = max(1.0, fm.lineWidth())
+            if style.underline:
+                lp.addRect(QRectF(0, fm.underlinePos(), width, t))
+            if style.strike:
+                lp.addRect(QRectF(0, -fm.strikeOutPos() - t / 2, width, t))
+        path.addPath(QTransform(m.hs, 0, 0, m.vs, x, baseline).map(lp))
+        y += m.lh
 
     p.save()
-    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setRenderHint(QPainter.Antialiasing, style.antialias != "none")
     if style.rotation:
         c = rect.center()
         p.translate(c)
@@ -160,5 +284,8 @@ def draw_text(p: QPainter, text: str, style: TextStyle, rect: QRectF) -> None:
         pen = QPen(QColor(style.stroke_color), style.stroke_width * 2)
         pen.setJoinStyle(Qt.RoundJoin)
         p.strokePath(path, pen)
-    p.fillPath(path, QBrush(QColor(style.color)))
+    color = QColor(style.color)
+    if style.antialias == "strong":  # "Mạnh": nét dày thêm một chút như Photoshop
+        p.strokePath(path, QPen(color, max(0.6, m.size * 0.025)))
+    p.fillPath(path, QBrush(color))
     p.restore()

@@ -33,6 +33,17 @@ def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, in
     nền có hoạ tiết (tranh, lưới chấm) vẽ lại bằng `inpainter(img, mask)` (AI: LaMa / Gemini / OpenAI)
     nếu có, không thì inpaint của OpenCV.
     """
+    need = clean_local(img, text_mask, box, area_mask, inpainter)
+    if need is not None:
+        inpainter(img, need)
+
+
+def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int, int],
+                area_mask: np.ndarray | None = None, inpainter=None) -> np.ndarray | None:
+    """Phần xoá chữ làm ngay trên máy. Trả về mask (0/255, cỡ ảnh) còn cần AI vẽ lại, hoặc None nếu xong.
+
+    Tách riêng để có thể gom nhiều vùng vào một lần gọi AI trên mạng.
+    """
     h, w = img.shape[:2]
     x1, y1, x2, y2 = box
     cx1, cy1 = max(0, x1 - MARGIN), max(0, y1 - MARGIN)
@@ -43,7 +54,7 @@ def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, in
     else:
         mask = build_text_mask(text_mask, box)[cy1:cy2, cx1:cx2]
     if not mask.any():
-        return
+        return None
     crop = img[cy1:cy2, cx1:cx2]
 
     ring = cv2.dilate(mask, np.ones((7, 7), np.uint8), iterations=2)
@@ -54,7 +65,7 @@ def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, in
         crop[mask > 0] = bg
         if area_mask is None:
             _remove_leftover_strokes(crop, (x1 - cx1, y1 - cy1, x2 - cx1, y2 - cy1))
-        return
+        return None
     # Nền chuyển màu mượt (gradient): khớp mặt cong bậc 2 theo viền rồi tô lại.
     if len(border) >= 30:
         ys, xs = np.nonzero(ring)
@@ -62,16 +73,20 @@ def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, in
         if np.abs(fitted - border).mean() < 6:
             my, mx = np.nonzero(mask)
             crop[my, mx] = np.clip(_surface(mx, my) @ coef, 0, 255).astype(np.uint8)
-            return
+            return None
     if inpainter is not None:
         # Chữ trên tranh (SFX) thường có viền trắng quanh nét: nới mask để xoá luôn phần viền.
         if area_mask is None:
             mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=2)
+            # AI trên mạng vẽ lại cả vùng nên dán lại cả khung chữ, xoá luôn nét mà mask bỏ sót.
+            if getattr(inpainter, "whole_box", False):
+                bx1, by1 = max(0, x1 - 4) - cx1, max(0, y1 - 4) - cy1
+                mask[by1:y2 + 4 - cy1, bx1:x2 + 4 - cx1] = 255
         full = np.zeros(img.shape[:2], np.uint8)
         full[cy1:cy2, cx1:cx2] = mask
-        inpainter(img, full)
-        return
+        return full
     crop[:] = cv2.inpaint(crop, mask, 5, cv2.INPAINT_TELEA)
+    return None
 
 
 def _remove_leftover_strokes(crop: np.ndarray, box: tuple[int, int, int, int]) -> None:

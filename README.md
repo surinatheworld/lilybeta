@@ -35,14 +35,22 @@ python -m venv .venv
    - Thiếu vùng thì tự vẽ: chọn công cụ **▭ Khung chữ nhật** (phím R) hoặc **➰ Lasso** (phím L) rồi kéo chuột.
      Lasso khoanh tự do quanh SFX/chữ vẽ tay: **toàn bộ phần khoanh sẽ bị xoá** rồi vẽ lại nền, bản dịch đặt trong vùng khoanh.
 4. **Chọn câu dịch**: bấm một câu trong danh sách (bấm đúp = gán và xử lý luôn). Tool tự gợi ý câu chưa dùng tiếp theo.
-5. **Chọn font** trong danh sách font của máy, cỡ chữ (*Tự động* = tự co vừa bóng), đậm/nghiêng/in hoa, màu chữ, màu và độ dày viền. Font thiếu dấu tiếng Việt sẽ có cảnh báo đỏ.
+5. **Chỉnh chữ** ở bảng **Chữ (Character / Paragraph)** – bố cục theo Photoshop 2023 (đơn vị px ≈ pt ở 72 ppi):
+   - Thẻ **Ký tự**: họ font + kiểu mặt chữ (Regular, Light, Bold…), cỡ chữ (*Tự động* = tự co vừa bóng),
+     khoảng cách dòng (Leading), Kerning, Tracking, co giãn dọc/ngang, dịch đường cơ sở, màu;
+     hàng nút: giả đậm, giả nghiêng, IN HOA, chữ hoa nhỏ, chỉ số trên/dưới, gạch chân, gạch ngang; khử răng cưa.
+   - Thẻ **Đoạn**: căn trái/giữa/phải, dàn đều (dòng cuối trái/giữa/phải, dàn đều tất cả), thụt lề trái/phải/dòng đầu,
+     khoảng cách trước/sau đoạn, gạch nối. Enter hoặc `|` trong nội dung = sang đoạn mới.
+   - Mục **Hiệu ứng**: viền chữ (Stroke) – màu và độ dày. Font thiếu dấu tiếng Việt sẽ có cảnh báo đỏ.
 6. **Xử lý** (Ctrl+Enter): xoá chữ gốc, vẽ lại nền, chèn bản dịch. Tool tự chuyển sang vùng tiếp theo.
    - Bóng thoại trắng / nền trơn: tô lại màu nền (tức thì).
    - Nền có hoạ tiết (tranh, lưới chấm, SFX đè lên tranh): vẽ lại theo lựa chọn ở mục **Vẽ lại nền**:
      - *Thường (OpenCV)*: nhanh, nền tranh hơi mờ.
      - *AI LaMa* (mặc định): chạy trên máy, miễn phí, không cần mạng (vài giây mỗi vùng, model nạp ngầm khi mở ảnh).
      - *AI Google Gemini* / *AI OpenAI (ChatGPT)*: bấm **API key…** để nhập key và chọn model, có nút *Kiểm tra key*.
-       Chỉ gửi một ô ảnh nhỏ quanh chữ (không gửi cả trang), mỗi vùng = 1 lần gọi API, tính phí theo nhà cung cấp.
+       Gửi một vùng rộng quanh chữ (≥ 768px, giữ tỉ lệ khung, xin ảnh 2K) để AI vẽ lại cả mảng tranh; ảnh trả về
+       được tự căn khớp với ảnh gốc rồi dán lại **cả khung chữ** (xoá luôn nét mà mask bỏ sót).
+       Chọn nhiều vùng gần nhau rồi Xử lý → **gom chung 1 lần gọi API**. Tính phí theo nhà cung cấp.
        Gemini cần tài khoản đã bật thanh toán (gói miễn phí không dùng được model sửa ảnh).
        Key được cất trong Windows Credential Manager, không ghi ra file.
 7. **Xuất ảnh** (Ctrl+S).

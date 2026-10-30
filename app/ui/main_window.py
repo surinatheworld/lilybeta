@@ -41,6 +41,7 @@ from ..core.page import Page, Region
 from ..core.typeset import TextStyle, missing_chars
 from .api_dialog import PROVIDERS, ApiDialog, model_for
 from .image_view import TOOL_LASSO, TOOL_RECT, ImageView
+from .text_panel import TextPanel
 
 IMAGE_FILTER = "Ảnh (*.png *.jpg *.jpeg *.webp *.bmp)"
 DOCS_FILTER = "Bản dịch (*.docx *.txt)"
@@ -84,13 +85,13 @@ class CleanWorker(QThread):
 
     failed = Signal(str)
 
-    def __init__(self, parent, page: Page, region: Region, fit_bubble: bool):
+    def __init__(self, parent, job):
         super().__init__(parent)
-        self.page, self.region, self.fit_bubble = page, region, fit_bubble
+        self.job = job
 
     def run(self):
         try:
-            self.page.clean(self.region, fit_bubble=self.fit_bubble)
+            self.job()
         except Exception as e:  # noqa: BLE001 - báo lỗi cho người dùng
             self.failed.emit(str(e))
 
@@ -257,27 +258,42 @@ class MainWindow(QMainWindow):
         dl.addWidget(hint)
         lay.addWidget(g_docs, 1)
 
-        # Font & kiểu chữ
-        g_font = QGroupBox("Font chữ (lấy từ máy tính)")
-        fl = QFormLayout(g_font)
-        self.font_box = QFontComboBox()
-        self.font_box.setEditable(True)
-        self.font_box.currentFontChanged.connect(self._style_changed)
+        # Chữ: bảng Ký tự / Đoạn kiểu Photoshop
+        g_text = QGroupBox("Chữ (Character / Paragraph)")
+        tl = QVBoxLayout(g_text)
+        self.text_panel = TextPanel()
+        self.text_panel.changed.connect(self._style_changed)
+        self.font_box = self.text_panel.font_box
+        self.btn_star = self.text_panel.btn_star
         self.font_box.currentFontChanged.connect(self._update_star)
-        self.btn_star = QPushButton("☆")
-        self.btn_star.setFixedWidth(32)
-        self.btn_star.setToolTip("Thêm/bỏ font này khỏi danh sách yêu thích")
         self.btn_star.clicked.connect(self._toggle_favorite)
-        frow = QHBoxLayout()
-        frow.addWidget(self.font_box, 1)
-        frow.addWidget(self.btn_star)
-        fl.addRow("Font", frow)
+        tl.addWidget(self.text_panel)
+        self.lbl_warn = QLabel()
+        self.lbl_warn.setStyleSheet("color:#d9534f;")
+        self.lbl_warn.setWordWrap(True)
+        tl.addWidget(self.lbl_warn)
+        lay.addWidget(g_text)
+
+        # Hiệu ứng, bộ kiểu, vị trí
+        g_font = QGroupBox("Hiệu ứng, bộ kiểu & vị trí")
+        fl = QFormLayout(g_font)
+        srow = QHBoxLayout()
+        self.btn_stroke = ColorButton("#ffffff")
+        self.btn_stroke.changed.connect(self._style_changed)
+        self.stroke_box = QDoubleSpinBox()
+        self.stroke_box.setRange(0, 30)
+        self.stroke_box.setSingleStep(0.5)
+        self.stroke_box.setSuffix(" px")
+        self.stroke_box.valueChanged.connect(self._style_changed)
+        srow.addWidget(self.btn_stroke)
+        srow.addWidget(self.stroke_box, 1)
+        fl.addRow("Viền (Stroke)", srow)
         self.fav_box = QComboBox()
         self.fav_box.setToolTip("Font yêu thích: chọn để dùng ngay (áp cho mọi vùng đang chọn)")
         self.fav_box.activated.connect(self._favorite_picked)
         fl.addRow("Yêu thích", self.fav_box)
         self.preset_box = QComboBox()
-        self.preset_box.setToolTip("Bộ kiểu đã lưu (font + cỡ + màu + viền…): chọn để áp cho mọi vùng đang chọn")
+        self.preset_box.setToolTip("Bộ kiểu đã lưu (toàn bộ thông số chữ + viền): chọn để áp cho mọi vùng đang chọn")
         self.preset_box.activated.connect(self._preset_picked)
         btn_save_preset = QPushButton("Lưu")
         btn_save_preset.setToolTip("Lưu kiểu chữ hiện tại thành một bộ kiểu có tên (vd Thoại, Hét, SFX)")
@@ -289,40 +305,23 @@ class MainWindow(QMainWindow):
         prow.addWidget(btn_save_preset)
         prow.addWidget(btn_del_preset)
         fl.addRow("Bộ kiểu", prow)
-        self.size_box = QSpinBox()
-        self.size_box.setRange(0, 300)
-        self.size_box.setSpecialValueText("Tự động")
-        self.size_box.valueChanged.connect(self._style_changed)
-        fl.addRow("Cỡ chữ", self.size_box)
-        checks = QHBoxLayout()
-        self.chk_bold = QCheckBox("Đậm")
-        self.chk_italic = QCheckBox("Nghiêng")
-        self.chk_upper = QCheckBox("IN HOA")
-        for c in (self.chk_bold, self.chk_italic, self.chk_upper):
-            c.toggled.connect(self._style_changed)
-            checks.addWidget(c)
-        fl.addRow("Kiểu", checks)
-        colors = QHBoxLayout()
-        self.btn_color = ColorButton("#000000")
-        self.btn_color.changed.connect(self._style_changed)
-        self.btn_stroke = ColorButton("#ffffff")
-        self.btn_stroke.changed.connect(self._style_changed)
-        self.stroke_box = QDoubleSpinBox()
-        self.stroke_box.setRange(0, 30)
-        self.stroke_box.setSingleStep(0.5)
-        self.stroke_box.valueChanged.connect(self._style_changed)
-        colors.addWidget(QLabel("Chữ"))
-        colors.addWidget(self.btn_color)
-        colors.addWidget(QLabel("Viền"))
-        colors.addWidget(self.btn_stroke)
-        colors.addWidget(self.stroke_box)
-        fl.addRow("Màu", colors)
-        self.spacing_box = QDoubleSpinBox()
-        self.spacing_box.setRange(0.6, 2.5)
-        self.spacing_box.setSingleStep(0.05)
-        self.spacing_box.setValue(1.0)
-        self.spacing_box.valueChanged.connect(self._style_changed)
-        fl.addRow("Giãn dòng", self.spacing_box)
+        rrow = QHBoxLayout()
+        self.rotate_box = QDoubleSpinBox()
+        self.rotate_box.setRange(-180, 180)
+        self.rotate_box.setSingleStep(1)
+        self.rotate_box.setSuffix("°")
+        self.rotate_box.valueChanged.connect(self._style_changed)
+        rrow.addWidget(self.rotate_box, 1)
+        btn_auto = QPushButton("Tự động lại")
+        btn_auto.setToolTip("Bỏ vị trí/cỡ khung chữ đã chỉnh tay, để tool tự đặt lại")
+        btn_auto.clicked.connect(self._reset_text_rect)
+        rrow.addWidget(btn_auto)
+        fl.addRow("Xoay", rrow)
+        hint = QLabel("Chọn 1 vùng đã xử lý: kéo khung tím để di chuyển chữ, kéo góc để đổi cỡ khung; "
+                      "phím mũi tên nhích 1px (Shift: 10px).")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#888;")
+        fl.addRow(hint)
         self.chk_bubble = QCheckBox("Đặt chữ theo lòng bóng thoại")
         self.chk_bubble.setChecked(True)
         self.chk_bubble.setToolTip("Mở rộng vùng đặt chữ ra cả bóng thoại thay vì chỉ khung chữ gốc "
@@ -346,42 +345,7 @@ class MainWindow(QMainWindow):
         self.lbl_ai = QLabel()
         self.lbl_ai.setStyleSheet("color:#888;")
         fl.addRow(self.lbl_ai)
-        self.lbl_warn = QLabel()
-        self.lbl_warn.setStyleSheet("color:#d9534f;")
-        self.lbl_warn.setWordWrap(True)
-        fl.addRow(self.lbl_warn)
         lay.addWidget(g_font)
-
-        g_adjust = QGroupBox("Căn chỉnh chữ")
-        al = QVBoxLayout(g_adjust)
-        hint = QLabel("Chọn 1 vùng đã xử lý: kéo khung tím để di chuyển chữ, kéo góc để đổi cỡ khung; "
-                      "phím mũi tên nhích 1px (Shift: 10px).")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color:#888;")
-        al.addWidget(hint)
-        arow = QHBoxLayout()
-        self.align_buttons = {}
-        for key, label in (("left", "⯇ Trái"), ("center", "≡ Giữa"), ("right", "Phải ⯈")):
-            b = QPushButton(label)
-            b.setCheckable(True)
-            b.clicked.connect(lambda _=False, k=key: self._set_align(k))
-            arow.addWidget(b)
-            self.align_buttons[key] = b
-        al.addLayout(arow)
-        rrow = QHBoxLayout()
-        rrow.addWidget(QLabel("Xoay"))
-        self.rotate_box = QDoubleSpinBox()
-        self.rotate_box.setRange(-180, 180)
-        self.rotate_box.setSingleStep(1)
-        self.rotate_box.setSuffix("°")
-        self.rotate_box.valueChanged.connect(self._style_changed)
-        rrow.addWidget(self.rotate_box, 1)
-        btn_auto = QPushButton("Tự động lại")
-        btn_auto.setToolTip("Bỏ vị trí/cỡ khung chữ đã chỉnh tay, để tool tự đặt lại")
-        btn_auto.clicked.connect(self._reset_text_rect)
-        rrow.addWidget(btn_auto)
-        al.addLayout(rrow)
-        lay.addWidget(g_adjust)
         self._load_favorites()
         self._load_presets()
 
@@ -399,32 +363,17 @@ class MainWindow(QMainWindow):
     # --- kiểu chữ ------------------------------------------------------------
     def current_style(self) -> TextStyle:
         return TextStyle(
-            family=self.font_box.currentFont().family(),
-            size=self.size_box.value(),
-            bold=self.chk_bold.isChecked(),
-            italic=self.chk_italic.isChecked(),
-            uppercase=self.chk_upper.isChecked(),
-            color=self.btn_color.color,
+            **self.text_panel.fields(),
             stroke_color=self.btn_stroke.color,
             stroke_width=self.stroke_box.value(),
-            line_spacing=self.spacing_box.value(),
-            align=next((k for k, b in self.align_buttons.items() if b.isChecked()), "center"),
             rotation=self.rotate_box.value(),
         )
 
     def _apply_style_to_ui(self, s: TextStyle):
         self._loading_ui = True
-        self.font_box.setCurrentFont(QFont(s.family))
-        self.size_box.setValue(s.size)
-        self.chk_bold.setChecked(s.bold)
-        self.chk_italic.setChecked(s.italic)
-        self.chk_upper.setChecked(s.uppercase)
-        self.btn_color.set_color(s.color)
+        self.text_panel.set_style(s)
         self.btn_stroke.set_color(s.stroke_color)
         self.stroke_box.setValue(s.stroke_width)
-        self.spacing_box.setValue(s.line_spacing)
-        for k, b in self.align_buttons.items():
-            b.setChecked(k == s.align)
         self.rotate_box.setValue(s.rotation)
         self._loading_ui = False
         self._update_star()
@@ -456,11 +405,6 @@ class MainWindow(QMainWindow):
                 changed = True
         if changed:
             self.refresh()
-
-    def _set_align(self, key: str):
-        for k, b in self.align_buttons.items():
-            b.setChecked(k == key)
-        self._style_changed()
 
     # --- font yêu thích & bộ kiểu ------------------------------------------------
     def _favorites(self) -> list[str]:
@@ -611,10 +555,12 @@ class MainWindow(QMainWindow):
             if self.engine == "lama":
                 self.lbl_ai.setText("✓ AI LaMa sẵn sàng")
 
-    def _clean_then(self, r: Region, after):
-        """Xoá chữ ở luồng nền, xong thì gọi `after()`. Trong lúc chờ khoá thao tác để không sửa trang song song."""
-        if r.cleaned:
-            self.page.clean(r, fit_bubble=self.chk_bubble.isChecked())
+    def _clean_then(self, r, after):
+        """Xoá chữ (1 vùng hoặc danh sách vùng) ở luồng nền, xong thì gọi `after()`.
+        Trong lúc chờ khoá thao tác để không sửa trang song song."""
+        if all(x.cleaned for x in (r if isinstance(r, list) else [r])):
+            for x in (r if isinstance(r, list) else [r]):
+                self.page.clean(x, fit_bubble=self.chk_bubble.isChecked())
             after()
             return
         if self.clean_worker is not None:
@@ -626,10 +572,13 @@ class MainWindow(QMainWindow):
             return
         name = self.engine_box.currentText().split(" – ")[0]
         wait = " (đang chờ nạp model)" if self.engine == "lama" and not lama.is_ready() else ""
-        self.statusBar().showMessage(f"Đang xoá chữ vùng #{self.selected + 1} – {name}{wait}…")
+        what = f"{len(r)} vùng" if isinstance(r, list) else f"vùng #{self.selected + 1}"
+        self.statusBar().showMessage(f"Đang xoá chữ {what} – {name}{wait}…")
         self.centralWidget().setEnabled(False)
         QApplication.setOverrideCursor(Qt.WaitCursor)
-        self.clean_worker = CleanWorker(self, self.page, r, self.chk_bubble.isChecked())
+        fit = self.chk_bubble.isChecked()
+        regions = r if isinstance(r, list) else [r]
+        self.clean_worker = CleanWorker(self, lambda: self.page.clean_many(regions, fit))
         self.clean_worker.failed.connect(lambda msg: QMessageBox.warning(self, "Lỗi khi xoá chữ", msg))
 
         def finished():
@@ -637,7 +586,7 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
             self.centralWidget().setEnabled(True)
             self.statusBar().clearMessage()
-            if r.cleaned:
+            if all(x.cleaned for x in regions):
                 after()
             else:
                 self.refresh()
@@ -883,17 +832,13 @@ class MainWindow(QMainWindow):
         self._fill_lines()
         selection = list(self.selection)
 
-        def step():
-            if not queue:
-                self.refresh()
-                self.select_region(self.selected, selection)
-                self.statusBar().showMessage(f"Đã xử lý {len(selection)} vùng.", 5000)
-                return
-            i = queue.pop(0)
-            self.selected = i
-            self._clean_then(self.page.regions[i], step)
+        def done():
+            self.refresh()
+            self.select_region(self.selected, selection)
+            self.statusBar().showMessage(f"Đã xử lý {len(selection)} vùng.", 5000)
 
-        step()
+        # Cả nhóm chạy một lượt: vùng gần nhau dùng chung một lần gọi AI trên mạng.
+        self._clean_then([self.page.regions[i] for i in queue], done)
 
     def clean_selected(self):
         r = self.region
