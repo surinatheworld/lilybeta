@@ -275,7 +275,12 @@ def _row_order(boxes: list[TextBox], right_to_left: bool = True) -> list[TextBox
         cy = (b.y1 + b.y2) / 2
         for row in rows:
             r0 = row[0]
-            if r0.y1 <= cy <= r0.y2 or b.y1 <= (r0.y1 + r0.y2) / 2 <= b.y2:
+            overlap = min(b.y2, r0.y2) - max(b.y1, r0.y1)
+            separate_columns = b.x1 >= r0.x2 or r0.x1 >= b.x2
+            # Side-by-side narration and speech often start at different heights.
+            # Their centres can miss each other's span while they still share a row.
+            staggered_row = separate_columns and overlap >= .3 * min(b.y2 - b.y1, r0.y2 - r0.y1)
+            if r0.y1 <= cy <= r0.y2 or b.y1 <= (r0.y1 + r0.y2) / 2 <= b.y2 or staggered_row:
                 row.append(b)
                 break
         else:

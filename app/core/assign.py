@@ -18,6 +18,11 @@ SKIP_COST = 2.5  # bỏ qua một vùng chữ bình thường
 SFX_MAX_CHARS = 10  # bản dịch SFX ngắn dù chữ gốc vẽ to
 
 
+def _footer_strip(page, r) -> bool:
+    x1, y1, x2, y2 = r.box
+    return r.kind == "text" and y1 >= .93 * page.size[1] and x2 - x1 >= 3 * (y2 - y1)
+
+
 def region_ink(page, r) -> float:
     """Lượng chữ gốc trong vùng (số điểm nét chữ)."""
     if r.polygon:
@@ -45,6 +50,11 @@ def skip_cost(page, r) -> float:
         cost *= 0.6  # sát mép trang: tên chương, tác giả, chú thích
     if (x2 - x1) * (y2 - y1) > 0.04 * w * h:
         cost *= 0.6  # khối chữ rất lớn: thường là logo/tiêu đề
+    if _footer_strip(page, r):
+        # A short horizontal strip at the foot of the page is commonly a next-
+        # chapter notice. Keep it eligible, but don't sacrifice a translated SFX
+        # or thought balloon just to fill this extra detector result.
+        cost *= .12
     return cost
 
 
@@ -63,7 +73,10 @@ def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str
     skip = [skip_cost(page, r) for r in regions]
     chars = [max(1, len(s.strip())) for s in lines]
     # Hệ số đổi lượng chữ Nhật → số ký tự tiếng Việt, ước lượng trên cả trang.
-    alpha = sum(chars) / sum(ink)
+    # Decorative SFX and a large untranslated footer can otherwise shrink the
+    # estimate enough to pair a two-word SFX translation with a thought balloon.
+    dialogue_ink = [ink[i] for i, r in enumerate(regions) if r.kind != "sfx" and not _footer_strip(page, r)]
+    alpha = sum(chars) / sum(dialogue_ink or ink)
     # Lượng nét của một bóng thoại điển hình trên trang: SFX nhỏ hơn hẳn thường là dấu "!!", vạch hiệu ứng.
     text_ink = float(np.median([ink[i] for i, r in enumerate(regions) if r.kind != "sfx"] or ink))
 
@@ -72,6 +85,8 @@ def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str
         exp = alpha * ink[i]
         fit = math.log((got + 6) / (exp + 6)) ** 2
         cost = fit + (b - a - 1) * MERGE_PENALTY
+        if _footer_strip(page, regions[i]):
+            cost += .75
         if regions[i].kind == "sfx":
             # Bản dịch SFX ngắn ("Vụt", "Ôm chặt") dù chữ gốc vẽ to: độ dài kỳ vọng có trần; câu thoại hiếm khi
             # rơi vào SFX. SFX nhỏ (dấu "!!", vạch hiệu ứng) ít khi được dịch: ưu tiên SFX lớn.

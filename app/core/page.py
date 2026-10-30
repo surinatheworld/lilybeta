@@ -190,6 +190,8 @@ class Page:
         for r in self.regions:
             if r.cleaned or r.polygon:
                 continue
+            if r.kind == "sfx" and not small_sfx:
+                continue  # detector false positives can be hearts, hair or other drawing details
             if self.redrawn_covers(r) or fill_bubble(self.working, self.text_mask, r.box):
                 pass
             elif small_sfx and is_small_sfx(r, self.size):

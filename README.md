@@ -2,6 +2,17 @@
 
 Thay chữ gốc (tiếng Nhật, Hàn, Trung…) trên ảnh truyện bằng bản dịch, dùng font có sẵn trên máy, tự xoá chữ cũ và vẽ lại nền.
 
+## Dùng trực tiếp trong Photoshop 2023 (Windows)
+
+1. Mở ảnh trong Photoshop, chọn **File → Scripts → Browse… → `photoshop/Lilyzono.jsx`**.
+2. Dán bản dịch, chọn chế độ xoá chữ rồi **Nhận diện và xem trước**.
+3. Bấm **Tạo layer trong Photoshop**: thêm một nhóm gồm layer **Redraw** trong suốt và mỗi câu một **layer chữ thật sửa được**.
+
+Tool giữ các layer có sẵn, kích thước và độ phân giải của tài liệu. Undo một lần để bỏ nhóm vừa thêm.
+Typeset Gái Băng tự chọn bốn font theo hình khung; chỉ xoá các vùng đã ghép bản dịch, giữ các SFX chưa dịch.
+Chạy `build_photoshop.bat` để đóng gói bản không cần Python, rồi giữ cả thư mục `dist/LilyzonoPhotoshop`.
+Chi tiết: [hướng dẫn Photoshop](photoshop/README.md). Bộ xử lý chạy trên máy, không cần mở ứng dụng Lilyzono riêng.
+
 ## Chạy bằng Lilyzono.exe (không cần cài Python)
 
 1. Bấm đúp **`build_exe.bat`** (một lần, trên máy có Python) → tạo thư mục `dist\Lilyzono\`.
@@ -113,8 +124,8 @@ trạng thái chưa lưu, lưu/mở `.lzp`, cache Layers, gõ trực tiếp và 
 
 1. **Mở ảnh raw** tiếng Nhật hoặc tiếng Anh (Ctrl+O, kéo thả, hoặc *Mở chương* cho cả thư mục). Chọn chiều đọc ở ô *Raw* trong panel
    Lilyzono: *Tiếng Nhật (manga): phải → trái* / *Tiếng Anh / manhwa: trái → phải*.
-2. Tool **tự nhận diện chữ và xoá ngay những chỗ chắc ăn**: chữ trong bóng thoại / hộp dẫn truyện sáng, khép kín, và SFX
-   nhỏ (AI LaMa trên máy). Chữ đè lên tranh, SFX lớn, tên tác giả… **để nguyên** cho bạn redraw.
+2. Tool **tự nhận diện chữ và xoá ngay những chỗ chắc ăn**: chữ trong bóng thoại / hộp dẫn truyện sáng, khép kín.
+   SFX chỉ được xoá khi chọn xử lý, tránh xoá nhầm trái tim, tóc hoặc chi tiết tranh chưa có bản dịch.
 3. **Lớp chữ**: bấm chọn khung rồi gõ bản dịch vào ô nội dung – chữ hiện ngay, tự co cỡ và căn giữa lòng bóng, dùng
    font đang chọn (font yêu thích ★ / bộ kiểu đã lưu). **Chọn mọi khung đã có bản dịch** (Ctrl+Shift+A) hoặc
    Ctrl/Shift+bấm nhiều khung rồi đổi font/kiểu là áp cho tất cả. Khung chưa xoá chữ (chữ trên tranh): Xử lý
