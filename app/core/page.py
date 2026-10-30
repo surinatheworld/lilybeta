@@ -123,7 +123,12 @@ class Page:
             w, h = self.size
             region.text_rects = [(max(0, x1 - ex), max(0, y1 - ey), min(w, x2 + ex), min(h, y2 + ey))]
         elif fit_bubble:
-            region.text_rects = text_area_candidates(self.working, region.box, self.area_mask(region))
+            cands = text_area_candidates(self.working, region.box, self.area_mask(region))
+            # Khung đặt chữ không được đè lên chữ gốc của vùng khác (vd hai câu chung một bóng).
+            others = [o.box for o in self.regions if o is not region]
+            free = [c for c in cands if not any(c[0] < o[2] - 2 and o[0] < c[2] - 2 and c[1] < o[3] - 2
+                                                and o[1] < c[3] - 2 for o in others)]
+            region.text_rects = free or [region.box]
         else:
             region.text_rects = [region.box]
 

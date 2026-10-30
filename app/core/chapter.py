@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 
-from .assign import assign_lines
+from .assign import apply_plan, assign_lines
 from .docs import load_pages, page_number
 from .page import Page
 from .typeset import TextStyle
@@ -53,9 +53,6 @@ class Chapter:
         plan = assign_lines(page, free, lines)
         for r in free:
             r.text = ""
-        for r, ls in plan:
-            r.text = "\n".join(ls)
-            if style is not None:
-                r.style = style.copy()
+        apply_plan(page, plan, style)
         self.filled.add(path)
-        return plan
+        return [(r, r.text.split("\n")) for r in page.regions if r.text and not r.cleaned]

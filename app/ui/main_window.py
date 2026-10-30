@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 
 from ..core import cloud, lama, secrets
 from ..core.detect import TextDetector
-from ..core.assign import assign_lines
+from ..core.assign import apply_plan, assign_lines
 from ..core.chapter import Chapter
 from ..core.docs import load_lines, load_pages, page_number
 from ..core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available
@@ -751,10 +751,7 @@ class MainWindow(QMainWindow):
         plan = assign_lines(self.page, free, self.lines)
         for r in free:
             r.text = ""
-        style = self.current_style()
-        for r, ls in plan:
-            r.text = "\n".join(ls)
-            r.style = style.copy()
+        apply_plan(self.page, plan, self.current_style())
         if self.chapter:
             self.chapter.filled.add(self.page.path)
         self._sync_used_lines()

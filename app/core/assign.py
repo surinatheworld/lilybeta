@@ -116,3 +116,83 @@ def _swap_pass(plan, regions, ink, alpha):
             if fit(ra, la) + fit(rb, lb) - (fit(ra, lb) + fit(rb, la)) > SWAP_GAIN:
                 plan[k], plan[k + 1] = (ra, lb), (rb, la)
     return plan
+
+
+def split_region(page, region, lines: list[str]):
+    """Bóng mà người dịch tách thành nhiều câu: chia vùng chữ gốc thành từng cụm cột (chữ dọc) hoặc
+    hàng (chữ ngang), mỗi câu một cụm, theo tỉ lệ độ dài câu. Trả về các vùng mới, hoặc None."""
+    from dataclasses import replace
+
+    k = len(lines)
+    x1, y1, x2, y2 = region.box
+    strokes = page.text_mask[y1:y2, x1:x2] > 0.3
+    if k < 2 or not strokes.any():
+        return None
+    vertical = (y2 - y1) >= (x2 - x1)
+    prof = strokes.sum(axis=0 if vertical else 1)
+    bands, start = [], None
+    for i, v in enumerate(np.append(prof, 0)):
+        if v > 0 and start is None:
+            start = i
+        elif v == 0 and start is not None:
+            bands.append([start, i])
+            start = None
+    # Gộp cột furigana (rất hẹp) vào cột chữ bên cạnh.
+    if bands:
+        med = float(np.median([b - a for a, b in bands]))
+        merged = []
+        for a, b in bands:
+            if merged and (b - a < 0.5 * med or a - merged[-1][1] < 2):
+                merged[-1][1] = b
+            else:
+                merged.append([a, b])
+        bands = merged
+    if vertical:
+        bands = bands[::-1]  # chữ dọc đọc từ phải sang trái
+    if len(bands) < k:
+        return None
+    ink = [float(prof[a:b].sum()) for a, b in bands]
+    chars = [max(1, len(s.strip())) for s in lines]
+    best, best_err = None, 1e9
+    import itertools
+
+    for cut in itertools.combinations(range(1, len(bands)), k - 1):
+        edges = (0,) + cut + (len(bands),)
+        parts = [sum(ink[a:b]) for a, b in zip(edges, edges[1:])]
+        err = sum(abs(pi / sum(ink) - c / sum(chars)) for pi, c in zip(parts, chars))
+        if min(parts) / sum(ink) >= 0.12 and err < best_err:
+            best, best_err = edges, err
+    if best is None or best_err > 0.5:
+        return None
+    out = []
+    for (a, b), line in zip(zip(best, best[1:]), lines):
+        group = bands[a:b]
+        lo, hi = min(g[0] for g in group), max(g[1] for g in group)
+        sub = strokes[:, lo:hi] if vertical else strokes[lo:hi, :]
+        ys, xs = np.nonzero(sub)
+        if vertical:
+            box = (x1 + lo, y1 + int(ys.min()), x1 + hi, y1 + int(ys.max()) + 1)
+        else:
+            box = (x1 + int(xs.min()), y1 + lo, x1 + int(xs.max()) + 1, y1 + hi)
+        out.append(replace(region, box=box, text=line, text_rects=[], manual_rect=None))
+    return out
+
+
+def apply_plan(page, plan, style=None) -> int:
+    """Ghi câu dịch vào các vùng theo `plan`; vùng nhận nhiều câu thì tách thành từng khối nếu được.
+    Trả về số vùng có chữ."""
+    n = 0
+    for r, ls in plan:
+        parts = split_region(page, r, ls) if len(ls) > 1 and not r.cleaned else None
+        if parts:
+            i = page.regions.index(r)
+            page.regions[i:i + 1] = parts
+            targets = list(zip(parts, [[s] for s in ls]))
+        else:
+            targets = [(r, ls)]
+        for reg, lines in targets:
+            reg.text = "\n".join(lines)
+            if style is not None:
+                reg.style = style.copy()
+            n += 1
+    return n
