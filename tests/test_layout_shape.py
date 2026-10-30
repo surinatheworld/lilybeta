@@ -122,6 +122,30 @@ class BubbleShapeTests(unittest.TestCase):
         self.assertLess(widths[0], max(widths))
         self.assertLess(widths[-1], max(widths))
 
+    def test_short_text_grows_above_the_page_size_in_a_big_bubble(self):
+        _, shape = text_area(_bubble(tail=False), (180, 150, 220, 210))
+        style = TextStyle(max_size=20)
+        x1, y1, x2, y2 = place_in_shape("Ừ.", style, shape)
+        size = layout("Ừ.", style, x2 - x1, y2 - y1)[0].size
+        self.assertGreater(size, 20)  # "Ừ." không lọt thỏm giữa bóng to…
+        self.assertLessEqual(size, 30)  # …nhưng không to quá 1,5 lần cỡ chuẩn
+
+    def test_narrow_bubble_keeps_a_readable_size(self):
+        img = _bubble(axes=(55, 80), tail=False)
+        _, shape = text_area(img, (185, 160, 215, 200))
+        style = TextStyle(max_size=20)
+        text = "Em nhất định sẽ trân trọng nó."
+        x1, y1, x2, y2 = place_in_shape(text, style, shape)
+        self.assertGreaterEqual(layout(text, style, x2 - x1, y2 - y1)[0].size, 15)
+
+    def test_round_block_is_balanced_top_and_bottom(self):
+        _, shape = text_area(_bubble(tail=False), (180, 150, 220, 210))
+        style = TextStyle(max_size=24)
+        x1, y1, x2, y2 = place_in_shape(NINE, style, shape)
+        m, lines = layout(NINE, style, x2 - x1, y2 - y1)
+        widths = _widths(lines, m)
+        self.assertLess(abs(widths[0] - widths[-1]), max(widths) * .35, lines)
+
     def test_shape_layout_is_bigger_than_a_rectangle_in_an_oval(self):
         page = Page.__new__(Page)
         page.original = _bubble(tail=False)
