@@ -108,6 +108,18 @@ class BubbleShapeTests(unittest.TestCase):
         self.assertLess(widths[0], max(widths))
         self.assertLess(widths[-1], max(widths))
 
+    def test_text_starts_where_the_original_text_was_and_moves_in_only_when_cramped(self):
+        _, shape = text_area(_bubble(tail=False), (180, 150, 220, 210))
+        cx, cy, rows = shape
+        style = TextStyle(max_size=20)
+        x1, y1, x2, y2 = place_in_shape("Cảm ơn anh.", style, shape, (cx, cy - 60))  # chữ Nhật ở nửa trên bóng
+        self.assertLess(abs((y1 + y2) / 2 - (cy - 60)), 2)
+        self.assertLess(abs((x1 + x2) / 2 - cx), 2)
+        # Chữ gốc sát mép bóng: không đủ chỗ thì khối chữ dời dần vào trong, vẫn nằm gọn trong bóng.
+        x1, y1, x2, y2 = place_in_shape(NINE, style, shape, (cx, cy - 135))
+        self.assertGreater((y1 + y2) / 2, cy - 135 + 10)
+        self.assertGreaterEqual(y1, rows[0][0] - 5)
+
     def test_shape_layout_is_bigger_than_a_rectangle_in_an_oval(self):
         page = Page.__new__(Page)
         page.original = _bubble(tail=False)
