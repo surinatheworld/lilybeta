@@ -25,10 +25,11 @@ def resize_to(img: np.ndarray, w: int, h: int) -> np.ndarray:
     return cv2.resize(img, (w, h), interpolation=cv2.INTER_AREA if shrink else cv2.INTER_CUBIC)
 
 
-def blend_back(img: np.ndarray, box, out: np.ndarray, mask: np.ndarray) -> None:
-    """Dán `out` (đã đúng cỡ ô `box`) vào `img`, chỉ trong `mask`, mép hoà dần để không lộ đường cắt."""
+def blend_back(img: np.ndarray, box, out: np.ndarray, mask: np.ndarray, feather: int = 2) -> None:
+    """Dán `out` (đã đúng cỡ ô `box`) vào `img`, chỉ trong `mask`, mép hoà dần `feather` px ra ngoài."""
     x1, y1, x2, y2 = box
     crop = img[y1:y2, x1:x2]
     m = (mask[y1:y2, x1:x2] > 0).astype(np.float32)
-    alpha = np.maximum(cv2.GaussianBlur(m, (5, 5), 0), m)[..., None]
+    k = 2 * feather + 1
+    alpha = np.maximum(cv2.GaussianBlur(m, (k, k), 0), m)[..., None]
     crop[:] = (out * alpha + crop * (1 - alpha)).astype(np.uint8)

@@ -8,7 +8,7 @@ import numpy as np
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage, QPainter
 
-from .clean import MARGIN, clean_region, text_area_candidates
+from .clean import MARGIN, clean_local, clean_region, text_area_candidates
 from .detect import TextDetector, sort_reading_order
 from .typeset import TextStyle, best_rect, draw_text
 
@@ -102,6 +102,40 @@ class Page:
             region.text_rects = text_area_candidates(self.working, region.box, self.area_mask(region))
         else:
             region.text_rects = [region.box]
+
+    def clean_many(self, regions: list[Region], fit_bubble: bool = True) -> None:
+        """Xoá chữ nhiều vùng; phần cần AI trên mạng của các vùng gần nhau được gom vào một lần gọi."""
+        pending: list[tuple[list[Region], np.ndarray]] = []
+        for r in regions:
+            if r.cleaned:
+                continue
+            need = clean_local(self.working, self.text_mask, r.box, self.area_mask(r), self.inpainter)
+            if need is None:
+                r.cleaned = True
+            else:
+                pending.append(([r], need))
+        ctx = getattr(self.inpainter, "context_box", None)
+        if ctx is not None:  # gộp các vùng có vùng gửi đi chồng lên nhau
+            merged = True
+            while merged:
+                merged = False
+                for i in range(len(pending)):
+                    for j in range(i + 1, len(pending)):
+                        a, b = ctx(pending[i][1]), ctx(pending[j][1])
+                        if a and b and a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]:
+                            pending[i] = (pending[i][0] + pending[j][0], np.maximum(pending[i][1], pending[j][1]))
+                            del pending[j]
+                            merged = True
+                            break
+                    if merged:
+                        break
+        for group, mask in pending:
+            self.inpainter(self.working, mask)
+            for r in group:
+                r.cleaned = True
+        for r in regions:
+            if r.cleaned:
+                self.clean(r, fit_bubble)  # đã xoá rồi: chỉ tính lại khung đặt chữ
 
     def reset(self, region: Region) -> None:
         """Hoàn tác vùng: khôi phục ảnh gốc và bỏ chữ."""
