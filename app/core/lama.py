@@ -30,7 +30,13 @@ def get_session():
                 tmp = MODEL_PATH + ".part"
                 urllib.request.urlretrieve(MODEL_URL, tmp)
                 os.replace(tmp, MODEL_PATH)
-            _session = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
+            options = ort.SessionOptions()
+            # Leave CPU capacity for the canvas and detector; idle model workers
+            # should sleep rather than spin while the user edits text.
+            options.intra_op_num_threads = max(1, min(4, (os.cpu_count() or 2) - 1))
+            options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+            options.add_session_config_entry("session.inter_op.allow_spinning", "0")
+            _session = ort.InferenceSession(MODEL_PATH, sess_options=options, providers=["CPUExecutionProvider"])
         return _session
 
 

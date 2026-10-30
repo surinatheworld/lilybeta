@@ -50,6 +50,38 @@ Bố cục và thao tác quen thuộc của Photoshop 2023 (giao diện tối), 
 - **Mở PSD** (Ctrl+O): Background thành raw, layer ảnh giữ tên / ẩn hiện / opacity / blend, layer chữ thành khung
   chữ sửa được (nội dung, font, cỡ, màu, căn lề, xoay, Stroke, Drop Shadow) – sửa tiếp PSD đã type tay.
 
+### Giao diện và hiệu năng
+
+- Thanh công cụ dùng icon nét đơn sắc, tab tài liệu có tên ảnh và dấu `*` khi chưa lưu; màu panel, ô nhập,
+  tab và thanh trạng thái thống nhất theo không gian làm việc tối của Photoshop 2023.
+- Bố cục panel và kích thước cửa sổ được nhớ khi đóng. Chọn **Cửa sổ → Đặt lại không gian làm việc** để khôi phục.
+- Gõ/sửa/di chuyển/xoay chữ chỉ vẽ lại vùng chữ cũ và mới, gồm viền và bóng đổ. Gõ trực tiếp trên ảnh không ghép
+  lại trang sau từng phím. Layers giữ nguyên các hàng và ảnh nhỏ khi chỉ đổi chữ; History tái sử dụng icon.
+- Nét cọ cập nhật trực tiếp vào bộ đệm ảnh, tránh sao chép cả trang sau mỗi điểm. Viền vùng chọn chỉ chạy khi có
+  vùng chọn. LaMa dùng tối đa 4 luồng CPU và tắt vòng chờ bận để nhường tài nguyên cho giao diện
+  ([cấu hình luồng ONNX Runtime](https://onnxruntime.ai/docs/performance/tune-performance/threading.html)).
+
+Benchmark cục bộ so với bản `39bde3f`, cùng trang giả lập 1600×2400, 24 lớp chữ, font Arial; trung vị 9 lần sau
+khởi động làm nóng, Qt offscreen trên cùng máy Windows:
+
+| Thao tác | Trước | Sau |
+|---|---:|---:|
+| Đổi nội dung một khung | 686,2 ms | 6,0 ms |
+| Ghép toàn trang | 487,6 ms | 42,4 ms |
+| Cập nhật mảnh canvas 64×64 | 4,20 ms | 0,008 ms |
+| Cập nhật bảng Layers khi không đổi điểm ảnh | 184,5 ms | 0,52 ms |
+
+Đây là thời gian xử lý của từng thao tác, không phải FPS hay độ trễ đầu cuối; không bao gồm nhận diện/AI.
+Tốc độ thực tế phụ thuộc máy, kích thước ảnh, font và số layer/hiệu ứng. Chạy lại bằng:
+
+```bash
+python tools/benchmark_editor.py --output build/benchmark.json --preview build/editor.png
+python -m unittest discover -s tests -v
+```
+
+Các kiểm tra đối chiếu ghép ảnh với đường xử lý tổng quát, sửa chữ/vị trí/hiệu ứng theo vùng, undo/redo,
+trạng thái chưa lưu, lưu/mở `.lzp`, cache Layers, gõ trực tiếp và khôi phục bố cục ở cửa sổ 1280×720.
+
 ## Luồng làm việc: 3 lớp (raw → Redraw → chữ)
 
 1. **Mở ảnh raw** tiếng Nhật hoặc tiếng Anh (Ctrl+O, kéo thả, hoặc *Mở chương* cho cả thư mục). Chọn chiều đọc ở ô *Raw* trong panel

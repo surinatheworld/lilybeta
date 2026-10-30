@@ -62,6 +62,7 @@ class LayersPanel(QWidget):
         super().__init__(parent)
         self._doc: Document | None = None
         self._building = False
+        self._icons: dict[int, QIcon] = {}
         self._text_icon = glyph_icon("T", THUMB, font="Times New Roman", bold=True)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
@@ -91,15 +92,31 @@ class LayersPanel(QWidget):
             bottom.addWidget(tool_button(glyph, tip, lambda _=False, k=key: self.action.emit(k)))
         lay.addLayout(bottom)
 
-    def set_doc(self, doc: Document | None) -> None:
+    def set_doc(self, doc: Document | None, pixels_changed: bool = False) -> None:
+        changed_doc = doc is not self._doc
         self._doc = doc
         self._building = True
-        self.list.clear()
+        scroll = self.list.verticalScrollBar().value()
+        if changed_doc:
+            self._icons.clear()
+        layers = list(reversed(doc.layers)) if doc is not None else []
+        ids = [L.id for L in layers]
+        existing = [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count())]
+        rebuild = existing != ids
+        if rebuild:
+            self.list.clear()
+        self._icons = {lid: icon for lid, icon in self._icons.items() if lid in ids}
         if doc is not None:
-            for L in reversed(doc.layers):
-                prefix = "T   " if L.kind == "text" else ""
-                icon = self._text_icon if L.kind == "text" else _bgr_icon(doc.thumbnail(L, THUMB))
-                item = QListWidgetItem(icon, prefix + L.name + ("  🔒" if L.locked else ""))
+            for row, L in enumerate(layers):
+                item = QListWidgetItem() if rebuild else self.list.item(row)
+                if L.kind == "text":
+                    icon = self._text_icon
+                else:
+                    if L.id not in self._icons or (pixels_changed and L.kind != "background"):
+                        self._icons[L.id] = _bgr_icon(doc.thumbnail(L, THUMB))
+                    icon = self._icons[L.id]
+                item.setIcon(icon)
+                item.setText(L.name + ("  🔒" if L.locked else ""))
                 flags = Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsUserCheckable
                 if L.kind not in ("background", "redraw"):
                     flags |= Qt.ItemIsEditable
@@ -107,13 +124,17 @@ class LayersPanel(QWidget):
                 item.setCheckState(Qt.Checked if L.visible else Qt.Unchecked)
                 item.setData(Qt.UserRole, L.id)
                 item.setToolTip("Bấm ô vuông để ẩn/hiện · bấm đúp để đổi tên")
-                self.list.addItem(item)
+                if rebuild:
+                    self.list.addItem(item)
                 if L is doc.active:
                     self.list.setCurrentItem(item)
             a = doc.active
             self.opacity.setValue(round(a.opacity * 100))
             self.blend.setCurrentIndex(max(0, self.blend.findData(a.blend)))
             self.blend.setEnabled(a.kind == "pixel")
+        self.setEnabled(doc is not None)
+        if not changed_doc:
+            self.list.verticalScrollBar().setValue(scroll)
         self._building = False
 
     def _layer(self, item) -> Layer | None:
@@ -139,7 +160,7 @@ class LayersPanel(QWidget):
         if vis != L.visible:
             self.visibility.emit(L, vis)
             return
-        name = item.text().replace("T   ", "", 1).replace("  🔒", "").strip()
+        name = item.text().removesuffix("  🔒").strip()
         if name and name != L.name:
             self.renamed.emit(L, name)
 
@@ -152,9 +173,14 @@ class HistoryPanel(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._building = False
+        self._signature = None
         self.currentRowChanged.connect(lambda r: self._building or r < 0 or self.jump.emit(r))
 
     def set_doc(self, doc: Document | None, opened: str = "Mở") -> None:
+        signature = (id(doc), opened, doc.index, tuple((id(st), st.name) for st in doc.history)) if doc else None
+        if signature == self._signature:
+            return
+        self._signature = signature
         self._building = True
         self.clear()
         if doc is not None:

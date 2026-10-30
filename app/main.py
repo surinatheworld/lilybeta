@@ -74,6 +74,8 @@ def selftest() -> int:
     step("Két lưu API key", lambda: type(__import__("keyring").get_keyring()).__name__ + f", gemini key: {bool(secrets.get_key('gemini'))}")
     with open(log_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+    if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print("\n".join(lines))
     return 0 if ok else 1
 

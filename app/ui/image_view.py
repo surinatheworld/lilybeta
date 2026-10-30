@@ -5,12 +5,12 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QTransform
+from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPolygonF, QTransform
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsEllipseItem,
     QGraphicsPathItem,
-    QGraphicsPixmapItem,
+    QGraphicsItem,
     QGraphicsPolygonItem,
     QGraphicsRectItem,
     QGraphicsScene,
@@ -52,6 +52,38 @@ def _mods(e) -> int:
     return int(m.value) if hasattr(m, "value") else int(m)
 
 
+class CanvasImageItem(QGraphicsItem):
+    """Owned image buffer: brush patches never detach/copy a page-sized pixmap."""
+
+    def __init__(self):
+        super().__init__()
+        self.image = QImage()
+        self.setFlag(QGraphicsItem.ItemUsesExtendedStyleOption)
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(self.image.rect())
+
+    def set_image(self, image: QImage) -> None:
+        if image.size() != self.image.size():
+            self.prepareGeometryChange()
+        self.image = image.copy()
+        self.update()
+
+    def update_patch(self, x: int, y: int, image: QImage) -> None:
+        dirty = QRectF(x, y, image.width(), image.height()).intersected(self.boundingRect())
+        if dirty.isEmpty():
+            return
+        painter = QPainter(self.image)
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
+        painter.drawImage(x, y, image)
+        painter.end()
+        self.update(dirty)
+
+    def paint(self, painter, option, widget=None):
+        exposed = option.exposedRect.toAlignedRect().intersected(self.image.rect())
+        painter.drawImage(QRectF(exposed), self.image, QRectF(exposed))
+
+
 class ImageView(QGraphicsView):
     regionClicked = Signal(int, int)  # chỉ số vùng, phím bổ trợ (Ctrl/Shift) dạng int
     regionDrawn = Signal(tuple)
@@ -82,8 +114,8 @@ class ImageView(QGraphicsView):
         self.setBackgroundBrush(QColor(40, 40, 40))
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
-        self._pixmap = QGraphicsPixmapItem()
-        self._pixmap.setTransformationMode(Qt.SmoothTransformation)
+        self.setFrameShape(QFrame.NoFrame)
+        self._pixmap = CanvasImageItem()
         self.scene().addItem(self._pixmap)
         self._overlays: list = []
         self._press_pos = None  # vị trí bấm chuột (toạ độ màn hình)
@@ -118,7 +150,7 @@ class ImageView(QGraphicsView):
         self._ant_offset = 0
         self._ant_timer = QTimer(self)
         self._ant_timer.timeout.connect(self._march)
-        self._ant_timer.start(120)
+        self._ant_timer.setInterval(120)
         # Con trỏ cọ (vòng tròn đúng cỡ) và nét Spot Healing đang tô
         self._brush_cursor = QGraphicsEllipseItem()
         bp = QPen(QColor(255, 255, 255, 200), 1)
@@ -143,18 +175,16 @@ class ImageView(QGraphicsView):
 
     # --- ảnh & vùng -------------------------------------------------------
     def set_image(self, img: QImage, fit: bool = False) -> None:
-        self._pixmap.setPixmap(QPixmap.fromImage(img))
-        self.scene().setSceneRect(QRectF(img.rect()).adjusted(-200, -200, 200, 200))
+        changed_size = self._pixmap.image.size() != img.size()
+        self._pixmap.set_image(img)
+        if changed_size:
+            self.scene().setSceneRect(QRectF(img.rect()).adjusted(-200, -200, 200, 200))
         if fit:
             self.fit_page()
 
     def update_patch(self, x: int, y: int, img: QImage) -> None:
         """Vẽ đè một mảnh ảnh (nét cọ đang vẽ) mà không dựng lại cả trang."""
-        pm = self._pixmap.pixmap()
-        p = QPainter(pm)
-        p.drawImage(x, y, img)
-        p.end()
-        self._pixmap.setPixmap(pm)
+        self._pixmap.update_patch(x, y, img)
 
     def image_rect(self) -> QRectF:
         return self._pixmap.boundingRect()
@@ -443,6 +473,10 @@ class ImageView(QGraphicsView):
             path.closeSubpath()
         for item in self._ants:
             item.setPath(path)
+        if path.isEmpty():
+            self._ant_timer.stop()
+        elif not self._ant_timer.isActive():
+            self._ant_timer.start()
 
     def _march(self) -> None:
         if self._ants[1].path().isEmpty():
