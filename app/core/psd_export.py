@@ -81,7 +81,7 @@ def text_spec(r) -> dict:
         "indent_left": st.indent_left, "indent_right": st.indent_right, "indent_first": st.indent_first,
         "space_before": st.space_before, "space_after": st.space_after,
         "stroke": st.stroke_width, "stroke_color": st.stroke_color.lstrip("#"),
-        "rotation": st.rotation, "cx": (x1 + x2) / 2, "cy": (y1 + y2) / 2, "redraw": r.needs_redraw,
+        "rotation": st.rotation, "cx": (x1 + x2) / 2, "cy": (y1 + y2) / 2, "redraw": r.needs_redraw, "orphan": r.orphan,
         "shadow": st.shadow, "shadow_color": st.shadow_color.lstrip("#"), "shadow_opacity": st.shadow_opacity,
         "shadow_angle": st.shadow_angle, "shadow_distance": st.shadow_distance, "shadow_size": st.shadow_size,
     }
@@ -143,7 +143,9 @@ try {
     t.contents = L.contents;
     // Nền khó tool để nguyên chữ gốc: đánh dấu tên lớp để biết chỗ cần tự redraw.
     if (L.custom_name) lay.name = L.name;
-    else if (L.redraw) put(lay, "name", function () { return "REDRAW - " + L.contents.replace(/[\r\u0003]/g, " ").substr(0, 40); });
+    else if (L.redraw || L.orphan) put(lay, "name", function () {
+      return (L.orphan ? "CHƯA ĐẶT - " : "") + (L.redraw ? "REDRAW - " : "") + L.contents.replace(/[\r\u0003]/g, " ").substr(0, 40);
+    });
     t.font = L.font;
     t.size = new UnitValue(L.size, "px");
     t.useAutoLeading = L.auto_leading;
@@ -319,6 +321,7 @@ def export_without_photoshop(page, out_path: str) -> None:
         if len(xs) == 0:
             continue
         bx1, by1, bx2, by2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
-        name = L.name if L.custom_name else ("REDRAW - " if r.needs_redraw else "") + r.text.replace("\n", " ")
+        name = L.name if L.custom_name else (("CHƯA ĐẶT - " if r.orphan else "") + ("REDRAW - " if r.needs_redraw else "")
+                                             + r.text.replace("\n", " "))
         add(arr[by1:by2, bx1:bx2], name, L, top=by1, left=bx1)
     psd.save(out_path)

@@ -194,6 +194,8 @@ def region_kind(page, region) -> str:
         return override
     if region.kind == "sfx":
         return "sfx"
+    if getattr(region, "orphan", False):
+        return "normal"  # khung tạm trên tranh: chưa biết loại thoại
     cache = getattr(page, "_balloon_cache", None)
     if cache is None:
         cache = page._balloon_cache = {}

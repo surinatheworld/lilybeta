@@ -62,6 +62,11 @@ Cần cài các font của bộ đang chọn. Tool không phân phối các font
   `000 ObelixPro TB` (chữ raw in đậm), `SJ SS Rosehip` (suy nghĩ không khung), `SJ CCComicraft` (thoại lúng túng,
   nói lắp "e- em…"), `MTO augie` (SFX).
 
+Câu dịch không khớp bóng nào (chữ vẽ tay nhỏ tool không nhận ra) không đẩy lệch các câu sau: tool tạo layer tên
+`CHƯA ĐẶT · …` cạnh bóng đứng trước, kéo vào đúng chỗ. Chữ ngoài bóng / SFX không nhỏ hơn nửa cỡ chuẩn của trang
+(tool nới khung ra xung quanh); nhiều câu chung một khung được xếp trên/dưới; chữ trên nền tối (biển, băng rôn
+đen) tự đổi sang màu trắng. Trang nền đen: khe đen giữa các panel cũng được dùng để xác định thứ tự đọc.
+
 Nhận dạng và ghép thoại là tự động, có thể sai với bố cục khó. Luôn xem trước, đặc biệt SFX và chữ ngoài khung.
 LaMa có thể làm mờ nét/lưới chấm quanh SFX; sửa trên layer Redraw. Chế độ chỉ nền đơn giản đánh dấu `REDRAW` ở các layer cần làm tay.
 Chỉ xoá những vùng có bản dịch; các SFX chưa ghép và chi tiết bị nhận nhầm được giữ nguyên.

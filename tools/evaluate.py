@@ -132,6 +132,7 @@ def evaluate(raw_dir, psd_dir, out_dir, pages=None, engine="lama", order_fix=Non
         plan = assign_lines(page, page.regions, [r["text"] for r in refs])
         pos, used = {}, set()
         texts = [r["text"] for r in refs]
+        plan = [(reg, ls) for reg, ls in plan if not reg.orphan]  # câu để riêng: tính là không đúng chỗ
         for reg, ls in plan:
             ri = page.regions.index(reg)
             for line in ls:  # chấm theo nội dung câu (bước đổi chỗ có thể đảo thứ tự)

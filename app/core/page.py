@@ -12,7 +12,7 @@ from PySide6.QtGui import QImage, QPainter
 
 from .clean import MARGIN, clean_local, fill_bubble, is_small_sfx, text_area
 from .detect import TextDetector, sort_reading_order
-from .typeset import TextStyle, best_rect, draw_text, place_in_shape
+from .typeset import TextStyle, best_rect, draw_text, layout, place_in_shape
 from .typeset_profiles import apply_profile, profile_style
 
 Box = tuple[int, int, int, int]
@@ -30,6 +30,10 @@ def reserve_uids(upto: int) -> None:
     _region_ids = itertools.count(max(next(_region_ids), upto + 1))
 
 
+MIN_READABLE = .5  # chữ ngoài bóng / SFX không nhỏ hơn nửa cỡ chuẩn của trang
+DARK_BACKGROUND = 90  # độ sáng trung vị dưới mức này: nền tối, chữ trắng
+
+
 @dataclass
 class Region:
     box: Box
@@ -44,6 +48,7 @@ class Region:
     needs_redraw: bool = False  # nền khó, tool để nguyên chữ gốc cho người dùng tự redraw
     uid: int = field(default_factory=new_uid)  # định danh bền (layer chữ, lịch sử hoàn tác trỏ tới vùng qua uid)
     typeset_kind: str = "auto"  # automatic balloon shape, or a user-selected font category
+    orphan: bool = False  # câu không ghép được vào bóng nào: khung tạm, người dùng kéo vào đúng chỗ
     # Dáng lòng bóng (cx, cy, ((y, trái, phải), …)) để dàn chữ theo đúng hình bóng; None = chỉ dùng text_rects.
     text_shape: tuple | None = None
 
@@ -230,6 +235,9 @@ class Page:
     def clean(self, region: Region, fit_bubble: bool = True) -> None:
         region.style = profile_style(self, region, region.style)
         region.auto_cap = self.auto_cap
+        if region.orphan:  # khung tạm trên tranh: không xoá gì, đặt chữ ngay trong khung
+            region.cleaned, region.text_rects, region.text_shape = True, [region.box], None
+            return
         if not region.cleaned:
             self._clean_pixels(region)
             region.cleaned = True
@@ -250,12 +258,84 @@ class Page:
 
             free = [c for c in cands if not hits(c)]
             region.text_rects = free or [region.box]
-            # Bóng có chữ của vùng khác (hai câu chung một bóng) thì không dàn theo cả bóng được.
-            if shape and not hits((min(r[1] for r in shape[2]), shape[2][0][0],
-                                   max(r[2] for r in shape[2]), shape[2][-1][0] + 1)):
-                region.text_shape = shape
+            if shape:
+                span = (min(r[1] for r in shape[2]), shape[2][0][0], max(r[2] for r in shape[2]), shape[2][-1][0] + 1)
+                if not hits(span):
+                    region.text_shape = shape
+                else:  # nhiều câu chung một bóng / khung: chia thành các dải trên-dưới theo thứ tự đọc
+                    region.text_shape = self._shared_band(region, shape, span)
         else:
             region.text_rects = [region.box]
+        self._readable(region)
+        self._contrast(region)
+
+    def _contrast(self, region: Region) -> None:
+        """Chữ đặt trên nền tối (biển / băng rôn đen, ô đen) mà vẫn màu đen mặc định thì đổi sang trắng."""
+        if region.style.color.lower() != "#000000" or not region.text.strip():
+            return
+        x1, y1, x2, y2 = map(int, region.text_rect)
+        patch = self.working[max(0, y1):y2, max(0, x1):x2]
+        if patch.size and float(np.median(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY))) < DARK_BACKGROUND:
+            region.style = replace(region.style, color="#ffffff")
+
+    def _shared_band(self, region: Region, shape, span):
+        """Phần của `region` khi bóng chứa chữ của vùng khác: mọi vùng trong bóng đều có câu dịch (chữ gốc sẽ
+        bị xoá) thì chia bóng thành các dải ngang theo thứ tự đọc, cao theo độ dài câu; không thì None."""
+        x1, y1, x2, y2 = span
+        group = [o for o in self.regions if o is region or
+                 (x1 <= (o.box[0] + o.box[2]) / 2 <= x2 and y1 <= (o.box[1] + o.box[3]) / 2 <= y2)]
+        if len(group) < 2 or any(o.kind == "sfx" or not o.text.strip() or o.needs_redraw for o in group):
+            return None
+        cx, _, rows = shape
+        weights = [len(o.text.strip()) + 6 for o in group]
+        k = group.index(region)
+        start, end = sum(weights[:k]) / sum(weights), sum(weights[:k + 1]) / sum(weights)
+        gap = .03 * len(rows)
+        band = rows[int(start * len(rows) + (gap if k else 0)):int(end * len(rows) - (gap if k < len(group) - 1 else 0))]
+        if len(band) < 3:
+            return None
+        band = (cx, (band[0][0] + band[-1][0]) / 2, tuple(band))
+        # Hai bóng dính nhau nằm ngang thì từng khung riêng vẫn tốt hơn: chỉ dùng dải khi chữ to hơn rõ.
+        style = region.effective_style
+
+        def size(rect):
+            return layout(region.text, style, rect[2] - rect[0], rect[3] - rect[1])[0].size if rect else 0
+
+        boxed = size(best_rect(region.text, style, region.text_rects))
+        return band if size(place_in_shape(region.text, style, band)) > 1.1 * boxed else None
+
+    def _readable(self, region: Region) -> None:
+        """Chữ ngoài bóng / SFX nhỏ hơn MIN_READABLE cỡ chuẩn của trang: nới khung đặt chữ ra xung quanh
+        (không lấn sang khung của câu khác) cho tới khi đọc được."""
+        cap = region.auto_cap
+        if not cap or region.text_shape or region.manual_rect or not region.text.strip():
+            return
+        style = region.effective_style
+
+        def size(rect):
+            return layout(region.text, style, rect[2] - rect[0], rect[3] - rect[1])[0].size
+
+        x1, y1, x2, y2 = region.text_rect
+        if size((x1, y1, x2, y2)) >= MIN_READABLE * cap:
+            return
+        w, h = self.size
+        cx, cy, bw, bh = (x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1
+        others = [o.box for o in self.regions if o is not region and o.text.strip() and not o.orphan]
+        best = None
+        for f in (1.3, 1.6, 2.0, 2.5, 3.0, 3.6):
+            for fw, fh in ((f, 1), (1, f), (f, f)):
+                nw, nh = max(bw * fw, bh * fh * .6), bh * fh
+                c = (int(max(0, cx - nw / 2)), int(max(0, cy - nh / 2)), int(min(w, cx + nw / 2)), int(min(h, cy + nh / 2)))
+                if any(c[0] < o[2] and o[0] < c[2] and c[1] < o[3] and o[1] < c[3] for o in others):
+                    continue
+                got = size(c)
+                if best is None or got > best[0]:
+                    best = (got, c)
+                if got >= MIN_READABLE * cap:
+                    region.text_rects = [c]
+                    return
+        if best:
+            region.text_rects = [best[1]]
 
     def clean_many(self, regions: list[Region], fit_bubble: bool = True) -> None:
         """Xoá chữ nhiều vùng; phần cần AI trên mạng của các vùng gần nhau được gom vào một lần gọi."""

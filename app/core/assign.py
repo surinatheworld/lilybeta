@@ -16,6 +16,11 @@ MAX_LINES_PER_REGION = 3
 MERGE_PENALTY = 1.2  # mỗi câu thêm vào cùng một vùng
 SKIP_COST = 2.5  # bỏ qua một vùng chữ bình thường
 SFX_MAX_CHARS = 10  # bản dịch SFX ngắn dù chữ gốc vẽ to
+MERGE_SHORT = 1.0  # thêm cho mỗi câu ngắn (≤ 2 từ) gộp chung bóng: thường là SFX / câu chen vẽ tay riêng
+DROP_COST = 3.0  # để riêng một câu (layer "CHƯA ĐẶT") thay vì đẩy lệch các câu sau sang bóng khác
+TINY_INK = .08  # bóng chỉ có dấu ("…", "!", "?"): nét < 8% một bóng thoại điển hình của trang
+TINY_WORDS_PENALTY = 3.0  # câu nhiều từ rơi vào bóng chỉ có dấu
+BIG_SFX = .5  # SFX nhiều nét cỡ một bóng thoại (biển, chữ in trên tranh): thường được dịch, khó bỏ qua
 
 
 def _footer_strip(page, r) -> bool:
@@ -29,6 +34,15 @@ def region_ink(page, r) -> float:
         return float(page.area_mask(r).sum() / 255) * 0.3
     x1, y1, x2, y2 = r.box
     return float((page.text_mask[y1:y2, x1:x2] > 0.3).sum())
+
+
+def glyph_size(page, r) -> float:
+    """Cỡ một ký tự gốc (px): bề ngang cột chữ dọc / bề cao dòng chữ ngang; 0 nếu không đo được."""
+    from .typeset_profiles import lettering_features
+
+    if r.polygon or getattr(page, "text_mask", None) is None:
+        return 0.
+    return lettering_features(page.original, page.text_mask, r.box)["char"]
 
 
 def skip_cost(page, r) -> float:
@@ -69,8 +83,14 @@ def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str
     n, m = len(regions), len(lines)
     if n == 0 or m == 0:
         return []
-    ink = [max(1.0, region_ink(page, r)) for r in regions]
+    raw_ink = [max(1.0, region_ink(page, r)) for r in regions]
     skip = [skip_cost(page, r) for r in regions]
+    # Độ dài câu gốc ~ số ký tự = lượng nét / diện tích một ký tự: chữ hét to nhiều nét mà ít chữ,
+    # khung chữ nhỏ li ti (chú thích, tiếng Anh) ít nét mà nhiều chữ.
+    sizes = [glyph_size(page, r) if r.kind != "sfx" else 0. for r in regions]  # SFX đã có trần độ dài riêng
+    known = [g for g in sizes if g > 0]
+    g0 = float(np.median(known)) if known else 1.
+    ink = [v * (g0 / min(max(g, .5 * g0), 2.5 * g0)) ** 2 if g > 0 else v for v, g in zip(raw_ink, sizes)]
     chars = [max(1, len(s.strip())) for s in lines]
     # Hệ số đổi lượng chữ Nhật → số ký tự tiếng Việt, ước lượng trên cả trang.
     # Decorative SFX and a large untranslated footer can otherwise shrink the
@@ -79,18 +99,27 @@ def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str
     alpha = sum(chars) / sum(dialogue_ink or ink)
     # Lượng nét của một bóng thoại điển hình trên trang: SFX nhỏ hơn hẳn thường là dấu "!!", vạch hiệu ứng.
     text_ink = float(np.median([ink[i] for i, r in enumerate(regions) if r.kind != "sfx"] or ink))
+    raw_text_ink = float(np.median([raw_ink[i] for i, r in enumerate(regions) if r.kind != "sfx"] or raw_ink))
+    big = [r.kind == "sfx" and raw_ink[i] >= BIG_SFX * raw_text_ink for i, r in enumerate(regions)]
+    for i, r in enumerate(regions):
+        if big[i]:  # biển / chữ in cỡ một bóng thoại: chấm như chữ thường
+            skip[i] = max(skip[i], skip_cost(page, r) * 2.4)  # bỏ hệ số giảm của SFX (×0.25 → ×0.6)
 
     def match(i, a, b):
         got = sum(chars[a:b])
         exp = alpha * ink[i]
         fit = math.log((got + 6) / (exp + 6)) ** 2
-        cost = fit + (b - a - 1) * MERGE_PENALTY
+        cost = fit + (b - a - 1) * MERGE_PENALTY + MERGE_SHORT * sum(len(s.split()) <= 2 for s in lines[a:b]) * (b - a > 1)
         if _footer_strip(page, regions[i]):
             cost += .75
+        if raw_ink[i] < TINY_INK * raw_text_ink and max(len(s.split()) for s in lines[a:b]) >= 2:
+            cost += TINY_WORDS_PENALTY
         if regions[i].kind == "sfx":
             # Bản dịch SFX ngắn ("Vụt", "Ôm chặt") dù chữ gốc vẽ to: độ dài kỳ vọng có trần; câu thoại hiếm khi
             # rơi vào SFX. SFX nhỏ (dấu "!!", vạch hiệu ứng) ít khi được dịch: ưu tiên SFX lớn.
             sfit = math.log((got + 6) / (min(exp, SFX_MAX_CHARS) + 6)) ** 2
+            if big[i]:  # SFX lớn hoặc biển / chữ in trên tranh: câu ngắn kiểu SFX hay cụm từ đều hợp
+                return min(sfit * 4, fit) + 0.4
             space = _space_penalty(lines[a:b])
             cost = (sfit * 4 + (b - a - 1) * MERGE_PENALTY + 0.4 + space
                     + (0.8 * max(0.0, 1 - ink[i] / text_ink) if space else 0.0))
@@ -99,29 +128,67 @@ def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str
     INF = float("inf")
     dp = [[INF] * (m + 1) for _ in range(n + 1)]
     back = [[None] * (m + 1) for _ in range(n + 1)]
-    dp[0][0] = 0.0
+    for j in range(m + 1):
+        dp[0][j], back[0][j] = j * (DROP_COST + 1e-3), (j - 1, -1)  # ngang nhau thì để riêng câu sau
     for i in range(1, n + 1):
         for j in range(0, m + 1):
             best, arg = dp[i - 1][j] + skip[i - 1], (j, 0)
-            for k in range(1, min(MAX_LINES_PER_REGION, j) + 1):
+            most = 1 if regions[i - 1].kind == "sfx" else MAX_LINES_PER_REGION  # SFX / biển: một câu
+            for k in range(1, min(most, j) + 1):
                 c = dp[i - 1][j - k] + match(i - 1, j - k, j)
                 if c < best:
                     best, arg = c, (j - k, k)
+            if j and dp[i][j - 1] + DROP_COST < best:  # câu j-1 không hợp bóng nào quanh đó: để riêng
+                best, arg = dp[i][j - 1] + DROP_COST, (j - 1, -1)
             dp[i][j], back[i][j] = best, arg
     if dp[n][m] == INF:  # nhiều câu hơn sức chứa: dồn phần dư vào vùng cuối
         plan = assign_lines(page, regions, lines[: n * MAX_LINES_PER_REGION])
         if plan:
             plan[-1] = (plan[-1][0], plan[-1][1] + lines[n * MAX_LINES_PER_REGION:])
         return plan
-    out = []
+    out, dropped = [], []
     i, j = n, m
-    while i > 0:
+    while i > 0 or j > 0:
         pj, k = back[i][j]
+        if k == -1:
+            dropped.append((i - 1, lines[pj]))  # -1: trước mọi vùng
+            j = pj
+            continue
         if k:
             out.append((regions[i - 1], lines[pj:j]))
         i, j = i - 1, pj
     out.reverse()
-    return _swap_pass(out, regions, ink, alpha)
+    out = _swap_pass(out, regions, ink, alpha)
+    stack: dict[int, int] = {}
+    for anchor, line in reversed(dropped):  # theo thứ tự đọc: đặt ngay sau bóng đứng trước câu đó
+        k = stack[max(0, anchor)] = stack.get(max(0, anchor), -1) + 1  # xếp theo bóng mà khung bám vào
+        out.insert(_after(out, regions, anchor), (_orphan(page, regions[max(0, anchor)], k), [line]))
+    return out
+
+
+def _after(plan, regions, anchor: int) -> int:
+    """Vị trí trong plan ngay sau các vùng có thứ tự đọc ≤ anchor."""
+    order = {id(r): i for i, r in enumerate(regions)}
+    k = 0
+    for idx, (r, _) in enumerate(plan):
+        if order.get(id(r), -1) <= anchor:
+            k = idx + 1
+    return k
+
+
+def _orphan(page, near, k: int = 0):
+    """Câu không ghép được vào bóng nào: một khung riêng cạnh bóng đứng trước (câu thứ k xếp chồng xuống dưới),
+    để người dùng kéo vào đúng chỗ."""
+    from .page import Region
+
+    w, h = page.size
+    x1, y1, x2, y2 = near.box
+    bw, bh = int(max(x2 - x1, .16 * w)), int(.07 * h)
+    top = y2 + 8 + k * (bh + 8)
+    if top + bh > h:
+        top = max(0, y1 - (k + 1) * (bh + 8))
+    left = max(0, min(w - bw, x1))
+    return Region((left, top, left + bw, top + bh), kind="manual", cleaned=True, orphan=True)
 
 
 SWAP_GAIN = 1.5  # chỉ đổi khi độ khớp độ dài tốt lên rõ rệt
@@ -212,8 +279,12 @@ def apply_plan(page, plan, style=None) -> int:
     from .page import new_uid
     from .typeset_profiles import profile_style
 
-    n = 0
+    n, prev = 0, None
     for r, ls in plan:
+        if not any(x is r for x in page.regions):  # khung "chưa đặt": chèn ngay sau vùng đứng trước trong plan
+            at = next((i + 1 for i, x in enumerate(page.regions) if x is prev), 0)
+            page.regions.insert(at, r)
+        prev = r
         parts = split_region(page, r, ls) if len(ls) > 1 else None
         if parts:
             i = page.regions.index(r)
