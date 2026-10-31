@@ -216,12 +216,13 @@ def sort_reading_order(boxes: list[TextBox], right_to_left: bool = True, img: np
     xuống, trong hàng thì phải→trái (manga) hoặc trái→phải; trong một panel thì sắp theo hàng chữ."""
     if img is not None and len(boxes) > 1:
         gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        return _xy_cut(gray >= 235, boxes, (0, 0, gray.shape[1], gray.shape[0]), right_to_left, 0)
+        # Khe giữa panel: trắng, hoặc đen ở trang nền đen (hồi tưởng, mở đầu chương).
+        return _xy_cut((gray >= 235) | (gray <= 25), boxes, (0, 0, gray.shape[1], gray.shape[0]), right_to_left, 0)
     return _row_order(boxes, right_to_left)
 
 
 def _gutters(white: np.ndarray, axis: int, lo: int, hi: int) -> list[int]:
-    """Vị trí giữa các dải trắng (khe giữa panel) chạy hết bề ngang/dọc của khối."""
+    """Vị trí giữa các dải trơn (khe giữa panel, trắng hoặc đen) chạy hết bề ngang/dọc của khối."""
     frac = white.mean(axis=axis)
     is_white = frac >= 0.995  # khe thật giữa panel trắng gần như tuyệt đối
     cuts, start = [], None

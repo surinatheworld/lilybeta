@@ -440,7 +440,7 @@ var LilyzonoPS = (function () {
                 text.height = new UnitValue((layer.block_height + layer.size * 2) * 72 / doc.resolution, "pt");
                 text.position = [new UnitValue(layer.left - slack / 2, "px"), new UnitValue(layer.first_baseline - layer.ascent, "px")];
                 text.hyphenation = false;
-                art.name = (layer.redraw ? "REDRAW · " : "") + (i + 1) + ". " + layer.contents.replace(/[\r\u0003]/g, " ");
+                art.name = (layer.orphan ? "CHƯA ĐẶT · " : "") + (layer.redraw ? "REDRAW · " : "") + (i + 1) + ". " + layer.contents.replace(/[\r\u0003]/g, " ");
             }
             doc.activeLayer = group;
         } finally {
