@@ -35,6 +35,7 @@ def layer_specs(page) -> list[dict]:
     return [text_spec(r) for r in page.regions if r.cleaned and r.text.strip()]
 
 
+KERNING = {"optical": "OPTICAL", "metrics": "METRICSKERN", "none": "MANUAL"}  # AutoKernType của Photoshop
 BLEND_PS = {"normal": "NORMAL", "multiply": "MULTIPLY", "screen": "SCREEN", "darken": "DARKEN", "lighten": "LIGHTEN"}
 
 
@@ -75,7 +76,7 @@ def text_spec(r) -> dict:
         "caps": "ALLCAPS" if st.uppercase else ("SMALLCAPS" if st.small_caps else "NORMAL"),
         "underline": st.underline, "strike": st.strike,
         "baseline": "SUPERSCRIPT" if st.superscript else ("SUBSCRIPT" if st.subscript else "NORMAL"),
-        "kerning": "METRICSKERN" if st.kerning != "none" else "MANUAL",
+        "kerning": KERNING.get(st.kerning, "OPTICAL"),
         "antialias": ANTIALIAS.get(st.antialias, "SMOOTH"), "hyphenate": st.hyphenate,
         "indent_left": st.indent_left, "indent_right": st.indent_right, "indent_first": st.indent_first,
         "space_before": st.space_before, "space_after": st.space_after,
