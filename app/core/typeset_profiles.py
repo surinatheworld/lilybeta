@@ -23,8 +23,10 @@ _HAND = "SJ Chanighter Handwriting"
 ISSHIKI_FONTS = {"normal": _HAND, "thought": _HAND, "square": _HAND, "bold": "000 ObelixPro TB",
                  "free": "SJ SS Rosehip", "flustered": "SJ CCComicraft", "sfx": "MTO augie"}
 _RULES = {GAI_BANG: (KINDS, FONTS, {"thought"}), ISSHIKI: (ISSHIKI_KINDS, ISSHIKI_FONTS, {"thought", "square"})}
-# Chữ raw in đậm (gothic đậm khi hét): nét dày ≥ 13% cỡ chữ và mực phủ ≥ 54% ô chữ (thoại thường 8–11%, 37–53%).
-BOLD_STROKE, BOLD_DENSITY, SOLID_DENSITY = .13, .54, .78
+# Chữ raw in đậm (gothic đậm khi hét): nét dày ≥ 12% cỡ chữ và mực phủ ≥ 54% ô chữ (thoại thường 8–11%, 37–53%).
+BOLD_STROKE, BOLD_DENSITY, SOLID_DENSITY = .12, .54, .78
+# Viền bóng (độ lõm / cạnh ngắn của bóng): thắt ≥ 20% là hai bóng dính nhau; mây lõm ≥ 8%; nông hơn là viền run.
+PINCH, CLOUD_DENT = .2, .08
 _STUTTER = re.compile(r"(?:^|[\s\"'“(…])(?P<stem>\w{1,3})[-–—]\s*(?P=stem)", re.IGNORECASE)  # "e- em", "a- anh"
 
 
@@ -71,8 +73,11 @@ def classify_balloon(image: np.ndarray, box) -> str:
     return "normal" if shape == "free" else shape
 
 
-def balloon_shape(image: np.ndarray, box) -> str:
+def balloon_shape(image: np.ndarray, box, outline: bool = False) -> str:
     """"normal" | "square" | "thought" (cloud or rays) | "free" (lettering on the art, no closed balloon).
+
+    With `outline`, the dents of the outline are read more closely: one deep pinch is two touching balloons
+    ("normal"), many shallow dents are a trembling outline ("wobbly"), only deep scallops are a thought cloud.
 
     This is a geometric heuristic, not a semantic model. The user can override each
     region. Only a bounded, downsampled crop is inspected; input pixels are never changed.
@@ -121,12 +126,20 @@ def balloon_shape(image: np.ndarray, box) -> str:
             except cv2.error:  # self-touching scan contours can have a non-monotonic hull
                 defects = None
             if defects is not None:
-                dents = sum(depth / 256 > max(2, min(cw, ch) * .018) for _, _, _, depth in defects.reshape(-1, 4))
-                if dents >= 4:
+                depths = defects.reshape(-1, 4)[:, 3] / 256
+                dents = int((depths > max(2, min(cw, ch) * .018)).sum())
+                if outline:
+                    rel = np.sort(depths / max(1, min(cw, ch)))[::-1]
+                    if rel[0] >= PINCH:
+                        return "normal"  # hai bóng dính nhau: một chỗ thắt sâu, không phải mây
+                    if dents >= 4:
+                        return "thought" if np.median(rel[:4]) >= CLOUD_DENT else "wobbly"
+                elif dents >= 4:
                     return "thought"
         return "normal"
     if _ray_balloon(walls, seed, extent * scale):
-        return "thought"
+        # Isshiki: nét bao quanh chữ mà lòng bóng hở là bóng thoại bị hở viền (dính bóng khác / khung tranh).
+        return "normal" if outline else "thought"
     return "normal" if bounded else "free"
 
 
@@ -169,7 +182,8 @@ def _isshiki_kind(page, box) -> str:
         return "square"  # chữ trắng trong ô đen: lời dẫn / suy nghĩ khung vuông
     if feats["density"] >= SOLID_DENSITY or (feats["stroke"] >= BOLD_STROKE and feats["density"] >= BOLD_DENSITY):
         return "bold"
-    return balloon_shape(page.original, box)
+    shape = balloon_shape(page.original, box, outline=True)
+    return "normal" if shape == "wobbly" else shape  # viền lượn sóng: cả lời chào vui lẫn hốt hoảng, không đoán
 
 
 def region_kind(page, region) -> str:
