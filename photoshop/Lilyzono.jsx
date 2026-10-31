@@ -430,6 +430,7 @@ var LilyzonoPS = (function () {
                 text.useAutoLeading = false;
                 text.leading = new UnitValue(layer.leading * 72 / doc.resolution, "pt");
                 text.fauxBold = layer.faux_bold; text.fauxItalic = layer.faux_italic;
+                text.autoKerning = AutoKernType[layer.kerning || "OPTICAL"];
                 text.justification = Justification[layer.justification];
                 text.antiAliasMethod = AntiAlias.SMOOTH;
                 var color = new SolidColor(); color.rgb.hexValue = layer.color; text.color = color;

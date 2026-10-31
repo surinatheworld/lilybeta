@@ -184,9 +184,11 @@ class TextPanel(QTabWidget):
         g.addWidget(self.leading_box, 2, 3)
 
         self.kerning_box = QComboBox()
+        self.kerning_box.addItem("Optical", "optical")
         self.kerning_box.addItem("Theo font", "metrics")
         self.kerning_box.addItem("0", "none")
-        self.kerning_box.setToolTip("Kerning giữa các cặp ký tự (Metrics = theo font)")
+        self.kerning_box.setToolTip("Kerning giữa các cặp ký tự (Optical = Photoshop căn theo nét chữ, "
+                                    "Metrics = theo bảng kerning của font)")
         self.tracking_box = _num_combo(TRACKING)
         self.tracking_box.setToolTip("Giãn đều ký tự (Tracking), đơn vị 1/1000 em")
         g.addWidget(_icon_label("V/A", "Kerning"), 3, 0)

@@ -80,8 +80,9 @@ DRIVER = r"""
           app.preferences.rulerUnits = ruler;
           var spec = data.layers[data.layers.length - 1 - i];
           check(Math.abs(t.size.as("pt") * dpi / 72 - spec.size) < .05, "Wrong pixel font size");
+          check(String(t.autoKerning) === String(AutoKernType[spec.kerning]), "Wrong kerning: " + t.autoKerning);
           check(Math.abs((box[0]+box[2])/2 - spec.cx) <= Math.max(5, spec.size*.35), "Text shifted horizontally at " + dpi + " ppi: " + layer.name);
-          items.push({name:layer.name, contents:t.contents, font:t.font, italic:t.fauxItalic, kind:spec.typeset_kind, family:spec.family,
+          items.push({name:layer.name, contents:t.contents, font:t.font, italic:t.fauxItalic, kerning:String(t.autoKerning), kind:spec.typeset_kind, family:spec.family,
                       pixels:t.size.as("pt") * dpi / 72,
                       bounds:box});
         } else check(layer.name === "Redraw", "Unexpected non-text layer");

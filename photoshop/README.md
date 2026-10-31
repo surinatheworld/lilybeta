@@ -14,7 +14,7 @@ lưới chấm, nền chuyển màu; **SFX không xoá**, chữ dịch đặt đ
 **Căn chữ:** chữ dàn theo đúng hình lòng bóng, phủ khoảng 70% bề ngang bóng và đặt chính giữa (khoảng hở tới
 mép bóng bằng nhau 4 phía); tự xuống dòng cho khối chữ bo tròn (dòng
 giữa dài, trên/dưới ngắn – vd 1·2·3·2·1 từ), khung ô vuông thì các dòng dài đều; không cắt đôi từ ghép ("cảm ơn",
-"trân trọng"…). Mỗi dòng là một lần xuống dòng thật trong layer chữ, sửa tay trong Photoshop như thường.
+"trân trọng"…). Mỗi dòng là một lần xuống dòng thật trong layer chữ, kerning Optical; sửa tay trong Photoshop như thường.
 
 ## Chạy
 

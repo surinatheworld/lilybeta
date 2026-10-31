@@ -66,7 +66,7 @@ class TextStyle:
     style_name: str = ""  # kiểu mặt chữ của font (Regular, Light, Bold…); "" = mặc định
     leading: float = 0.0  # khoảng cách giữa các dòng (px); 0 = Tự động
     tracking: int = 0  # giãn đều các ký tự, đơn vị 1/1000 em
-    kerning: str = "metrics"  # "metrics" (theo font) | "none" (0)
+    kerning: str = "optical"  # "optical" (Photoshop tự căn theo nét) | "metrics" (theo font) | "none" (0)
     vscale: float = 100.0  # co giãn dọc (%)
     hscale: float = 100.0  # co giãn ngang (%)
     baseline_shift: float = 0.0  # dịch đường cơ sở (px, dương = lên)
