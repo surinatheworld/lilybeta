@@ -133,8 +133,10 @@ def _lines_for(pages: dict[int, list[str]], doc_name: str, single: bool) -> list
 
 
 def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", size=None, right_to_left: bool = True,
-                 detector=None, report=None, profile: str = GAI_BANG) -> dict:
-    """Một trang: nhận diện, ghép thoại, xoá chữ theo luật "chỉ chỗ dễ", dàn chữ; ghi ảnh Redraw/xem trước."""
+                 detector=None, report=None, profile: str = GAI_BANG, redrawn: str | None = None) -> dict:
+    """Một trang: nhận diện, ghép thoại, xoá chữ theo luật "chỉ chỗ dễ", dàn chữ; ghi ảnh Redraw/xem trước.
+
+    `redrawn`: ảnh đã redraw sẵn (cùng khung): làm nền thay cho phần xoá chữ của tool; chữ vẫn nhận diện trên raw."""
     report = report or (lambda step: None)
     page = Page(image)
     if size is not None and list(page.size) != list(size):
@@ -142,6 +144,8 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
     page.typeset_profile = profile
     report("Nhận diện chữ…")
     page.detect(detector or TextDetector(), right_to_left=right_to_left)
+    if redrawn:
+        page.set_redrawn(redrawn)
     plan = assign_lines(page, page.regions, lines)
     if not plan:
         raise ValueError("Không nhận diện được khung chữ. Hãy dùng ảnh rõ nét hơn.")
@@ -150,8 +154,8 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
     report(f"Xoá chữ ở chỗ dễ ({len(translated)} khung)…")
     page.inpainter = easy_only
     for r in translated:
-        if r.kind == "sfx":  # SFX không xoá: chữ dịch đặt đè lên bản gốc
-            r.cleaned, r.needs_redraw = True, True
+        if r.kind == "sfx":  # SFX không xoá: chữ dịch đặt đè lên bản gốc (trừ khi bản redraw đã xoá)
+            r.cleaned, r.needs_redraw = True, not page.redrawn_covers(r)
             page.clean(r)
     page.clean_many([r for r in translated if r.kind != "sfx"])
     report("Dựng bản xem trước…")

@@ -12,6 +12,10 @@ class TranslationNotesTests(unittest.TestCase):
         self.assertEqual(clean_line("chữ dọc: chuyến đi đến suối nước nóng!!"), "chuyến đi đến suối nước nóng!!")
         self.assertEqual(clean_line("chữ trên gáy 3 cuốn sách: hồi ức"), "hồi ức")
         self.assertEqual(clean_line("vé tàu:"), "")
+        self.assertEqual(clean_line("(bỏ)"), "")
+        self.assertEqual(clean_line("(bỏ hết)"), "")
+        self.assertEqual(clean_line("trans note cho editor: chap này có câu tiếng Anh"), "")
+        self.assertEqual(clean_line("sorr… (xin-)"), "sorr… (xin-)")
         for line in ("(thì thầm)", "Chặng: Hakone-Yumoto ➔ Shinjuku", "chap 39: Isshiki Rinna đang lo lắng",
                      "Meishi òa khóc sau khi lạc mất cô bạn gái đầu đời (sư phụ)!?"):
             self.assertEqual(clean_line(line), line)
