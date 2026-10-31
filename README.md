@@ -9,7 +9,7 @@ Thay chữ gốc (tiếng Nhật, Hàn, Trung…) trên ảnh truyện bằng b�
 3. Bấm **Tạo layer trong Photoshop**: thêm một nhóm gồm layer **Redraw** trong suốt và mỗi câu một **layer chữ thật sửa được**.
 
 Tool giữ các layer có sẵn, kích thước và độ phân giải của tài liệu. Undo một lần để bỏ nhóm vừa thêm.
-Typeset Gái Băng tự chọn bốn font theo hình khung; chỉ xoá các vùng đã ghép bản dịch, giữ các SFX chưa dịch.
+Typeset Gái Băng / Isshiki tự chọn font theo loại thoại và hình khung; chỉ xoá các vùng đã ghép bản dịch, giữ các SFX chưa dịch.
 Chạy `build_photoshop.bat` để đóng gói bản không cần Python, rồi giữ cả thư mục `dist/LilyzonoPhotoshop`.
 Chi tiết: [hướng dẫn Photoshop](photoshop/README.md). Bộ xử lý chạy trên máy, không cần mở ứng dụng Lilyzono riêng.
 
@@ -87,6 +87,23 @@ hở hoặc dính nét tranh có thể bị nhận nhầm: chọn khung rồi đ
 Chọn **Tự nhận dạng** để bỏ lựa chọn thủ công. Font/kiểu mới hỗ trợ Ctrl+Z; chế độ và loại khung được lưu trong `.lzp`.
 Cỡ chữ, màu, viền, bóng đổ và căn lề vẫn giữ theo thiết lập của bạn. Chọn Typeset **Tự do** để dùng font tuỳ ý.
 Các font cần được cài trên máy; tool báo những font còn thiếu, không tự tải font.
+
+### Typeset Isshiki
+
+Chọn **Typeset → Typeset Isshiki** (trong Photoshop: **Bộ font → Typeset Isshiki**). Font theo loại thoại:
+
+| Loại thoại | Font | Kiểu | Tool nhận ra bằng |
+|---|---|---|---|
+| Thoại thường – khung tròn kín | SJ Chanighter Handwriting | Thường | hình khung |
+| Suy nghĩ – khung tròn có tia / mây | SJ Chanighter Handwriting | Nghiêng | hình khung |
+| Suy nghĩ – khung vuông (cả ô đen chữ trắng) | SJ Chanighter Handwriting | Nghiêng | hình khung |
+| Thoại in đậm | 000 ObelixPro TB | Thường | chữ raw in đậm (nét dày, đặc) |
+| Suy nghĩ không có khung | SJ SS Rosehip | Thường | chữ nằm trên tranh, không có khung kín |
+| Thoại lúng túng | SJ CCComicraft | Thường | câu nói lắp: "e- em…", "a- anh…" |
+| SFX | MTO augie | Thường | nhãn SFX |
+
+Chữ raw in đậm được ưu tiên trước, rồi đến câu nói lắp, rồi hình khung. Nhận nhầm thì chọn khung và đổi **Loại khung**
+như với Gái Băng.
 
 ### Giao diện và hiệu năng
 

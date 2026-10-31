@@ -228,8 +228,30 @@ var LilyzonoPS = (function () {
         throw new Error("Không tìm thấy bản dịch theo số trang của " + name + ". Hãy dán riêng thoại của trang này.");
     }
 
+    var PROFILES = [
+        {key:"gai_bang", name:"Gái Băng", fonts:"WildWords2 · AnimeAce3 nghiêng · CE Scriptorama · MTO augie"},
+        {key:"isshiki", name:"Isshiki", fonts:"Chanighter Handwriting (suy nghĩ: nghiêng) · ObelixPro (in đậm) · " +
+                                             "SS Rosehip (không khung) · CCComicraft (lúng túng)"}
+    ];
+    var SETTINGS = "lilyzono-settings";
+
+    function savedProfile() {
+        try { return app.getCustomOptions(SETTINGS).getString(stringIDToTypeID("profile")); }
+        catch (error) { return PROFILES[0].key; }
+    }
+
+    function saveProfile(key) {
+        try {
+            var desc = new ActionDescriptor();
+            desc.putString(stringIDToTypeID("profile"), key);
+            app.putCustomOptions(SETTINGS, desc, true);
+        } catch (error) {}
+    }
+
+    function groupName(data) { return "Lilyzono · " + (data.profile_name || "Typeset"); }
+
     function options(doc, display) {
-        var win = new Window("dialog", "Lilyzono · Typeset Gái Băng");
+        var win = new Window("dialog", "Lilyzono · Typeset");
         win.orientation = "column"; win.alignChildren = "fill";
         var size = pixelSize(doc), translationFile = null;
         win.add("statictext", undefined, doc.name + " · " + size[0] + " × " + size[1] + " px · " +
@@ -256,7 +278,22 @@ var LilyzonoPS = (function () {
         var rtl = win.add("checkbox", undefined, "Đọc manga: phải → trái"); rtl.value = true;
         win.add("statictext", undefined, "Xoá chữ: chỉ chỗ dễ (bóng thoại, nền trơn). Chữ trên tranh và SFX đặt đè lên " +
                 "bản gốc – layer tên REDRAW; redraw tay hoặc Upload bản redraw SFX.", {multiline:true});
-        win.add("statictext", undefined, "Font: WildWords2 · AnimeAce3 nghiêng · CE Scriptorama · MTO augie");
+        var pick = win.add("group");
+        pick.add("statictext", undefined, "Bộ font:");
+        var names = [], chosen = savedProfile(), i;
+        for (i = 0; i < PROFILES.length; i++) names.push("Typeset " + PROFILES[i].name);
+        var profileBox = pick.add("dropdownlist", undefined, names);
+        var fontLabel = win.add("statictext", undefined, "", {multiline:true}); fontLabel.preferredSize = [560, 34];
+        profileBox.onChange = function () {
+            if (profileBox.selection) fontLabel.text = "Font: " + PROFILES[profileBox.selection.index].fonts;
+        };
+        profileBox.selection = 0;
+        for (i = 0; i < PROFILES.length; i++) if (PROFILES[i].key === chosen) profileBox.selection = i;
+        function profile() {
+            var key = PROFILES[profileBox.selection ? profileBox.selection.index : 0].key;
+            saveProfile(key);
+            return key;
+        }
         var buttons = win.add("group"); buttons.alignment = "fill";
         var sfx = buttons.add("button", undefined, "Upload bản redraw SFX…");
         var gap = buttons.add("group"); gap.alignment = ["fill", "center"];
@@ -286,11 +323,11 @@ var LilyzonoPS = (function () {
                 if (missing.length === app.documents.length) { alert("Bản dịch không có số trang khớp tên ảnh nào (vd 013.jpg ↔ 13)."); return; }
                 if (missing.length && !confirm("Không có thoại cho: " + missing.join(", ") + ". Bỏ qua các trang này?")) return;
             }
-            win.result = translation({protocol:1, profile:"gai_bang", mode:"batch", right_to_left:rtl.value, engine:"simple"});
+            win.result = translation({protocol:1, profile:profile(), mode:"batch", right_to_left:rtl.value, engine:"simple"});
             win.close(1);
         };
         go.onClick = function () {
-            var request = {protocol:1, profile:"gai_bang", mode:"page", right_to_left:rtl.value, engine:"simple"};
+            var request = {protocol:1, profile:profile(), mode:"page", right_to_left:rtl.value, engine:"simple"};
             if (translationFile) { win.result = translation(request); win.close(1); return; }
             var lines;
             try { lines = translationLines(input.text, doc.name); } catch (error) { alert(error.message); return; }
@@ -375,7 +412,7 @@ var LilyzonoPS = (function () {
         try {
             app.preferences.rulerUnits = Units.PIXELS; app.preferences.typeUnits = TypeUnits.PIXELS;
             app.displayDialogs = DialogModes.NO;
-            var group = doc.layerSets.add(); group.name = "Lilyzono · Typeset Gái Băng";
+            var group = doc.layerSets.add(); group.name = groupName(data);
             opened = app.open(new File(data.redraw));
             var redraw = opened.activeLayer.duplicate(doc, ElementPlacement.PLACEATBEGINNING);
             opened.close(SaveOptions.DONOTSAVECHANGES); opened = null;
@@ -452,7 +489,7 @@ var LilyzonoPS = (function () {
         context = {doc:doc, data:data};
         app.activeDocument = doc;
         var before = doc.activeHistoryState;
-        try { doc.suspendHistory("Lilyzono · Typeset Gái Băng", "LilyzonoPS.apply()"); }
+        try { doc.suspendHistory(groupName(data), "LilyzonoPS.apply()"); }
         catch (error) { doc.activeHistoryState = before; throw error; }
         finally { context = null; }
     }

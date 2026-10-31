@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 
 import cv2
 import numpy as np
@@ -9,10 +10,39 @@ import numpy as np
 from .typeset import TextStyle
 
 GAI_BANG = "gai_bang"
+ISSHIKI = "isshiki"
+PROFILES = {GAI_BANG: "Typeset Gái Băng", ISSHIKI: "Typeset Isshiki"}
 KINDS = {"auto": "Tự nhận dạng", "normal": "Thoại thường · tròn kín",
          "thought": "Suy nghĩ · mây / tia", "square": "Khung ô vuông", "sfx": "SFX"}
 FONTS = {"normal": "000 WildWords2 TB", "thought": "000 AnimeAce3 [TeddyBear]",
          "square": "00 CE Scriptorama Markdown JF", "sfx": "MTO augie"}
+ISSHIKI_KINDS = {"auto": "Tự nhận dạng", "normal": "Thoại thường · tròn kín", "thought": "Suy nghĩ · tròn có tia",
+                 "square": "Suy nghĩ · khung vuông", "bold": "Thoại in đậm", "free": "Suy nghĩ · không khung",
+                 "flustered": "Thoại lúng túng", "sfx": "SFX"}
+_HAND = "SJ Chanighter Handwriting"
+ISSHIKI_FONTS = {"normal": _HAND, "thought": _HAND, "square": _HAND, "bold": "000 ObelixPro TB",
+                 "free": "SJ SS Rosehip", "flustered": "SJ CCComicraft", "sfx": "MTO augie"}
+_RULES = {GAI_BANG: (KINDS, FONTS, {"thought"}), ISSHIKI: (ISSHIKI_KINDS, ISSHIKI_FONTS, {"thought", "square"})}
+# Chữ raw in đậm (gothic đậm khi hét): nét dày ≥ 13% cỡ chữ và mực phủ ≥ 54% ô chữ (thoại thường 8–11%, 37–53%).
+BOLD_STROKE, BOLD_DENSITY, SOLID_DENSITY = .13, .54, .78
+_STUTTER = re.compile(r"(?:^|[\s\"'“(…])(?P<stem>\w{1,3})[-–—]\s*(?P=stem)", re.IGNORECASE)  # "e- em", "a- anh"
+
+
+def kinds_for(profile: str) -> dict:
+    return _RULES.get(profile, _RULES[GAI_BANG])[0]
+
+
+def fonts_for(profile: str) -> dict:
+    return _RULES.get(profile, _RULES[GAI_BANG])[1]
+
+
+def is_italic(profile: str, kind: str) -> bool:
+    return kind in _RULES.get(profile, _RULES[GAI_BANG])[2]
+
+
+def flustered(text: str) -> bool:
+    """Câu nói lắp ("e- em ổn", "a- anh xin lỗi!") – thoại lúng túng."""
+    return bool(_STUTTER.search(text or ""))
 
 
 def _ray_balloon(walls, center, text_size):
@@ -36,7 +66,13 @@ def _ray_balloon(walls, center, text_size):
 
 
 def classify_balloon(image: np.ndarray, box) -> str:
-    """Infer round/rectangular/scalloped/radiating balloons; default to ordinary dialogue.
+    """Infer round/rectangular/scalloped/radiating balloons; default to ordinary dialogue."""
+    shape = balloon_shape(image, box)
+    return "normal" if shape == "free" else shape
+
+
+def balloon_shape(image: np.ndarray, box) -> str:
+    """"normal" | "square" | "thought" (cloud or rays) | "free" (lettering on the art, no closed balloon).
 
     This is a geometric heuristic, not a semantic model. The user can override each
     region. Only a bounded, downsampled crop is inspected; input pixels are never changed.
@@ -89,38 +125,88 @@ def classify_balloon(image: np.ndarray, box) -> str:
                 if dents >= 4:
                     return "thought"
         return "normal"
-    return "thought" if _ray_balloon(walls, seed, extent * scale) else "normal"
+    if _ray_balloon(walls, seed, extent * scale):
+        return "thought"
+    return "normal" if bounded else "free"
+
+
+def _runs(mask: np.ndarray) -> np.ndarray:
+    """Lengths of the runs of 1s along each row of a 0/1 mask."""
+    padded = np.pad(mask.astype(np.int8), ((0, 0), (1, 1)))
+    d = np.diff(padded, axis=1)
+    return np.nonzero(d == -1)[1] - np.nonzero(d == 1)[1]
+
+
+def lettering_features(image: np.ndarray, text_mask, box) -> dict:
+    """Stroke weight of the raw lettering: stroke width relative to the character size, and how much of each glyph
+    cell is ink. Bold gothic (shouting) has strokes ~2x thicker than ordinary dialogue at the same size."""
+    h, w = image.shape[:2]
+    x1, y1, x2, y2 = map(int, box)
+    x1, y1, x2, y2 = max(0, x1), max(0, y1), min(w, x2), min(h, y2)
+    if x2 - x1 < 4 or y2 - y1 < 4 or text_mask is None:
+        return {"stroke": 0., "density": 0., "char": 0., "dark": False}
+    gray = cv2.cvtColor(image[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+    dark = bool(np.median(gray) < 110)
+    if dark:  # chữ trắng trên nền đen (ô vuông đen)
+        gray = 255 - gray
+    cells = (text_mask[y1:y2, x1:x2] > .5).astype(np.uint8)
+    ink = ((gray < 110) & (cells > 0)).astype(np.uint8)
+    area = int(ink.sum())
+    if area < 20 or cells.sum() < 50:
+        return {"stroke": 0., "density": 0., "char": 0., "dark": dark}
+    contours, _ = cv2.findContours(ink, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    perimeter = sum(cv2.arcLength(c, True) for c in contours)
+    stroke = 2 * area / max(1., perimeter)
+    # Glyph size: thickest column (vertical text) or row (horizontal) of ink; furigana columns are thinner.
+    across = [r.max() for r in (_runs(ink.any(0)[None]), _runs(ink.any(1)[None])) if len(r)]
+    char = float(min(across)) if across else 0.
+    return {"stroke": stroke / max(1., char), "density": area / float(cells.sum()), "char": char, "dark": dark}
+
+
+def _isshiki_kind(page, box) -> str:
+    feats = lettering_features(page.original, getattr(page, "text_mask", None), box)
+    if feats["dark"]:
+        return "square"  # chữ trắng trong ô đen: lời dẫn / suy nghĩ khung vuông
+    if feats["density"] >= SOLID_DENSITY or (feats["stroke"] >= BOLD_STROKE and feats["density"] >= BOLD_DENSITY):
+        return "bold"
+    return balloon_shape(page.original, box)
 
 
 def region_kind(page, region) -> str:
+    profile = getattr(page, "typeset_profile", "") or GAI_BANG
+    fonts = fonts_for(profile)
     override = getattr(region, "typeset_kind", "auto")
-    if override in FONTS:
+    if override in fonts:
         return override
     if region.kind == "sfx":
         return "sfx"
     cache = getattr(page, "_balloon_cache", None)
     if cache is None:
         cache = page._balloon_cache = {}
-    key = tuple(region.box)
+    key = (profile, tuple(region.box))
     if key not in cache:
-        cache[key] = classify_balloon(page.original, region.box)
-    return cache[key]
+        cache[key] = _isshiki_kind(page, region.box) if profile == ISSHIKI else classify_balloon(page.original, region.box)
+    kind = cache[key]
+    if profile == ISSHIKI and kind != "bold" and flustered(region.text):
+        return "flustered"
+    return kind
 
 
 def profile_style(page, region, base: TextStyle) -> TextStyle:
     style = base.copy()
-    if getattr(page, "typeset_profile", "") == GAI_BANG:
+    profile = getattr(page, "typeset_profile", "")
+    if profile in PROFILES:
         kind = region_kind(page, region)
-        style.family = FONTS[kind]
+        style.family = fonts_for(profile)[kind]
         style.style_name = ""
         style.bold = False
-        style.italic = kind == "thought"
+        style.italic = is_italic(profile, kind)
         if kind == "square" and style.shape == "round":
             style.shape = "even"  # khung chữ nhật: các dòng dài đều, không bo tròn
     return style
 
 
 def apply_profile(page, regions=None) -> None:
-    if getattr(page, "typeset_profile", "") == GAI_BANG:
+    if getattr(page, "typeset_profile", "") in PROFILES:
         for region in page.regions if regions is None else regions:
             region.style = profile_style(page, region, region.style)

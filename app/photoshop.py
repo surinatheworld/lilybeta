@@ -39,7 +39,7 @@ from .core.page import Page
 from .core.paths import model_path
 from .core.psd_export import clean_layer, layer_specs
 from .core.typeset import TextStyle
-from .core.typeset_profiles import FONTS, GAI_BANG
+from .core.typeset_profiles import GAI_BANG, PROFILES, fonts_for, region_kind
 
 PROTOCOL = 1
 
@@ -104,9 +104,9 @@ def register_fonts(families) -> None:
 def _check_setup(profile: str) -> None:
     if not Path(model_path("comictextdetector.pt.onnx")).is_file():
         raise ValueError("Thiếu model comictextdetector.pt.onnx. Chạy build_photoshop.bat hoặc chép model vào thư mục models.")
-    if profile != GAI_BANG:
+    if profile not in PROFILES:
         raise ValueError("Chưa hỗ trợ bộ font này.")
-    missing = [font for font in FONTS.values() if not files_for(font)] if sys.platform == "win32" else []
+    missing = sorted({font for font in fonts_for(profile).values() if not files_for(font)}) if sys.platform == "win32" else []
     if missing:
         raise ValueError("Cần cài font trước khi chạy: " + ", ".join(missing))
 
@@ -133,13 +133,13 @@ def _lines_for(pages: dict[int, list[str]], doc_name: str, single: bool) -> list
 
 
 def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", size=None, right_to_left: bool = True,
-                 detector=None, report=None) -> dict:
+                 detector=None, report=None, profile: str = GAI_BANG) -> dict:
     """Một trang: nhận diện, ghép thoại, xoá chữ theo luật "chỉ chỗ dễ", dàn chữ; ghi ảnh Redraw/xem trước."""
     report = report or (lambda step: None)
     page = Page(image)
     if size is not None and list(page.size) != list(size):
         raise ValueError("Kích thước ảnh chụp không khớp tài liệu Photoshop.")
-    page.typeset_profile = GAI_BANG
+    page.typeset_profile = profile
     report("Nhận diện chữ…")
     page.detect(detector or TextDetector(), right_to_left=right_to_left)
     plan = assign_lines(page, page.regions, lines)
@@ -168,7 +168,8 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
         spec["source_box"] = list(r.box)
         spec["family"] = r.style.family
         spec["kind"] = r.kind
-    return {"size": list(page.size), "redraw": str(folder / f"{prefix}redraw.png"),
+        spec["typeset_kind"] = region_kind(page, r)
+    return {"size": list(page.size), "profile_name": PROFILES[profile], "redraw": str(folder / f"{prefix}redraw.png"),
             "preview": str(folder / f"{prefix}preview-ui.png"), "layers": specs, "detected": len(page.regions),
             "needs_redraw": sum(r.needs_redraw for r in translated)}
 
@@ -216,9 +217,10 @@ def process_job(path: Path, report=None) -> dict:
     if mode == "sfx":
         report("So ảnh redraw với ảnh gốc…")
         return {**base, **redraw_sfx(request["image"], request["redrawn"], folder / "sfx_redraw.png")}
-    _check_setup(request.get("profile", GAI_BANG))
+    profile = request.get("profile", GAI_BANG)
+    _check_setup(profile)
     report("Nạp font và model…")
-    register_fonts(FONTS.values())
+    register_fonts(fonts_for(profile).values())
     detector = TextDetector()
     rtl = request.get("right_to_left", True)
     if mode == "batch":
@@ -235,7 +237,7 @@ def process_job(path: Path, report=None) -> dict:
                 continue
             try:
                 res = typeset_page(item["image"], lines, folder, f"p{i}_", item.get("size"), rtl, detector,
-                                   lambda text, step=step: report(step + text))
+                                   lambda text, step=step: report(step + text), profile)
                 out.append({"ok": True, "doc_id": item.get("doc_id"), "doc_name": name, **res})
             except Exception as exc:  # noqa: BLE001 - trang lỗi không làm hỏng cả chương
                 out.append({"ok": False, "doc_id": item.get("doc_id"), "doc_name": name, "error": str(exc)})
@@ -245,7 +247,7 @@ def process_job(path: Path, report=None) -> dict:
         lines = _lines_for(_translations(request), request.get("doc_name", ""), True)
         if not lines:
             raise ValueError(f"Bản dịch không có trang {page_number(request.get('doc_name', ''))}.")
-    return {**base, **typeset_page(request["image"], lines, folder, "", request.get("size"), rtl, detector, report)}
+    return {**base, **typeset_page(request["image"], lines, folder, "", request.get("size"), rtl, detector, report, profile)}
 
 
 def _failure(job: Path, exc: Exception) -> dict:
