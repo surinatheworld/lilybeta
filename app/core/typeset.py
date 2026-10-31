@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, astuple, dataclass
 import math
+import re
 from functools import lru_cache
 
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -40,6 +41,9 @@ BUBBLE_FILL_NARROW = (0.86, 0.92)  # bóng hẹp mà chữ bị teo: nới lề 
 MIN_SIZE_RATIO = 0.85  # …tới khi chữ ≥ 85% cỡ chuẩn của trang
 SHORT_FILL = 0.6  # câu ngắn được to hơn cỡ chuẩn tới khi phủ nửa bề ngang bóng…
 SHORT_GROW = 1.5  # …nhưng không quá 1,5 lần cỡ chuẩn (bản typeset tay: "Vâng", "Nagi" 30px khi cỡ chuẩn 24px)
+BREAK_HYPHEN = 0.3  # ngắt ở dấu gạch trong tên ("Tanaka-|kun", "Yamada-|san"): được, nhưng ưu tiên chỗ cách
+TALL = math.log(1 / 1.6)  # bóng cao hơn 1,6 lần bề ngang: mỗi dòng một từ cũng được ("THẬT / SAO / CƠ!?")
+SHY = "\u00ad"  # đánh dấu chỗ ngắt được trong từ có gạch nối: nối lại thành "-"
 SYMMETRY_WEIGHT = 0.6  # phạt khối bo tròn lệch: dòng trên và dòng dưới tương ứng dài khác nhau
 SHRINK_MAX = 0.15  # được nhỏ chữ tối đa 15% so với cỡ lớn nhất vừa khung…
 SHRINK_COST = 1.2  # …nếu điểm dáng tốt lên hơn 0,12 cho mỗi 10% nhỏ đi
@@ -214,12 +218,15 @@ def _layout(text: str, style_key: tuple, w: int, h: int):
     _, iw, ih = _inner(style, w, h)
     first_w = max(1.0, iw - style.indent_first)
 
+    # Từ có gạch nối ("Tanaka-kun") được xuống dòng ngay sau dấu gạch ("Tanaka- / kun") khi thiếu chỗ.
+    flow = "\n".join(" ".join(_words(para)) for para in text.split("\n"))
+
     def fit(size: int):
         m = _Metrics(style, size)
-        lines = wrap(text, m, iw, first_w, style.hyphenate)
+        lines = [(_join([ln]), a, b) for ln, a, b in wrap(flow, m, iw, first_w, style.hyphenate)]
         widest = max((m.adv(ln) for ln, _, _ in lines), default=0)
         # Không cắt đôi một từ (vd "Chu|yện"): từ dài nhất phải vừa một dòng.
-        longest_word = max((m.adv(wd) for wd in text.split()), default=0)
+        longest_word = max((m.adv(_join([wd])) for wd in _words(text)), default=0)
         ok = _block_height(lines, m, style) <= ih and widest <= iw + 0.5 and longest_word <= first_w + 0.5
         return ok, size, tuple(lines)
 
@@ -259,12 +266,26 @@ def _profile(n: int, shape: str) -> list[float]:
     return [(1 - ((i + .5 - r) / r) ** 2) ** ROUND_POWER for i in range(n)]
 
 
+def _words(text: str) -> tuple[str, ...]:
+    """Các từ để ngắt dòng; từ có gạch nối giữa hai chữ ("Tanaka-kun") tách thành hai phần ngắt được."""
+    out = []
+    for word in text.split():
+        parts = re.split(r"(?<=\w)-(?=\w)", word)
+        out += [p + SHY for p in parts[:-1]] + [parts[-1]]
+    return tuple(out)
+
+
+def _join(words) -> str:
+    """Ghép các từ thành một dòng: phần của từ có gạch nối nối lại bằng "-", cuối dòng thì giữ "-"."""
+    return " ".join(words).replace(SHY + " ", "-").replace(SHY, "-")
+
+
 @lru_cache(maxsize=2048)
 def _segments(words: tuple[str, ...], style_key: tuple, size: int):
     """seg[i][j] = bề ngang của words[i:j] khi đặt trên một dòng."""
     m = _Metrics(TextStyle(*style_key), size)
     k = len(words)
-    return tuple(tuple(m.adv(" ".join(words[i:j])) if j > i else 0.0 for j in range(k + 1)) for i in range(k + 1))
+    return tuple(tuple(m.adv(_join(words[i:j])) if j > i else 0.0 for j in range(k + 1)) for i in range(k + 1))
 
 
 @lru_cache(maxsize=20000)
@@ -282,7 +303,9 @@ def _break(words: tuple[str, ...], style_key: tuple, size: int, caps: tuple[floa
     # Xuống dòng giữa từ ghép ("Cảm | ơn") bị phạt nặng (BREAK_WORD); sau dấu phẩy/chấm thì được thưởng.
     after = [0.0] * (k + 1)
     for j in range(1, k):
-        if joined(words[j - 1], words[j]):
+        if words[j - 1].endswith(SHY):
+            after[j] = (BREAK_HYPHEN * W) ** 2
+        elif joined(words[j - 1], words[j]):
             after[j] = (BREAK_WORD * W) ** 2
         elif final_particle(words[j - 1], words[j]):  # "ạ." một chữ cái đứng riêng trông như rơi chữ: phạt nặng
             after[j] = ((BREAK_WORD if len(bare(words[j])) == 1 else BREAK_PARTICLE) * W) ** 2
@@ -327,14 +350,14 @@ def _score(style: TextStyle, seg, res, lh: float, want: float, k: int) -> float:
         # …và cân hai đầu: dòng trên và dòng dưới tương ứng dài gần bằng nhau (không chỉ một chữ trơ trọi ở đỉnh).
         pairs = n // 2
         score += SYMMETRY_WEIGHT * sum(abs(widths[i] - widths[n - 1 - i]) for i in range(pairs)) / (pairs * widest)
-    if n > max(1, (2 * k + 2) // 3):
-        score += 1.0  # trung bình mỗi dòng dưới 1,5 từ: chỉ dùng khi không còn cách khác
+    if n > max(1, (2 * k + 2) // 3) and want > TALL:
+        score += 1.0  # trung bình mỗi dòng dưới 1,5 từ: chỉ dùng khi không còn cách khác (trừ bóng cao, hẹp)
     return score
 
 
 def _lines_of(words, cuts):
     n = len(cuts) - 1
-    return tuple((" ".join(words[a:b]), i == 0, i == n - 1) for i, (a, b) in enumerate(zip(cuts, cuts[1:])))
+    return tuple((_join(words[a:b]), i == 0, i == n - 1) for i, (a, b) in enumerate(zip(cuts, cuts[1:])))
 
 
 def _shapeable(text: str, style: TextStyle) -> bool:
@@ -348,7 +371,7 @@ def _shape_lines(text: str, style: TextStyle, style_key: tuple, size: int, iw: f
     cách ngắt thường: văn bản có xuống dòng tay, căn trái/phải, dàn đều, thụt dòng đầu, từ dài hơn cả dòng)."""
     if not _shapeable(text, style):
         return None
-    words = tuple(text.split())
+    words = _words(text)
     k = len(words)
     if k < 2:
         return None
@@ -398,7 +421,7 @@ def place_in_shape(text: str, style: TextStyle, shape) -> tuple[int, int, int, i
 def _place(text: str, style_key: tuple, shape):
     style = TextStyle(*style_key)
     text = prepare(text, style)
-    words = tuple(text.split())
+    words = _words(text)
     if not words or not _shapeable(text, style) or style.indent_left or style.indent_right:
         return None
     cx, cy, rows = shape
@@ -427,7 +450,7 @@ def _place(text: str, style_key: tuple, shape):
         seg = _segments(words, style_key, size)
         widest_word = max(seg[i][i + 1] for i in range(k))
         best = None
-        for n in range(1, min(k, (2 * k + 2) // 3 + 2) + 1):
+        for n in range(1, (k if want <= TALL else min(k, (2 * k + 2) // 3 + 2)) + 1):
             top = cy - n * m.lh / 2
             if top + .1 * m.lh < lo_y or top + (n - .1) * m.lh > hi_y:
                 break
