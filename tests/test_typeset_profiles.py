@@ -4,7 +4,8 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from app.core.typeset_profiles import FONTS, GAI_BANG, classify_balloon, profile_style, region_kind
+from app.core.typeset_profiles import (FONTS, GAI_BANG, ISSHIKI, ISSHIKI_FONTS, balloon_shape, classify_balloon, flustered,
+                                      lettering_features, profile_style, region_kind)
 from app.core.page import Region
 from app.core.typeset import TextStyle
 
@@ -91,6 +92,94 @@ class BalloonTests(unittest.TestCase):
             region.typeset_kind = "square"
             self.assertEqual(region_kind(page, region), "square")
             self.assertEqual(classify.call_count, 1)
+
+
+class IsshikiTests(unittest.TestCase):
+    box = BalloonTests.box
+
+    @staticmethod
+    def page(image, thickness=1):
+        """Ảnh bóng thoại + mask chữ như detector trả về (vùng quanh nét chữ)."""
+        image = image.copy()
+        cv2.rectangle(image, (250, 295), (390, 345), (255, 255, 255), -1)
+        text = np.full_like(image, 255)
+        cv2.putText(text, "TEXT", (260, 330), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 1)
+        text = cv2.erode(text, np.ones((thickness, thickness), np.uint8))  # nét dày (OpenCV 5 giới hạn thickness)
+        image = np.minimum(image, text)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        mask = cv2.dilate((gray < 110).astype(np.uint8), np.ones((5, 5), np.uint8)).astype(np.float32)
+        mask[:, :250] = mask[:, 390:] = 0
+        mask[:280] = mask[360:] = 0
+
+        class Page:
+            typeset_profile = ISSHIKI
+            original = image
+            text_mask = mask
+        return Page()
+
+    def kind(self, page, text=""):
+        return region_kind(page, Region(self.box, text=text))
+
+    def test_every_kind_gets_its_font_and_thoughts_are_italic(self):
+        page = self.page(BalloonTests.balloon("normal"))
+        for kind, family in ISSHIKI_FONTS.items():
+            style = profile_style(page, Region(self.box, typeset_kind=kind), TextStyle(family="Arial", bold=True))
+            self.assertEqual(style.family, family)
+            self.assertEqual(style.italic, kind in ("thought", "square"))
+            self.assertFalse(style.bold)
+        self.assertEqual(ISSHIKI_FONTS["normal"], "SJ Chanighter Handwriting")
+        self.assertEqual(ISSHIKI_FONTS["bold"], "000 ObelixPro TB")
+        self.assertEqual(ISSHIKI_FONTS["free"], "SJ SS Rosehip")
+        self.assertEqual(ISSHIKI_FONTS["flustered"], "SJ CCComicraft")
+
+    def test_balloon_shapes(self):
+        for shape, expected in (("normal", "normal"), ("square", "square"), ("rays", "thought")):
+            with self.subTest(shape=shape):
+                self.assertEqual(self.kind(self.page(BalloonTests.balloon(shape))), expected)
+
+    def test_lettering_without_a_balloon_is_a_free_thought(self):
+        art = np.full((640, 640, 3), 225, np.uint8)
+        self.assertEqual(balloon_shape(art, self.box), "free")
+        self.assertEqual(classify_balloon(art, self.box), "normal")  # Gái Băng: vẫn là thoại thường
+        self.assertEqual(self.kind(self.page(art)), "free")
+
+    def test_bold_raw_lettering_uses_the_bold_font(self):
+        thin = self.page(BalloonTests.balloon("normal"), 1)
+        thick = self.page(BalloonTests.balloon("normal"), 5)
+        f_thin = lettering_features(thin.original, thin.text_mask, self.box)
+        f_thick = lettering_features(thick.original, thick.text_mask, self.box)
+        self.assertGreater(f_thick["stroke"], f_thin["stroke"] * 1.5)
+        self.assertEqual(self.kind(thin), "normal")
+        self.assertEqual(self.kind(thick), "bold")
+
+    def test_white_text_in_a_black_box_is_a_square_thought(self):
+        image = np.full((640, 640, 3), 225, np.uint8)
+        cv2.rectangle(image, (200, 250), (440, 390), (0, 0, 0), -1)
+        cv2.putText(image, "TEXT", (260, 330), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        mask = np.zeros(image.shape[:2], np.float32)
+        mask[300:340, 258:382] = 1
+
+        class Page:
+            typeset_profile = ISSHIKI
+            original = image
+            text_mask = mask
+        self.assertEqual(self.kind(Page()), "square")
+
+    def test_stammering_lines_are_flustered(self):
+        for text in ("e- em ổn", "a- anh xin lỗi!", "Ri- Rinna..", "đ– đừng mà"):
+            self.assertTrue(flustered(text), text)
+        for text in ("Ri-", "e-mail của em", "khoan! không phải vì em sợ", "đừng-"):
+            self.assertFalse(flustered(text), text)
+        page = self.page(BalloonTests.balloon("normal"))
+        self.assertEqual(self.kind(page, "e- em ổn"), "flustered")
+        self.assertEqual(self.kind(page, "em ổn"), "normal")
+        region = Region(self.box, text="e- em ổn", typeset_kind="normal")
+        self.assertEqual(region_kind(page, region), "normal")  # người dùng chọn tay vẫn ưu tiên
+
+    def test_gai_bang_ignores_the_isshiki_rules(self):
+        page = self.page(BalloonTests.balloon("normal"), 5)
+        page.typeset_profile = GAI_BANG
+        self.assertEqual(self.kind(page, "e- em ổn"), "normal")
 
 
 if __name__ == "__main__":

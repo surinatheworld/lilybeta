@@ -25,7 +25,7 @@ from app.core.chapter import Chapter
 from app.core.document import BLENDS, Document, _blend, _checker, doc_for
 from app.core.page import Page, Region
 from app.core.typeset import TextStyle
-from app.core.typeset_profiles import FONTS, GAI_BANG
+from app.core.typeset_profiles import FONTS, GAI_BANG, ISSHIKI, ISSHIKI_FONTS, ISSHIKI_KINDS
 from app.ui.image_view import CanvasImageItem
 from app.ui.main_window import DetectWorker, MainWindow
 from app.ui.theme import apply_dark
@@ -531,6 +531,22 @@ class EditorTests(unittest.TestCase):
         window = self.editor()
         window.typeset_mode.setCurrentIndex(window.typeset_mode.findData(GAI_BANG))
         return window
+
+    def test_isshiki_mode_offers_its_own_kinds_and_fonts(self):
+        self.page.regions = [Region((40 + i * 100, 100, 130 + i * 100, 230), text="Bản dịch",
+                                    cleaned=True, typeset_kind=kind) for i, kind in enumerate(ISSHIKI_FONTS)]
+        self.doc.sync()
+        window = self.editor()
+        window.typeset_mode.setCurrentIndex(window.typeset_mode.findData(ISSHIKI))
+        for i, (kind, family) in enumerate(ISSHIKI_FONTS.items()):
+            window.select_region(i)
+            self.assertEqual([window.typeset_kind.itemData(k) for k in range(window.typeset_kind.count())],
+                             list(ISSHIKI_KINDS))
+            self.assertEqual(window.typeset_kind.currentData(), kind)
+            self.assertEqual(window.region.style.family, family)
+            self.assertEqual(window.region.style.italic, kind in ("thought", "square"))
+        window.typeset_mode.setCurrentIndex(window.typeset_mode.findData(GAI_BANG))
+        self.assertNotIn("bold", [window.typeset_kind.itemData(k) for k in range(window.typeset_kind.count())])
 
     def test_gai_bang_applies_all_font_rules_and_preserves_them_during_typing_and_batch(self):
         window = self.enable_series_profile()

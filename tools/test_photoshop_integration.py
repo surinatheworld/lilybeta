@@ -81,7 +81,7 @@ DRIVER = r"""
           var spec = data.layers[data.layers.length - 1 - i];
           check(Math.abs(t.size.as("pt") * dpi / 72 - spec.size) < .05, "Wrong pixel font size");
           check(Math.abs((box[0]+box[2])/2 - spec.cx) <= Math.max(5, spec.size*.35), "Text shifted horizontally at " + dpi + " ppi: " + layer.name);
-          items.push({name:layer.name, contents:t.contents, font:t.font, italic:t.fauxItalic,
+          items.push({name:layer.name, contents:t.contents, font:t.font, italic:t.fauxItalic, kind:spec.typeset_kind, family:spec.family,
                       pixels:t.size.as("pt") * dpi / 72,
                       bounds:box});
         } else check(layer.name === "Redraw", "Unexpected non-text layer");
@@ -94,8 +94,8 @@ DRIVER = r"""
       check(editable.contents.indexOf(" TEST") >= 0, "Text contents are not editable");
       doc.activeHistoryState = grouped;
       var psd = new PhotoshopSaveOptions(); psd.layers = true;
-      doc.saveAs(new File(D.output + "/013-photoshop-" + dpi + ".psd"), psd, true, Extension.LOWERCASE);
-      doc.saveAs(new File(D.output + "/013-photoshop-" + dpi + ".png"), new PNGSaveOptions(), true, Extension.LOWERCASE);
+      doc.saveAs(new File(D.output + "/" + D.stem + "-photoshop-" + dpi + ".psd"), psd, true, Extension.LOWERCASE);
+      doc.saveAs(new File(D.output + "/" + D.stem + "-photoshop-" + dpi + ".png"), new PNGSaveOptions(), true, Extension.LOWERCASE);
       doc.activeHistoryState = baseHistory;
       check(doc.layers.length === baseLayers && doc.layerSets.length === 0, "Single undo did not restore base");
       report.cases.push({dpi:dpi, text_layers:textCount, redraw:true, single_undo:true,
@@ -122,6 +122,7 @@ def main():
     parser.add_argument("--image", required=True, type=Path)
     parser.add_argument("--translation", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--profile", default="gai_bang", help="gai_bang | isshiki")
     parser.add_argument("--script-folder", type=Path, default=ROOT / "photoshop")
     parser.add_argument("--reuse-job", type=Path, help="Reuse a completed worker job when testing JSX-only changes")
     args = parser.parse_args()
@@ -142,7 +143,7 @@ def main():
         raise ValueError("No translation found for the test image's page number")
     config = {"input":str(input_path.resolve()), "output":str(args.output.resolve()),
               "scriptFolder":str(args.script_folder.resolve()), "resolutions":[72,300],
-              "request":{"protocol":1, "profile":"gai_bang", "engine":"lama", "right_to_left":True, "lines":lines}}
+              "stem":args.image.stem, "request":{"protocol":1, "profile":args.profile, "engine":"lama", "right_to_left":True, "lines":lines}}
     if args.reuse_job:
         config["data"] = json.loads((args.reuse_job / "result.json").read_text(encoding="utf-8"))
     source = (ROOT / "photoshop/Lilyzono.jsx").read_text(encoding="utf-8")

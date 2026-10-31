@@ -1,6 +1,7 @@
 # Lilyzono trong Photoshop 2023 (Windows)
 
-Tạo một nhóm **Lilyzono · Typeset Gái Băng** ngay trong tài liệu đang mở:
+Tạo một nhóm **Lilyzono · Typeset Gái Băng** (hoặc **Typeset Isshiki**, chọn ở ô **Bộ font**; tool nhớ lựa chọn) ngay
+trong tài liệu đang mở:
 
 - **Redraw**: layer ảnh trong suốt, chỉ chứa những điểm đã xoá chữ.
 - Mỗi câu thoại/SFX là **layer chữ Photoshop thật**, sửa được nội dung, font và vị trí.
@@ -53,8 +54,13 @@ hoặc trong thư mục `photoshop` của repo khi chạy từ mã nguồn.
 - Cần Windows Script Host để khởi động bộ xử lý ẩn. Tool không thay đổi thiết lập bảo mật hay cần mở máy chủ HTTP.
 - Model ONNX nằm trong thư mục `models` cạnh bộ xử lý. Xử lý trên máy, không gửi ảnh/bản dịch qua mạng.
 
-Cần cài các font: `000 WildWords2 TB`, `000 AnimeAce3 [TeddyBear]`, `00 CE Scriptorama Markdown JF`, `MTO augie`.
-Font suy nghĩ dùng kiểu nghiêng. Tool không phân phối các font này.
+Cần cài các font của bộ đang chọn. Tool không phân phối các font này.
+
+- **Gái Băng**: `000 WildWords2 TB` (thoại thường), `000 AnimeAce3 [TeddyBear]` (suy nghĩ, nghiêng),
+  `00 CE Scriptorama Markdown JF` (khung ô vuông), `MTO augie` (SFX).
+- **Isshiki**: `SJ Chanighter Handwriting` (thoại thường; suy nghĩ khung tròn có tia / khung vuông thì nghiêng),
+  `000 ObelixPro TB` (chữ raw in đậm), `SJ SS Rosehip` (suy nghĩ không khung), `SJ CCComicraft` (thoại lúng túng,
+  nói lắp "e- em…"), `MTO augie` (SFX).
 
 Nhận dạng và ghép thoại là tự động, có thể sai với bố cục khó. Luôn xem trước, đặc biệt SFX và chữ ngoài khung.
 LaMa có thể làm mờ nét/lưới chấm quanh SFX; sửa trên layer Redraw. Chế độ chỉ nền đơn giản đánh dấu `REDRAW` ở các layer cần làm tay.
@@ -70,5 +76,5 @@ Kiểm tra layer chữ thật, Undo một bước, rollback khi lỗi, font/ki�
 .venv\Scripts\python tools/test_photoshop_integration.py --image 013.jpg --translation translation.txt --output output/ps-test
 ```
 
-Thêm `--script-folder dist/LilyzonoPhotoshop` để kiểm tra bộ xử lý đã đóng gói thay vì Python của repo.
+Thêm `--profile isshiki` để thử bộ font Isshiki; `--script-folder dist/LilyzonoPhotoshop` để kiểm tra bộ xử lý đã đóng gói thay vì Python của repo.
 Ảnh xem trước PNG, PSD có layer và báo cáo JSON được ghi vào thư mục output đã chọn.

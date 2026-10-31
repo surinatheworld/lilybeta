@@ -48,7 +48,8 @@ from ..core.docs import load_lines, load_pages, page_number
 from ..core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available
 from ..core.page import Page, Region
 from ..core.typeset import TextStyle, layout, make_font, missing_chars
-from ..core.typeset_profiles import FONTS, GAI_BANG, KINDS, apply_profile, profile_style, region_kind
+from ..core.typeset_profiles import (GAI_BANG, PROFILES, apply_profile, fonts_for, is_italic, kinds_for, profile_style,
+                                     region_kind)
 from ..core import manual_ai
 from .ai_bridge import AiBridgeDialog
 from .api_dialog import PROVIDERS, ApiDialog, model_for
@@ -681,15 +682,15 @@ class MainWindow(QMainWindow):
         row.addWidget(QLabel("Typeset:"))
         self.typeset_mode = QComboBox()
         self.typeset_mode.addItem("Tự do", "")
-        self.typeset_mode.addItem("Typeset Gái Băng", GAI_BANG)
+        for key, label in PROFILES.items():
+            self.typeset_mode.addItem(label, key)
         self.typeset_mode.currentIndexChanged.connect(self._typeset_mode_changed)
         row.addWidget(self.typeset_mode, 1)
         lay.addLayout(row)
         row = QHBoxLayout()
         row.addWidget(QLabel("Loại khung:"))
         self.typeset_kind = QComboBox()
-        for key, label in KINDS.items():
-            self.typeset_kind.addItem(label, key)
+        self._fill_typeset_kinds(GAI_BANG)
         self.typeset_kind.setToolTip("Tự nhận dạng hình bóng thoại trên ảnh gốc. Chọn lại nếu nhận dạng nhầm; áp cho các khung đang chọn.")
         self.typeset_kind.setEnabled(False)
         self.typeset_kind.currentIndexChanged.connect(self._typeset_kind_changed)
@@ -913,7 +914,7 @@ class MainWindow(QMainWindow):
             self._sync_typeset_controls()
             return
         self.view.end_text_edit()
-        with self.doc.step("Typeset Gái Băng" if profile else "Typeset tự do"):
+        with self.doc.step(PROFILES[profile] if profile else "Typeset tự do"):
             self.page.typeset_profile = profile
             apply_profile(self.page)
         if self.chapter is not None:
@@ -922,8 +923,8 @@ class MainWindow(QMainWindow):
         self.select_region(self.selected, list(self.selection))
         if profile:
             from ..core.fonts import files_for
-            missing = [family for family in FONTS.values() if not files_for(family)]
-            self.statusBar().showMessage("Typeset Gái Băng đã bật." +
+            missing = sorted({family for family in fonts_for(profile).values() if not files_for(family)})
+            self.statusBar().showMessage(PROFILES[profile] + " đã bật." +
                                          (" Chưa tìm thấy font: " + ", ".join(missing) if missing else " Tự chọn font theo khung thoại / SFX."), 10000)
 
     def _typeset_kind_changed(self):
@@ -939,11 +940,23 @@ class MainWindow(QMainWindow):
         self._refresh_text(regions, before)
         self.select_region(self.selected, list(self.selection))
 
+    def _fill_typeset_kinds(self, profile):
+        """Loại thoại của bộ font đang chọn (Isshiki có thêm in đậm, không khung, lúng túng)."""
+        kinds = kinds_for(profile)
+        if [self.typeset_kind.itemData(i) for i in range(self.typeset_kind.count())] == list(kinds):
+            return
+        self.typeset_kind.blockSignals(True)
+        self.typeset_kind.clear()
+        for key, label in kinds.items():
+            self.typeset_kind.addItem(label, key)
+        self.typeset_kind.blockSignals(False)
+
     def _sync_typeset_controls(self):
         profile = self.page.typeset_profile if self.page is not None else self.settings.value("typeset/profile", "")
         self.typeset_mode.blockSignals(True)
         self.typeset_mode.setCurrentIndex(max(0, self.typeset_mode.findData(profile)))
         self.typeset_mode.blockSignals(False)
+        self._fill_typeset_kinds(profile)
         region = self.region
         self.typeset_kind.blockSignals(True)
         self.typeset_kind.setCurrentIndex(max(0, self.typeset_kind.findData(region.typeset_kind if region else "auto")))
@@ -951,9 +964,11 @@ class MainWindow(QMainWindow):
         self.typeset_kind.setEnabled(bool(profile and region))
         if profile and region:
             kind = region_kind(self.page, region)
-            self.lbl_typeset.setText(f"{KINDS[kind]} → {FONTS[kind]}" + (" · nghiêng" if kind == "thought" else ""))
+            self.lbl_typeset.setText(f"{kinds_for(profile)[kind]} → {fonts_for(profile)[kind]}" +
+                                     (" · nghiêng" if is_italic(profile, kind) else ""))
         else:
-            self.lbl_typeset.setText("Gái Băng: tự chọn font cho thoại thường, suy nghĩ, ô vuông và SFX." if profile else "")
+            self.lbl_typeset.setText(PROFILES[profile] + ": tự chọn font theo loại thoại / khung và SFX."
+                                     if profile in PROFILES else "")
 
     def _style_for(self, region, base=None):
         return profile_style(self.page, region, base if base is not None else self.current_style())
