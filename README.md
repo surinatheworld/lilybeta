@@ -102,8 +102,13 @@ Chọn **Typeset → Typeset Isshiki** (trong Photoshop: **Bộ font → Typeset
 | Thoại lúng túng | SJ CCComicraft | Thường | câu nói lắp: "e- em…", "a- anh…" |
 | SFX | MTO augie | Thường | nhãn SFX |
 
-Chữ raw in đậm được ưu tiên trước, rồi đến câu nói lắp, rồi hình khung. Nhận nhầm thì chọn khung và đổi **Loại khung**
-như với Gái Băng.
+Chữ raw in đậm được ưu tiên trước, rồi đến câu nói lắp, rồi hình khung. Hai bóng dính nhau (có chỗ thắt sâu) và bóng
+viền lượn sóng tính là thoại thường; chỉ viền mây lõm sâu mới là suy nghĩ. Bóng suy nghĩ có nét gạch toả mảnh quanh
+viền khó tách khỏi nền tranh nên chưa tự nhận. Nhận nhầm thì chọn khung và đổi **Loại khung** như với Gái Băng.
+
+Bản dịch: dòng ghi chú của nhóm dịch được bỏ qua ("T/N: …", dòng trong ngoặc nhắc tới sfx/xoá/typer) và nhãn chỗ
+đặt chữ được bỏ phần nhãn ("chữ dọc: …", "vé tàu:", "chữ trên gáy sách: …"). Tool ghép trang theo số: nếu raw có
+trang tranh không chữ mà bản dịch bỏ qua (vd raw 030), đánh số trang trong bản dịch theo đúng tên ảnh.
 
 ### Giao diện và hiệu năng
 

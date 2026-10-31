@@ -133,9 +133,40 @@ class IsshikiTests(unittest.TestCase):
         self.assertEqual(ISSHIKI_FONTS["flustered"], "SJ CCComicraft")
 
     def test_balloon_shapes(self):
-        for shape, expected in (("normal", "normal"), ("square", "square"), ("rays", "thought")):
+        # Tia quanh chữ mà lòng bóng hở: ở bộ này thường là bóng thoại hở viền, không phải suy nghĩ.
+        for shape, expected in (("normal", "normal"), ("square", "square"), ("cloud", "thought"), ("rays", "normal")):
             with self.subTest(shape=shape):
                 self.assertEqual(self.kind(self.page(BalloonTests.balloon(shape))), expected)
+
+    @staticmethod
+    def outline(points_list):
+        image = np.full((640, 640, 3), 225, np.uint8)
+        for pts in points_list:
+            cv2.polylines(image, [pts], True, (0, 0, 0), 3)
+        for pts in points_list:
+            cv2.fillPoly(image, [pts], (255, 255, 255))  # bỏ nét viền bên trong chỗ hai bóng chồng nhau
+        for pts in points_list:
+            cv2.polylines(image, [pts], True, (0, 0, 0), 3)
+        for pts in points_list:
+            inner = (pts - pts.mean(0)) * .96 + pts.mean(0)
+            cv2.fillPoly(image, [inner.astype(np.int32)], (255, 255, 255))
+        return image
+
+    @staticmethod
+    def ellipse(cx, cy, ax, ay, wave=0., lobes=0):
+        t = np.linspace(0, 2 * np.pi, 360, endpoint=False)
+        r = 1 + wave * np.cos(lobes * t)
+        return np.column_stack([cx + ax * r * np.cos(t), cy + ay * r * np.sin(t)]).astype(np.int32)
+
+    def test_two_touching_balloons_are_dialogue_not_a_thought_cloud(self):
+        merged = self.outline([self.ellipse(320, 320, 110, 90, .03, 20), self.ellipse(480, 420, 110, 90, .03, 20)])
+        self.assertEqual(classify_balloon(merged, self.box), "thought")  # Gái Băng giữ luật cũ (nhiều chỗ lõm)
+        self.assertEqual(self.kind(self.page(merged)), "normal")
+
+    def test_trembling_outline_is_dialogue(self):
+        wobbly = self.outline([self.ellipse(320, 320, 160, 120, .015, 40)])
+        self.assertEqual(balloon_shape(wobbly, self.box, outline=True), "wobbly")
+        self.assertEqual(self.kind(self.page(wobbly)), "normal")
 
     def test_lettering_without_a_balloon_is_a_free_thought(self):
         art = np.full((640, 640, 3), 225, np.uint8)

@@ -15,6 +15,19 @@ import os
 import re
 
 PAGE_HEADER = re.compile(r"^\s*(?:trang|page|p\.?|tr\.?)?\s*#?\s*(\d{1,4})\s*[:.\-–]?\s*$", re.IGNORECASE)
+# Ghi chú của nhóm dịch, không phải thoại: "T/N: …", "(cái này xoá luôn cũng được, không có sfx …)".
+NOTE = re.compile(r"^\s*(?:t\s*/\s*n|n\s*/\s*t|tl\s*note|note|ghi chú)\s*[:：]", re.IGNORECASE)
+NOTE_WORDS = re.compile(r"\b(?:sfx|xoá|xóa|typer|typeset|redraw|clean|edit)\b", re.IGNORECASE)
+# Nhãn chỉ chỗ đặt chữ: "chữ dọc: …", "vé tàu:", "chữ trên gáy 3 cuốn sách: hồi ức" → chỉ giữ phần chữ.
+PLACE_LABEL = re.compile(r"^\s*(?:chữ|bảng|vé|biển|bìa|nhãn|gáy)(?:\s+[^\s:!?.…]+){0,6}\s*:\s*", re.IGNORECASE)
+
+
+def clean_line(line: str) -> str:
+    """Câu dịch thật trong một dòng bản dịch; "" nếu dòng chỉ là ghi chú / nhãn của nhóm dịch."""
+    line = line.strip()
+    if NOTE.match(line) or (line.startswith("(") and line.endswith(")") and NOTE_WORDS.search(line)):
+        return ""
+    return PLACE_LABEL.sub("", line, count=1).strip()
 
 
 def load_pages(path: str) -> dict[int, list[str]]:
@@ -50,7 +63,9 @@ def load_lines(path: str) -> list[str]:
     for line in raw:
         line = line.strip()
         if line and not line.startswith("//"):
-            out.append(line)
+            line = clean_line(line)
+            if line:
+                out.append(line)
     return out
 
 

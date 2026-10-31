@@ -31,7 +31,7 @@ import numpy as np
 from .core import project
 from .core.assign import apply_plan, assign_lines
 from .core.clean import easy_only
-from .core.docs import load_pages, page_number
+from .core.docs import clean_line, load_pages, page_number
 from .core.detect import TextDetector
 from .core.document import Document
 from .core.fonts import files_for
@@ -242,7 +242,7 @@ def process_job(path: Path, report=None) -> dict:
             except Exception as exc:  # noqa: BLE001 - trang lỗi không làm hỏng cả chương
                 out.append({"ok": False, "doc_id": item.get("doc_id"), "doc_name": name, "error": str(exc)})
         return {**base, "pages": out}
-    lines = request.get("lines")
+    lines = [line for line in map(clean_line, request.get("lines") or []) if line]  # bỏ ghi chú "T/N: …" khi dán
     if not lines:
         lines = _lines_for(_translations(request), request.get("doc_name", ""), True)
         if not lines:
