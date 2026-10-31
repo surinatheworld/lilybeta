@@ -70,6 +70,18 @@ class LineShapeTests(unittest.TestCase):
             ends = [ln.split()[-1] + " " + nxt.split()[0] for (ln, _, _), (nxt, _, _) in zip(lines, lines[1:])]
             self.assertFalse([e for e in ends if joined(*e.split())], (w, h, lines))
 
+    def test_hyphenated_names_break_after_the_hyphen(self):
+        m, lines = layout("Yamada-san!?", TextStyle(max_size=26), 95, 120)
+        self.assertEqual([ln for ln, _, _ in lines], ["Yamada-", "san!?"])
+        self.assertGreater(m.size, 20)
+        _, lines = layout("Takahashi-kun", TextStyle(max_size=20), 400, 100)
+        self.assertEqual([ln for ln, _, _ in lines], ["Takahashi-kun"])  # đủ chỗ thì không ngắt
+
+    def test_tall_narrow_bubble_may_put_one_word_per_line(self):
+        m, lines = layout("Thật sao cơ!?", TextStyle(max_size=26), 60, 170)
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(m.size, 26)
+
     def test_manual_line_breaks_are_kept(self):
         _, lines = layout("Cảm ơn\nanh rất nhiều.", TextStyle(max_size=20), 300, 300)
         self.assertEqual(lines[0][0], "Cảm ơn")
