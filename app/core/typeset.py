@@ -415,7 +415,7 @@ def _score(style: TextStyle, seg, res, lh: float, want: float, k: int, words=(),
         # hình thoi dài dần đều thì dòng giữa chỉ nhỉnh hơn hai bên một chút.
         poke = sum(max(0.0, widths[i] - max(widths[i - 1], widths[i + 1]) - PEAK_SLACK * widest) for i in range(1, n - 1))
         score += PEAK_WEIGHT * poke / widest
-    if n > max(1, (2 * k + 2) // 3) and want > TALL:
+    if n > max(1, (2 * k + 2) // 3) and want > TALL and style.shape != "even":  # ô vuông: khối theo tỉ lệ ô
         score += 1.0  # trung bình mỗi dòng dưới 1,5 từ: chỉ dùng khi không còn cách khác (trừ bóng cao, hẹp)
     return score
 
@@ -446,7 +446,8 @@ def _shape_lines(text: str, style: TextStyle, style_key: tuple, size: int, iw: f
     lh = _Metrics(style, size).lh
     n_lo = len(lines)
     n_hi = n_lo
-    while n_hi < min(k, max(n_lo, (2 * k + 2) // 3)) and (n_hi + 1) * lh <= ih + .5:
+    most = k if style.shape == "even" else max(n_lo, (2 * k + 2) // 3)  # ô vuông cao: được mỗi dòng một từ
+    while n_hi < min(k, most) and (n_hi + 1) * lh <= ih + .5:
         n_hi += 1  # thêm dòng khi khung còn chỗ, nhưng trung bình mỗi dòng vẫn ≥ 1,5 từ
     want = math.log(max(iw, 1) / max(ih, 1))
     best = None

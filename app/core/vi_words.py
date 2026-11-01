@@ -5,6 +5,9 @@ từ lạ thì coi như ngắt được ở mọi chỗ (như trước).
 """
 from __future__ import annotations
 
+import re
+import unicodedata
+
 _WORDS = """
 cảm ơn, xin lỗi, xin chào, tạm biệt, cám ơn, nhất định, trân trọng, kiểm soát, khoảnh khắc, nhỏ bé, to lớn, bây giờ,
 từ giờ, lúc nãy, lúc này, lúc đó, khi nào, bao giờ, hôm nay, hôm qua, ngày mai, tối nay, sáng nay, chiều nay,
@@ -51,7 +54,15 @@ mẹ con, vợ chồng, cô dâu, chú rể, hôn nhân, thông gia, họ hàng,
 làm phiền, phiền phức, rắc rối, lo xa, yên tâm, an tâm, cảm động, xúc động, khó khăn, dễ dàng, đơn giản,
 phức tạp, ít khi, có khi, lý do, lí do, tự do, nhân vật, hoạt hình, tụi mình, tụi tớ, như này, như kia, cao hơn,
 ở trên, ở dưới, phía dưới, phía trên, công bằng, sư phụ, đệ tử, không tệ, du khách, rõ ràng, khắp nơi,
-lang thang, trẻ con
+lang thang, trẻ con, tạ lỗi, áy náy, ngang hàng, cả hai, hoà quyện, hòa quyện, phân biệt, tận tình, chăm chút,
+quan hệ, mối quan hệ, hơi ấm, toàn thân, nóng ran, bữa trưa, bữa cơm, phòng tắm, tắm rửa, sấy tóc, mái tóc, đôi ta,
+bên nhau, gần gũi, ôm ấp, vòng tay, ấm áp, dịu dàng, nhẹ nhàng, lặng lẽ, im lặng, ngại ngần, do dự, ngập ngừng,
+phụ nữ, đàn ông, con người, cô ấy, anh ấy, cậu ấy, bạn gái, người ta, chuyện gì, điều gì, việc gì, thứ gì,
+cũng được, được rồi, thôi nào, đi thôi, đúng vậy, đúng rồi, không sao, không phải, không thể, chắc chắn, có lẽ,
+thật sự, thực sự, hoàn toàn, tuyệt đối, một chút, một lúc, một lần, mãi mãi, bình yên, an toàn, nguy hiểm,
+phim kinh dị, kinh dị, ma quỷ, sợ hãi, run rẩy, hồi hộp, căng thẳng, xấu hổ, ngượng ngùng, đỏ mặt, trái tim,
+nhịp tim, giấc ngủ, đi ngủ, buồn ngủ, chăn gối, cái gối, giường ngủ, ban đêm, nửa đêm, sáng sớm, buổi sáng,
+buổi trưa, buổi chiều, buổi tối, bữa sáng, bữa tối, nấu ăn, món ăn, ăn uống, rửa bát, dọn dẹp, giặt giũ
 """
 
 COMPOUNDS: frozenset[tuple[str, str]] = frozenset(
@@ -76,7 +87,29 @@ def joined(left: str, right: str) -> bool:
     """`left right` là một từ ghép, không nên xuống dòng ở giữa (dấu câu ở giữa thì ngắt được)."""
     if left.rstrip(PUNCT) != left or right.lstrip(PUNCT) != right:
         return False
-    return (bare(left), bare(right)) in COMPOUNDS
+    a, b = bare(left), bare(right)
+    return (a, b) in COMPOUNDS or rhyming(a, b)
+
+
+_INITIAL = re.compile(r"^(ngh|ng|gh|gi|kh|nh|ph|th|tr|ch|qu|[bcdđghklmnpqrstvx])?")
+
+
+def _rhyme(syllable: str) -> tuple[str, str]:
+    """(phụ âm đầu, vần) của một âm tiết, vần bỏ dấu thanh (giữ â, ă, ê, ô, ơ, ư)."""
+    # bỏ dấu thanh, giữ dấu mũ / trăng / móc (â ă ê ô ơ ư)
+    plain = "".join(c for c in unicodedata.normalize("NFD", syllable) if unicodedata.combining(c) not in (220, 230)
+                    or c in "\u0302\u0306\u031b")
+    plain = unicodedata.normalize("NFC", plain)
+    head = _INITIAL.match(plain).group(0)
+    return head, plain[len(head):]
+
+
+def rhyming(a: str, b: str) -> bool:
+    """Từ láy vần ("áy náy", "bối rối", "lăng nhăng"): hai âm tiết cùng vần, khác phụ âm đầu – một từ, không cắt đôi."""
+    if len(a) < 2 or len(b) < 2 or not a.isalpha() or not b.isalpha() or a in LEADING or b in LEADING:
+        return False
+    (ha, ra), (hb, rb) = _rhyme(a), _rhyme(b)
+    return bool(ra) and ra == rb and ha != hb
 
 
 def final_particle(left: str, right: str) -> bool:
