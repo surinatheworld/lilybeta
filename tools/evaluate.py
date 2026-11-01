@@ -145,13 +145,17 @@ def evaluate(raw_dir, psd_dir, out_dir, pages=None, engine="lama", order_fix=Non
         page.clean_many(kept)
         # Đặt chữ: dùng đúng câu + font của bản mẫu cho vùng tương ứng (đánh giá riêng phần đặt chữ)
         size_err, pos_err = [], []
+        from app.core.typeset import SOFT_BREAK, layout
+        for i, js in by_region.items():
+            r = page.regions[i]
+            js = sorted(js)
+            r.text = SOFT_BREAK.join(refs[j]["text"] for j in js)
+            r.style = TextStyle(family=family_for(refs[js[0]]["font"], families))
+        page.even_sizes()  # cỡ chung của trang (như khi typeset thật)
         for i, js in by_region.items():
             r = page.regions[i]
             js = sorted(js)
             ref0 = refs[js[0]]
-            r.text = "\n".join(refs[j]["text"] for j in js)
-            r.style = TextStyle(family=family_for(ref0["font"], families))
-            from app.core.typeset import layout
             x1, y1, x2, y2 = r.text_rect
             size = layout(r.text, r.effective_style, x2 - x1, y2 - y1)[0].size
             if len(js) == 1:

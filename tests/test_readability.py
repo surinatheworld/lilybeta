@@ -116,6 +116,31 @@ class ReadableSizeTests(unittest.TestCase):
             self.assertTrue(lo - 5 <= x1 and x2 <= hi + 5, (r.text, r.text_rect))  # chữ nằm gọn trong bóng của nó
             self.assertGreaterEqual(_size(r), 30)
 
+    def test_dialogue_on_a_page_shares_one_size(self):
+        img = np.full((1400, 1400, 3), 120, np.uint8)
+        centers = ((250, 300, 120), (650, 300, 120), (1050, 300, 120), (700, 950, 300))  # bóng cuối to gấp đôi
+        text = "Hôm nay trời đẹp quá nên mình đi dạo một chút nhé"
+        page = _page(img)
+        for x, y, r in centers:
+            cv2.circle(img, (x, y), r, (255, 255, 255), -1)
+            page.regions.append(Region((x - 30, y - 60, x + 30, y + 60), text=text, cleaned=True))
+        page.working = img.copy()
+        type(page).auto_cap = property(lambda self: 80.)
+        try:
+            page.typeset_profile = ""
+            page._balloon_cache = {(r.uid, "kind"): "normal" for r in page.regions}
+            import app.core.typeset_profiles as tp
+            kind = tp.region_kind
+            tp.region_kind = lambda page, r: "normal"
+            try:
+                page.clean_many(page.regions)
+            finally:
+                tp.region_kind = kind
+            sizes = [_size(r) for r in page.regions]
+        finally:
+            type(page).auto_cap = _CAP
+        self.assertLessEqual(sizes[3], 1.1 * sorted(sizes)[1] + 1, sizes)  # bóng to: lề rộng, không phóng chữ theo bóng
+
     def test_staggered_lines_in_one_balloon_do_not_touch(self):
         img = np.full((1400, 1400, 3), 120, np.uint8)
         cv2.ellipse(img, (480, 300), (190, 230), 0, 0, 360, (255, 255, 255), -1)  # thuỳ trên phải
