@@ -13,7 +13,7 @@ from app.core import project
 from app.core.clean import text_area
 from app.core.page import Page, Region
 from app.core.typeset import TextStyle, draw_text, layout, place_in_shape
-from app.core.vi_words import joined
+from app.core.vi_words import dangling, joined
 
 NINE = "Cứ như này thì mình sẽ mất kiểm soát mất…"
 FONT = os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", "arial.ttf")
@@ -69,6 +69,17 @@ class LineShapeTests(unittest.TestCase):
             _, lines = layout(text, TextStyle(max_size=26), w, h)
             ends = [ln.split()[-1] + " " + nxt.split()[0] for (ln, _, _), (nxt, _, _) in zip(lines, lines[1:])]
             self.assertFalse([e for e in ends if joined(*e.split())], (w, h, lines))
+
+    def test_function_words_do_not_end_a_line(self):
+        _, lines = layout("Tớ muốn ăn bánh của cửa hàng những người bạn đó.", TextStyle(max_size=26), 280, 170)
+        ends = [(ln.split()[-1], nxt.split()[0]) for (ln, _, _), (nxt, _, _) in zip(lines, lines[1:])]
+        self.assertFalse([e for e in ends if dangling(*e)], lines)  # không "…của / cửa hàng những / người…"
+        for text in ("Tôi ít khi đi chơi như này lắm", "Đó là lý do tớ đến đây", "Tớ muốn được tự do một lần",
+                     "Túi của ông có nhân vật hoạt hình Nhật"):
+            for w, h in ((200, 200), (150, 260), (280, 170), (240, 220)):
+                _, lines = layout(text, TextStyle(max_size=26), w, h)
+                pairs = [(ln.split()[-1], nxt.split()[0]) for (ln, _, _), (nxt, _, _) in zip(lines, lines[1:])]
+                self.assertFalse([p for p in pairs if joined(*p)], (w, h, lines))  # không cắt "ít / khi", "lý / do"
 
     def test_hyphenated_names_break_after_the_hyphen(self):
         m, lines = layout("Yamada-san!?", TextStyle(max_size=26), 95, 120)

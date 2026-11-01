@@ -10,7 +10,7 @@ import numpy as np
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage, QPainter
 
-from .clean import MARGIN, clean_local, fill_bubble, is_small_sfx, text_area
+from .clean import MARGIN, clean_local, fill_bubble, is_small_sfx, lobe_shape, text_area
 from .detect import TextDetector, sort_reading_order
 from .typeset import TextStyle, best_rect, draw_text, layout, place_in_shape
 from .typeset_profiles import apply_profile, profile_style
@@ -32,6 +32,7 @@ def reserve_uids(upto: int) -> None:
 
 MIN_READABLE = .5  # chữ ngoài bóng / SFX không nhỏ hơn nửa cỡ chuẩn của trang
 DARK_BACKGROUND = 90  # độ sáng trung vị dưới mức này: nền tối, chữ trắng
+LOBE_SIZE = 0.85  # bóng đôi: dàn theo thuỳ khi chữ ≥ 85% cỡ đặt được trong khung chữ nhật
 
 
 @dataclass
@@ -263,8 +264,8 @@ class Page:
                 span = (min(r[1] for r in shape[2]), shape[2][0][0], max(r[2] for r in shape[2]), shape[2][-1][0] + 1)
                 if not hits(span):
                     region.text_shape = shape
-                else:  # nhiều câu chung một bóng / khung: chia thành các dải trên-dưới theo thứ tự đọc
-                    region.text_shape = self._shared_band(region, shape, span)
+                else:  # nhiều câu chung một bóng / khung: tách theo chỗ thắt của bóng đôi, hoặc chia dải trên-dưới
+                    region.text_shape = self._shared_shape(region, shape, span)
         else:
             region.text_rects = [region.box]
         self._readable(region)
@@ -278,6 +279,30 @@ class Page:
         patch = self.working[max(0, y1):y2, max(0, x1):x2]
         if patch.size and float(np.median(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY))) < DARK_BACKGROUND:
             region.style = replace(region.style, color="#ffffff")
+
+    def _shared_shape(self, region: Region, shape, span):
+        """Dáng đặt chữ khi bóng chứa cả chữ của câu khác: bóng đôi thì lấy thuỳ của câu này (tách tại chỗ thắt),
+        không thì dải ngang theo thứ tự đọc; None nếu khung chữ nhật cho chữ to hơn."""
+        style = region.effective_style
+
+        def size(rect):
+            return layout(region.text, style, rect[2] - rect[0], rect[3] - rect[1])[0].size if rect else 0
+
+        boxed = size(best_rect(region.text, style, region.text_rects))
+        # Chữ gốc của các câu thoại khác (SFX vắt qua viền bóng, khung tạm trên tranh không tính).
+        others = [o.box for o in self.regions if o is not region and o.kind != "sfx" and not o.orphan]
+        lobe = lobe_shape(self.working, region.box, others, self.area_mask(region))
+        if lobe:
+            # Thuỳ không được chứa chữ gốc của câu khác (hai câu cùng thuỳ).
+            spans = {y: (left, right) for y, left, right in lobe[2]}
+            mine = not any(left <= (o[0] + o[2]) / 2 <= right for o in others
+                           for y in [int((o[1] + o[3]) / 2)] if y in spans for left, right in [spans[y]])
+            if mine and size(place_in_shape(region.text, style, lobe)) >= LOBE_SIZE * boxed:
+                return lobe  # chữ dàn theo dáng thuỳ, giữa thuỳ: đẹp hơn khung chữ nhật dù nhỏ hơn chút
+            return None  # bóng đôi: dải ngang sẽ cắt qua thuỳ của câu khác, dùng khung chữ nhật
+        band = self._shared_band(region, shape, span)
+        # Hai bóng dính nhau nằm ngang thì từng khung riêng vẫn tốt hơn: chỉ dùng dải khi chữ to hơn rõ.
+        return band if band and size(place_in_shape(region.text, style, band)) > 1.1 * boxed else None
 
     def _shared_band(self, region: Region, shape, span):
         """Phần của `region` khi bóng chứa chữ của vùng khác: mọi vùng trong bóng đều có câu dịch (chữ gốc sẽ
@@ -295,15 +320,7 @@ class Page:
         band = rows[int(start * len(rows) + (gap if k else 0)):int(end * len(rows) - (gap if k < len(group) - 1 else 0))]
         if len(band) < 3:
             return None
-        band = (cx, (band[0][0] + band[-1][0]) / 2, tuple(band))
-        # Hai bóng dính nhau nằm ngang thì từng khung riêng vẫn tốt hơn: chỉ dùng dải khi chữ to hơn rõ.
-        style = region.effective_style
-
-        def size(rect):
-            return layout(region.text, style, rect[2] - rect[0], rect[3] - rect[1])[0].size if rect else 0
-
-        boxed = size(best_rect(region.text, style, region.text_rects))
-        return band if size(place_in_shape(region.text, style, band)) > 1.1 * boxed else None
+        return cx, (band[0][0] + band[-1][0]) / 2, tuple(band)
 
     def _readable(self, region: Region) -> None:
         """Chữ ngoài bóng / SFX nhỏ hơn MIN_READABLE cỡ chuẩn của trang: nới khung đặt chữ ra xung quanh
