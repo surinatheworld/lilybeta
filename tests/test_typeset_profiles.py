@@ -4,7 +4,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from app.core.typeset_profiles import (FONTS, GAI_BANG, ISSHIKI, ISSHIKI_FONTS, balloon_shape, classify_balloon, flustered,
+from app.core.typeset_profiles import (CUSTOM, FONTS, GAI_BANG, ISSHIKI, ISSHIKI_FONTS, balloon_shape, classify_balloon, flustered,
                                       lettering_features, profile_style, region_kind)
 from app.core.page import Region
 from app.core.typeset import TextStyle
@@ -211,6 +211,21 @@ class IsshikiTests(unittest.TestCase):
         page = self.page(BalloonTests.balloon("normal"), 5)
         page.typeset_profile = GAI_BANG
         self.assertEqual(self.kind(page, "e- em ổn"), "normal")
+
+
+class CustomFontTests(unittest.TestCase):
+    def test_user_fonts_per_balloon_kind(self):
+        page = IsshikiTests.page(BalloonTests.balloon("normal"))
+        page.typeset_profile = CUSTOM
+        page.custom_fonts = {"normal": {"family": "Comic Sans MS", "style": "Bold", "italic": True},
+                             "sfx": {"family": "Impact", "style": "Regular"}}
+        style = profile_style(page, Region(IsshikiTests.box), TextStyle(family="Arial"))
+        self.assertEqual((style.family, style.style_name, style.italic), ("Comic Sans MS", "Bold", True))
+        sfx = profile_style(page, Region(IsshikiTests.box, kind="sfx"), TextStyle(family="Arial"))
+        self.assertEqual((sfx.family, sfx.style_name, sfx.italic), ("Impact", "", False))
+        # loại chưa chọn font: dùng font mặc định
+        thought = profile_style(page, Region(IsshikiTests.box, typeset_kind="thought"), TextStyle(family="Arial"))
+        self.assertEqual(thought.family, FONTS["thought"])
 
 
 if __name__ == "__main__":

@@ -48,7 +48,7 @@ from ..core.docs import load_lines, load_pages, page_number
 from ..core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available
 from ..core.page import Page, Region
 from ..core.typeset import TextStyle, layout, make_font, missing_chars
-from ..core.typeset_profiles import (GAI_BANG, PROFILES, apply_profile, fonts_for, is_italic, kinds_for, profile_style,
+from ..core.typeset_profiles import (CUSTOM, GAI_BANG, PROFILES, apply_profile, fonts_for, is_italic, kinds_for, profile_style,
                                      region_kind)
 from ..core import manual_ai
 from .ai_bridge import AiBridgeDialog
@@ -683,7 +683,8 @@ class MainWindow(QMainWindow):
         self.typeset_mode = QComboBox()
         self.typeset_mode.addItem("Tự do", "")
         for key, label in PROFILES.items():
-            self.typeset_mode.addItem(label, key)
+            if key != CUSTOM:  # chọn font theo loại khung hiện làm trong Photoshop (bảng quét loại khung)
+                self.typeset_mode.addItem(label, key)
         self.typeset_mode.currentIndexChanged.connect(self._typeset_mode_changed)
         row.addWidget(self.typeset_mode, 1)
         lay.addLayout(row)

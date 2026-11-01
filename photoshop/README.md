@@ -36,6 +36,13 @@ trang), bấm **Làm cả chương (N ảnh)**. Tool chụp từng trang, xử l
 layer chữ, trang nào thiếu thoại); bấm **Tạo layer cho N trang** – mỗi trang thành một nhóm layer riêng (Ctrl+Z một
 lần trong trang đó để bỏ). Ghép trang theo số trong tên ảnh (`013.jpg` ↔ trang 13).
 
+### Tự chọn font theo loại khung
+Chọn **Bộ font → Tự chọn font theo loại khung**, mở bản dịch cả chương, bấm **Làm cả chương**. Tool quét mọi ảnh đang
+mở rồi hiện bảng các loại khung có trong chương (thoại thường, suy nghĩ, khung vuông / ô dẫn, chữ in đậm, chữ ngoài
+khung, SFX, thoại lúng túng) kèm ảnh mẫu và số khung. Chọn font cho từng loại (nút **Chọn…**, gõ để lọc danh sách font
+của Photoshop), tick **Nghiêng** nếu cần, bấm **Type cả chương** – tool dùng lại ảnh vừa quét để type hàng loạt. Lựa
+chọn được nhớ cho lần sau (cả khi làm từng trang); loại để trống dùng font mặc định.
+
 ### Upload bản redraw SFX (từng ảnh)
 Sau khi redraw SFX ở nơi khác (Photoshop, AI…) thành **một ảnh cả trang, cùng khung** với ảnh gốc: mở trang đó, chạy
 script, bấm **Upload bản redraw SFX…**, chọn ảnh. Tool căn khớp ảnh với ảnh gốc (ảnh bị lệch / co giãn vài px vẫn

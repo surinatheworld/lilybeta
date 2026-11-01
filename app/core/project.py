@@ -89,6 +89,7 @@ def save(path: str, pages: list[Page], chapter=None, direction: int = 0) -> None
             meta["pages"].append({
                 "name": os.path.basename(page.path), "raw_path": os.path.abspath(page.path), "raw": base + "raw" + ext,
                 "detected": page.detected, "typeset_profile": page.typeset_profile,
+                "custom_fonts": getattr(page, "custom_fonts", {}),
                 "regions": [_region_dict(r) for r in page.regions], "layers": layers,
                 "active": doc.layers.index(doc.active) if doc.active in doc.layers else 1,
             })
@@ -133,6 +134,7 @@ def load(path: str) -> dict:
             page.text_mask = np.load(io.BytesIO(z.read(base + "text_mask.npz")))["text_mask"].astype(np.float32)
             page.detected = info["detected"]
             page.typeset_profile = info.get("typeset_profile", "")
+            page.custom_fonts = info.get("custom_fonts") or {}
             page.regions = [_region_from(d) for d in info["regions"]]
             max_uid = max([max_uid] + [r.uid for r in page.regions])
             doc = Document(page)

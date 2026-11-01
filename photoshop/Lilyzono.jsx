@@ -229,9 +229,11 @@ var LilyzonoPS = (function () {
     }
 
     var PROFILES = [
-        {key:"gai_bang", name:"Gái Băng", fonts:"WildWords2 · AnimeAce3 nghiêng · CE Scriptorama · MTO augie"},
-        {key:"isshiki", name:"Isshiki", fonts:"Chanighter Handwriting (suy nghĩ: nghiêng) · ObelixPro (in đậm) · " +
-                                             "SS Rosehip (không khung) · CCComicraft (lúng túng)"}
+        {key:"gai_bang", name:"Typeset Gái Băng", fonts:"WildWords2 · AnimeAce3 nghiêng · CE Scriptorama · MTO augie"},
+        {key:"isshiki", name:"Typeset Isshiki", fonts:"Chanighter Handwriting (suy nghĩ: nghiêng) · ObelixPro (in đậm) · " +
+                                             "SS Rosehip (không khung) · CCComicraft (lúng túng)"},
+        {key:"custom", name:"Tự chọn font theo loại khung", fonts:"Làm cả chương: tool quét mọi ảnh, hiện các loại khung " +
+                                             "có trong chương để bạn chọn font cho từng loại rồi type hàng loạt."}
     ];
     var SETTINGS = "lilyzono-settings";
 
@@ -246,6 +248,126 @@ var LilyzonoPS = (function () {
             desc.putString(stringIDToTypeID("profile"), key);
             app.putCustomOptions(SETTINGS, desc, true);
         } catch (error) {}
+    }
+
+    // Font đã chọn cho từng loại khung (bộ "tự chọn font"): {loại: {family, style, postscript, italic}}.
+    function savedFonts() {
+        try { return decode(app.getCustomOptions(SETTINGS).getString(stringIDToTypeID("fonts"))); }
+        catch (error) { return {}; }
+    }
+
+    function saveFonts(fonts) {
+        try {
+            var desc;
+            try { desc = app.getCustomOptions(SETTINGS); } catch (error) { desc = new ActionDescriptor(); }
+            desc.putString(stringIDToTypeID("fonts"), encode(fonts));
+            app.putCustomOptions(SETTINGS, desc, true);
+        } catch (error) {}
+    }
+
+    var fontCache = null;
+    function installedFonts() {
+        if (fontCache) return fontCache;
+        fontCache = [];
+        for (var i = 0; i < app.fonts.length; i++) {
+            var f = app.fonts[i];
+            fontCache.push({name:f.name, family:f.family, style:f.style, postscript:f.postScriptName});
+        }
+        return fontCache;
+    }
+
+    function fontLabelOf(choice) {
+        return choice && choice.family ? choice.family + (choice.style && choice.style !== "Regular" ? " " + choice.style : "") : "";
+    }
+
+    // Chọn font trong danh sách font của Photoshop: gõ để lọc.
+    function pickFont(current) {
+        var fonts = installedFonts(), shown = [];
+        var win = new Window("dialog", "Chọn font");
+        win.orientation = "column"; win.alignChildren = "fill";
+        var search = win.add("edittext", undefined, current || ""); search.preferredSize = [380, 24];
+        var list = win.add("listbox", undefined, []); list.preferredSize = [380, 320];
+        function fill() {
+            var q = search.text.toLowerCase(), i;
+            list.removeAll(); shown = [];
+            for (i = 0; i < fonts.length && shown.length < 300; i++) {
+                if (!q || fonts[i].name.toLowerCase().indexOf(q) >= 0 || fonts[i].postscript.toLowerCase().indexOf(q) >= 0) {
+                    shown.push(fonts[i]); list.add("item", fonts[i].name);
+                }
+            }
+            if (shown.length) list.selection = 0;
+        }
+        search.onChanging = fill;
+        var row = win.add("group"); row.alignment = "right";
+        row.add("button", undefined, "Huỷ", {name:"cancel"});
+        row.add("button", undefined, "Chọn", {name:"ok"});
+        list.onDoubleClick = function () { win.close(1); };
+        fill();
+        if (win.show() !== 1 || !list.selection) return null;
+        return shown[list.selection.index];
+    }
+
+    function findFont(text) {
+        var all = installedFonts();
+        for (var j = 0; j < all.length; j++) if (all[j].name === text || all[j].family === text) return all[j];
+        return null;
+    }
+
+    // Bước 2 của "tự chọn font": bảng các loại khung tìm thấy (ảnh mẫu + số khung), chọn font cho từng loại.
+    function finishScan(data, display) {
+        var saved = savedFonts(), rows = [], i, k;
+        var win = new Window("dialog", "Lilyzono · Chọn font theo loại khung");
+        win.orientation = "column"; win.alignChildren = "fill";
+        win.add("statictext", undefined, data.pages.length + " ảnh. Chọn font cho từng loại khung (để trống: font mặc " +
+                "định); tool nhớ lựa chọn cho lần sau.", {multiline:true});
+        var panel = win.add("panel"); panel.orientation = "column"; panel.alignChildren = "fill";
+        for (i = 0; i < data.kinds.length; i++) {
+            k = data.kinds[i];
+            if (!k.count && k.kind !== "flustered") continue;
+            var row = panel.add("group"); row.alignChildren = "center";
+            var pics = row.add("group"); pics.preferredSize = [330, 100];
+            for (var n = 0; n < k.samples.length; n++) pics.add("image", undefined, new File(k.samples[n]));
+            var info = row.add("group"); info.orientation = "column"; info.alignChildren = "left";
+            info.add("statictext", undefined, k.label);
+            info.add("statictext", undefined, k.kind === "flustered" ? "theo câu dịch nói lắp (e- em…)" :
+                     k.count + " khung · " + k.pages + " trang");
+            var pick = info.add("group");
+            var name = pick.add("edittext", undefined, fontLabelOf(saved[k.kind])); name.preferredSize = [190, 22];
+            var choose = pick.add("button", undefined, "Chọn…");
+            var italic = info.add("checkbox", undefined, "Nghiêng");
+            italic.value = !!(saved[k.kind] && saved[k.kind].italic);
+            rows.push(bindRow({kind:k.kind, name:name, italic:italic, choice:saved[k.kind] || null}, choose));
+        }
+        var buttons = win.add("group"); buttons.alignment = "right";
+        buttons.add("button", undefined, "Huỷ", {name:"cancel"});
+        buttons.add("button", undefined, "Type cả chương (" + data.pages.length + " ảnh)", {name:"ok"});
+        if (display === false) return win;
+        if (win.show() !== 1) return "cancel";
+        var fonts = {}, missing = [];
+        for (i = 0; i < rows.length; i++) {
+            var r = rows[i], text = trim(r.name.text);
+            if (!text) continue;
+            var c = r.choice || findFont(text);  // gõ tay tên font: tìm đúng tên trong danh sách của Photoshop
+            if (!c) { missing.push(text); continue; }
+            fonts[r.kind] = {family:c.family, style:c.style, postscript:c.postscript, italic:r.italic.value};
+        }
+        if (missing.length) { alert("Photoshop không có font: " + missing.join(", ") + ". Chọn bằng nút Chọn…"); return "cancel"; }
+        saveFonts(fonts);
+        var request = {protocol:1, profile:"custom", mode:"batch", right_to_left:data.right_to_left, engine:"simple",
+                       custom_fonts:fonts, pages:data.pages};
+        if (data.translation_file) request.translation_file = data.translation_file;
+        else request.translation_text = data.translation_text || "";
+        prepare(app.activeDocument, request, new File(data.script).parent, true);
+        return "ok";
+    }
+
+    function bindRow(entry, choose) {
+        choose.onClick = function () {
+            var f = pickFont(entry.name.text);
+            if (f) { entry.choice = f; entry.name.text = fontLabelOf(f); }
+        };
+        entry.name.onChange = function () { if (entry.name.text !== fontLabelOf(entry.choice)) entry.choice = null; };
+        return entry;
     }
 
     function groupName(data) { return "Lilyzono · " + (data.profile_name || "Typeset"); }
@@ -281,7 +403,7 @@ var LilyzonoPS = (function () {
         var pick = win.add("group");
         pick.add("statictext", undefined, "Bộ font:");
         var names = [], chosen = savedProfile(), i;
-        for (i = 0; i < PROFILES.length; i++) names.push("Typeset " + PROFILES[i].name);
+        for (i = 0; i < PROFILES.length; i++) names.push(PROFILES[i].name);
         var profileBox = pick.add("dropdownlist", undefined, names);
         var fontLabel = win.add("statictext", undefined, "", {multiline:true}); fontLabel.preferredSize = [560, 34];
         profileBox.onChange = function () {
@@ -323,11 +445,15 @@ var LilyzonoPS = (function () {
                 if (missing.length === app.documents.length) { alert("Bản dịch không có số trang khớp tên ảnh nào (vd 013.jpg ↔ 13)."); return; }
                 if (missing.length && !confirm("Không có thoại cho: " + missing.join(", ") + ". Bỏ qua các trang này?")) return;
             }
-            win.result = translation({protocol:1, profile:profile(), mode:"batch", right_to_left:rtl.value, engine:"simple"});
+            var key = profile();
+            // Tự chọn font: quét các loại khung trước, chọn font cho từng loại rồi mới type (finishScan).
+            win.result = translation({protocol:1, profile:key, mode:key === "custom" ? "scan" : "batch",
+                                      right_to_left:rtl.value, engine:"simple"});
             win.close(1);
         };
         go.onClick = function () {
             var request = {protocol:1, profile:profile(), mode:"page", right_to_left:rtl.value, engine:"simple"};
+            if (request.profile === "custom") request.custom_fonts = savedFonts();
             if (translationFile) { win.result = translation(request); win.close(1); return; }
             var lines;
             try { lines = translationLines(input.text, doc.name); } catch (error) { alert(error.message); return; }
@@ -456,7 +582,9 @@ var LilyzonoPS = (function () {
         var folder = new Folder(Folder.temp.fsName + "/LilyzonoPS-" + new Date().getTime() + "-" + Math.floor(Math.random() * 100000));
         if (!folder.create()) throw new Error("Không tạo được thư mục xử lý tạm.");
         workerCommand(scriptFolder, new File(folder.fsName + "/request.json"));
-        if (request.mode === "batch") {
+        if ((request.mode === "batch" || request.mode === "scan") && request.pages) {
+            // Ảnh đã chụp ở bước quét loại khung: dùng lại, không chụp lại.
+        } else if (request.mode === "batch" || request.mode === "scan") {
             // Cả chương: chụp mọi ảnh đang mở (Photoshop bận ~1 giây mỗi trang), rồi giao hết cho bộ xử lý.
             var current = app.activeDocument, pages = [], i, d, f;
             for (i = 0; i < app.documents.length; i++) {
@@ -585,6 +713,7 @@ var LilyzonoPS = (function () {
         if (data.protocol !== 1 || !data.ok) throw new Error(data.error || "Bộ xử lý trả về lỗi.");
         try { app.bringToFront(); } catch (error) {}
         if (data.mode === "batch") return finishBatch(data);
+        if (data.mode === "scan") return finishScan(data);
         if (data.mode === "sfx") return finishSfx(data);
         var doc = findDocument(data.doc_id, data.doc_name);
         app.activeDocument = doc;
@@ -604,7 +733,7 @@ var LilyzonoPS = (function () {
         // Không chờ: bộ xử lý chạy ngầm rồi tự gọi finish() – trong lúc đó Photoshop vẫn dùng bình thường.
         prepare(doc, request, scriptFolder, true);
     }
-    return {main:main, finish:finish, finishBatch:finishBatch, applySfx:applySfx, snapshotBackground:snapshotBackground, apply:apply, prepare:prepare, applyToDocument:applyToDocument, pageHeader:pageHeader,
+    return {main:main, finish:finish, finishBatch:finishBatch, finishScan:finishScan, savedFonts:savedFonts, applySfx:applySfx, snapshotBackground:snapshotBackground, apply:apply, prepare:prepare, applyToDocument:applyToDocument, pageHeader:pageHeader,
             options:options, preview:preview, pixelSize:pixelSize, translationLines:translationLines,
             encode:encode, decode:decode, vbsString:vbsString};
 }());

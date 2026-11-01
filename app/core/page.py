@@ -92,6 +92,7 @@ class Page:
         self.regions: list[Region] = []
         self.detected = False
         self.typeset_profile = ""
+        self.custom_fonts: dict = {}  # bộ "tự chọn font": {loại khung: {"family", "style", "italic"}}
         self.inpainter = None  # hàm inpaint(img, mask) bằng AI cho nền có hoạ tiết; None = OpenCV
 
     @property
