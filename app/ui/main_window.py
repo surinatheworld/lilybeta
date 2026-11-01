@@ -47,7 +47,7 @@ from ..core.clean import skip_hard, small_only
 from ..core.docs import load_lines, load_pages, page_number
 from ..core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available
 from ..core.page import Page, Region
-from ..core.typeset import TextStyle, layout, make_font, missing_chars
+from ..core.typeset import SOFT_BREAK, TextStyle, layout, make_font, missing_chars, raw_text, split_lines
 from ..core.typeset_profiles import (CUSTOM, GAI_BANG, PROFILES, apply_profile, fonts_for, is_italic, kinds_for, profile_style,
                                      region_kind)
 from ..core import manual_ai
@@ -1544,7 +1544,7 @@ class MainWindow(QMainWindow):
 
     def _sync_used_lines(self):
         """Câu đã nằm trong một khung thì đánh dấu đã dùng."""
-        texts = [t for r in (self.page.regions if self.page else []) for t in r.text.split("\n") if t.strip()]
+        texts = [t for r in (self.page.regions if self.page else []) for t in split_lines(r.text) if t.strip()]
         self.used_lines = {i for i, line in enumerate(self.lines) if line in texts}
 
     def _auto_fill(self):
@@ -1800,7 +1800,7 @@ class MainWindow(QMainWindow):
             with self.doc.step("Gõ chữ", merge=f"text:{r.uid}"):
                 if not r.text.strip():
                     r.style = self._style_for(r)  # new text uses the active series font rules
-                r.text = self.txt.toPlainText()
+                r.text = self._typed()
             self._refresh_text([r], before)
 
     def process_selected(self):
@@ -1811,7 +1811,7 @@ class MainWindow(QMainWindow):
         if len(self.selection) > 1:
             self._process_many()
             return
-        r.text = self.txt.toPlainText()
+        r.text = self._typed()
         r.style = self._style_for(r)
 
         def after():
@@ -1828,7 +1828,7 @@ class MainWindow(QMainWindow):
         """Xử lý lần lượt mọi vùng đang chọn với cùng kiểu chữ; vùng chưa có chữ nhận câu dịch kế tiếp."""
         style = self.current_style()
         primary = self.region
-        typed = self.txt.toPlainText()
+        typed = self._typed()
         # Câu chỉ là gợi ý tự điền thì bỏ qua, để chia câu dịch theo đúng thứ tự đọc.
         if typed.strip() and typed != self._suggested_text:
             primary.text = typed
@@ -1866,7 +1866,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Chưa chọn vùng", "Hãy chọn (Ctrl+bấm để chọn nhiều) vùng chữ cần redraw.")
             return
         primary = self.region
-        typed = self.txt.toPlainText()
+        typed = self._typed()
         if primary is not None and typed.strip() and not primary.cleaned:
             primary.text = typed
         style = self.current_style()
@@ -1976,10 +1976,10 @@ class MainWindow(QMainWindow):
 
     def _line_clicked(self, item: QListWidgetItem):
         line = self.lines[item.data(Qt.UserRole)]
-        cur = self.txt.toPlainText().strip()
+        cur = self._typed().strip()
         # Ctrl + bấm: nối thêm câu vào khung (bóng mà người dịch tách thành nhiều câu).
-        if QApplication.keyboardModifiers() & Qt.ControlModifier and cur and line not in cur.split("\n"):
-            self.txt.setPlainText(cur + "\n" + line)
+        if QApplication.keyboardModifiers() & Qt.ControlModifier and cur and line not in split_lines(cur):
+            self.txt.setPlainText(cur + SOFT_BREAK + line)
         else:
             self.txt.setPlainText(line)
 
@@ -2429,8 +2429,13 @@ class MainWindow(QMainWindow):
         m, _ = layout(r.text or "Ag", st, x2 - x1, y2 - y1)
         return rect, m.size
 
+    def _typed(self) -> str:
+        """Chữ trong ô soạn, giữ chỗ ngắt mềm (SOFT_BREAK) giữa các câu dịch gộp chung bóng (toPlainText đổi nó
+        thành xuống dòng tay)."""
+        return raw_text(self.txt)
+
     def _inline_text_changed(self, text: str):
-        if self.txt.toPlainText() != text:
+        if self._typed() != text:
             self.txt.setPlainText(text)  # → _text_edited: ghi chữ vào vùng (có hoàn tác)
         r = self.region
         if r is not None and self.view.editing_text:

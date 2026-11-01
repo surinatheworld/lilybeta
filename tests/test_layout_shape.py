@@ -12,7 +12,7 @@ from PySide6.QtGui import QFontDatabase, QGuiApplication, QImage, QPainter
 from app.core import project
 from app.core.clean import text_area
 from app.core.page import Page, Region
-from app.core.typeset import TextStyle, draw_text, layout, place_in_shape
+from app.core.typeset import SOFT_BREAK, TextStyle, draw_text, layout, place_in_shape, split_lines
 from app.core.vi_words import dangling, joined
 
 NINE = "Cứ như này thì mình sẽ mất kiểm soát mất…"
@@ -61,7 +61,10 @@ class LineShapeTests(unittest.TestCase):
     def test_even_shape_balances_lines(self):
         m, lines = layout(NINE, TextStyle(max_size=20, shape="even"), 260, 260)
         widths = _widths(lines, m)
-        self.assertGreater(min(widths), max(widths) * .45)  # không có dòng 1 chữ như dáng bo tròn
+        self.assertGreater(min(widths[:-1]), max(widths) * .45)  # không có dòng 1 chữ như dáng bo tròn (dòng cuối
+        # ngắn thì được, bản type tay cũng vậy)
+        for a, b, c in zip(widths, widths[1:], widths[2:]):  # không thụt thò: dòng giữa ngắn hơn hẳn cả hai dòng kề
+            self.assertFalse(b < min(a, c) - .15 * max(widths), widths)
 
     def test_compound_words_are_not_split(self):
         text = "Em nhất định sẽ trân trọng nó."
@@ -92,6 +95,21 @@ class LineShapeTests(unittest.TestCase):
         m, lines = layout("Thật sao cơ!?", TextStyle(max_size=26), 60, 170)
         self.assertEqual(len(lines), 3)
         self.assertEqual(m.size, 26)
+
+    def test_lines_merged_into_one_balloon_flow_as_one_block(self):
+        # Người dịch tách một lời thoại theo cột chữ Nhật; tool gộp vào một bóng bằng SOFT_BREAK.
+        text = SOFT_BREAK.join(["không tệ nhỉ", "ha~", "sư phụ này, vì cậu sống ở đây"])
+        self.assertEqual(split_lines(text), ["không tệ nhỉ", "ha~", "sư phụ này, vì cậu sống ở đây"])
+        for w, h in ((180, 300), (220, 260), (300, 200)):
+            m, lines = layout(text, TextStyle(max_size=30, shape="round"), w, h)
+            texts = [ln for ln, _, _ in lines]
+            self.assertNotIn("ha~", texts, (w, h, texts))  # không để mẩu câu đứng trơ một dòng
+            self.assertTrue(all(SOFT_BREAK not in t for t in texts))
+            ends = [a.split()[-1] + " " + b.split()[0] for a, b in zip(texts, texts[1:])]
+            self.assertFalse([e for e in ends if joined(*e.split())], (w, h, texts))
+            widths = _widths(lines, m)
+            for a, b, c in zip(widths, widths[1:], widths[2:]):  # không thụt thò
+                self.assertFalse(b < min(a, c) - .15 * max(widths), (w, h, texts))
 
     def test_manual_line_breaks_are_kept(self):
         _, lines = layout("Cảm ơn\nanh rất nhiều.", TextStyle(max_size=20), 300, 300)

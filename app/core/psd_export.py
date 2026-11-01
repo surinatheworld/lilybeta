@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 
 from .fonts import postscript_name
-from .typeset import text_block
+from .typeset import SOFT_BREAK, text_block
 
 JUSTIFY = {("left", ""): "LEFT", ("center", ""): "CENTER", ("right", ""): "RIGHT",
            "left": "LEFTJUSTIFIED", "center": "CENTERJUSTIFIED", "right": "RIGHTJUSTIFIED", "all": "FULLYJUSTIFIED"}
@@ -322,6 +322,6 @@ def export_without_photoshop(page, out_path: str) -> None:
             continue
         bx1, by1, bx2, by2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
         name = L.name if L.custom_name else (("CHƯA ĐẶT - " if r.orphan else "") + ("REDRAW - " if r.needs_redraw else "")
-                                             + r.text.replace("\n", " "))
+                                             + r.text.replace("\n", " ").replace(SOFT_BREAK, " "))
         add(arr[by1:by2, bx1:bx2], name, L, top=by1, left=bx1)
     psd.save(out_path)

@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
     QTextEdit,
 )
 
+from ..core.typeset import raw_text
+
 COLOR_PENDING = QColor(230, 60, 60)
 COLOR_SFX = QColor(245, 150, 20)
 COLOR_DONE = QColor(40, 170, 80)
@@ -249,7 +251,7 @@ class ImageView(QGraphicsView):
         opt.setAlignment({"left": Qt.AlignLeft, "right": Qt.AlignRight}.get(align, Qt.AlignHCenter))
         ed.document().setDefaultTextOption(opt)
         ed.setFont(font)
-        ed.textChanged.connect(lambda: (self._place_editor(), self.inlineTextChanged.emit(ed.toPlainText())))
+        ed.textChanged.connect(lambda: (self._place_editor(), self.inlineTextChanged.emit(raw_text(ed))))
         ed.installEventFilter(self)
         x1, y1, x2, y2 = rect
         self._editor, self._editor_rect, self._editor_px = ed, QRectF(x1, y1, x2 - x1, y2 - y1), font_px

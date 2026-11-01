@@ -7,7 +7,7 @@ import re
 from .assign import apply_plan, assign_lines
 from .docs import load_pages, page_number
 from .page import Page
-from .typeset import TextStyle
+from .typeset import TextStyle, split_lines
 
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 
@@ -80,4 +80,4 @@ class Chapter:
         plan = assign_lines(page, free, lines)
         apply_plan(page, plan, style)
         self.filled.add(path)
-        return [(r, r.text.split("\n")) for r in page.regions if r.text and id(r) not in had]
+        return [(r, split_lines(r.text)) for r in page.regions if r.text and id(r) not in had]
