@@ -104,7 +104,19 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
     # Nền trơn: hầu hết điểm quanh chữ cùng màu (vài nét lọt vào như vạch "──" không tính).
     med = np.median(border, axis=0) if len(border) else None
     close = (np.abs(border.astype(np.int16) - med).max(axis=1) < 25).mean() if len(border) else 0
-    if len(border) and (border.std(axis=0).max() < 14 or close >= 0.9):
+    flat = len(border) and (border.std(axis=0).max() < 14 or close >= 0.9)
+    if len(border) and getattr(inpainter, "skip", False):
+        # Chỉ xoá chỗ dễ: nền đúng một màu trắng hoặc đen; xám, chuyển màu, tranh lộ qua thì để nguyên, đặt chữ đè lên.
+        # Bỏ qua nét chữ gốc của câu khác trong cùng ô (cột bên cạnh) và viền mực của bóng / ô sát chữ.
+        other = cv2.dilate((text_mask[cy1:cy2, cx1:cx2] > 0.3).astype(np.uint8), np.ones((5, 5), np.uint8))
+        bg_px = crop[(ring > 0) & (other == 0)]
+        if len(bg_px) < 30:
+            bg_px = border
+        diff = np.abs(bg_px.astype(np.int16) - med).max(axis=1)
+        ink = bg_px.max(axis=1) < OUTLINE if med.min() >= WHITE else bg_px.min(axis=1) > 255 - OUTLINE
+        one = ((diff < 25) | ink).mean()
+        flat = one >= ONE_COLOR and (med.min() >= WHITE or med.max() <= BLACK)
+    if flat:
         crop[mask > 0] = med.astype(np.uint8)
         if area_mask is None:
             # Quét nét sót rộng hơn khung chữ (vd vạch dài phía trên chữ), nhưng chỉ trong lòng bóng.
@@ -183,8 +195,24 @@ def _fill_light_bubble(img: np.ndarray, strokes: np.ndarray, box: tuple[int, int
     in_box = np.zeros_like(strokes)
     p = FURIGANA_PAD
     in_box[max(0, y1 - p - wy1):y2 + p - wy1, max(0, x1 - p - wx1):x2 + p - wx1] = True
-    win[holes | (strokes & interior & in_box)] = bg.astype(np.uint8)
+    fill = holes | (strokes & interior & in_box)
+    # Chỉ bóng đúng một màu trắng: bóng trong suốt (tranh xám lộ qua một phần lòng bóng) thì tô trắng thành vệt trắng
+    # → không xoá, chữ dịch đặt đè lên.
+    text = (strokes & in_box).astype(np.uint8)
+    near = (cv2.dilate(text, np.ones((9, 9), np.uint8)) > 0) & ~(cv2.dilate(text, np.ones((3, 3), np.uint8)) > 0)
+    tone = gray[near].astype(np.int16)
+    # Mảng xám trung bình (tranh lộ qua), không tính viền đen của bóng / ô khi chữ nằm sát viền.
+    if near.any() and ((tone < bg.min() - DARK_PATCH) & (tone > OUTLINE)).mean() > SEE_THROUGH:
+        return False
+    win[fill] = bg.astype(np.uint8)
     return True
+
+
+DARK_PATCH = 40  # điểm sát nét chữ tối hơn nền bóng quá mức này: chữ đè lên tranh (bóng trong suốt)…
+SEE_THROUGH = 0.08  # …chiếm hơn 8% quanh chữ thì không phải bóng một màu
+OUTLINE = 90  # tối hơn mức này là viền / nét mực, không phải mảng tranh xám
+WHITE, BLACK = 225, 35  # chế độ "chỉ chỗ dễ": chỉ xoá trên nền trắng / đen thuần…
+ONE_COLOR = 0.98  # …gần như mọi điểm quanh chữ cùng một màu
 
 
 def _drop_edge_holes(holes: np.ndarray, interior: np.ndarray) -> np.ndarray:
