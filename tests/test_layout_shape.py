@@ -111,6 +111,13 @@ class LineShapeTests(unittest.TestCase):
             for a, b, c in zip(widths, widths[1:], widths[2:]):  # không thụt thò
                 self.assertFalse(b < min(a, c) - .15 * max(widths), (w, h, texts))
 
+    def test_rhyming_reduplicatives_count_as_one_word(self):
+        from app.core.vi_words import rhyming
+        for a, b in (("áy", "náy"), ("bồn", "chồn"), ("bối", "rối"), ("lăng", "nhăng")):
+            self.assertTrue(joined(a, b), (a, b))
+        for a, b in (("cô", "có"), ("và", "là"), ("này", "đây")):
+            self.assertFalse(rhyming(a, b), (a, b))
+
     def test_fit_scale_keeps_the_breaks_but_leaves_more_room(self):
         text = "nên chắc cậu cũng đi chơi như này nhiều lắm nhỉ?"
         m, lines = layout(text, TextStyle(max_size=40), 200, 300)

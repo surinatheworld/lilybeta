@@ -25,7 +25,7 @@ from PySide6.QtGui import (
 )
 
 from .fonts import qt_family
-from .vi_words import bare, dangling, ends_clause, final_particle, joined
+from .vi_words import bare, dangling, ends_clause, final_particle, joined, rhyming
 
 MIN_SIZE = 8
 MAX_SIZE = 150
@@ -401,10 +401,14 @@ def _score(style: TextStyle, seg, res, lh: float, want: float, k: int, words=(),
     # Cắt đôi từ ghép ("sư | phụ", "không | tệ"): phạt riêng từng chỗ, để thà nhỏ chữ chút còn hơn cắt từ. Câu
     # 2–3 từ trong bóng hẹp thì không còn chỗ nào khác để ngắt (bản type tay: "THẾ / NHƯNG / …").
     # Tiểu từ một chữ cái đứng trơ một dòng ("đâu / ạ.") cũng vậy.
-    if k > SPLIT_MIN_WORDS and not style.tight:
+    if k > SPLIT_MIN_WORDS:
         plain = [w.rstrip(PARA) for w in words]
-        score += SPLIT_WEIGHT * sum(1 for j in cuts[1:-1] if joined(plain[j - 1], plain[j]) or
-                                    (final_particle(plain[j - 1], plain[j]) and len(bare(plain[j])) == 1))
+        if style.tight:  # chỗ chật: được tách từ ghép ("LANG / THANG"), trừ từ láy ("BỒN / CHỒN", "ÁY / NÁY")
+            score += SPLIT_WEIGHT * sum(1 for j in cuts[1:-1]
+                                        if rhyming(bare(plain[j - 1]), bare(plain[j])) and joined(plain[j - 1], plain[j]))
+        else:
+            score += SPLIT_WEIGHT * sum(1 for j in cuts[1:-1] if joined(plain[j - 1], plain[j]) or
+                                        (final_particle(plain[j - 1], plain[j]) and len(bare(plain[j])) == 1))
     # Thụt thò: bề dài các dòng phải lên dần rồi xuống dần (một đỉnh); mỗi lần đảo chiều thêm là dòng lởm chởm
     # (bản type tay: 89% khối không có dòng nào thụt vào so với cả hai dòng kề).
     if n >= 3:
