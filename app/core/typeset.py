@@ -540,9 +540,10 @@ def _place(text: str, style_key: tuple, shape):
                     best, lo = res, mid + 1
                 else:
                     hi = mid - 1
-            if best is not None and best[1] >= cap:
+            if best is not None and best[1] >= cap and k <= SPLIT_MIN_WORDS:
                 # Câu ngắn trong bóng rộng ("Ừ.", "Vâng"): người typeset để chữ to hơn cỡ chuẩn của trang (tới ~1,4 lần)
-                # cho khỏi lọt thỏm – to dần tới khi chữ phủ được SHORT_FILL bề ngang bóng.
+                # cho khỏi lọt thỏm – to dần tới khi chữ phủ được SHORT_FILL bề ngang bóng. Câu dài hơn 3 từ thì giữ cỡ
+                # chung của trang, bóng to để lề rộng.
                 for size in range(cap + 1, int(cap * SHORT_GROW) + 1):
                     cuts, m = best[2], best[3]
                     seg = _segments(words, style_key, best[1])

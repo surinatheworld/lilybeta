@@ -34,6 +34,9 @@ def reserve_uids(upto: int) -> None:
 MIN_READABLE = .5  # chữ ngoài bóng / SFX không nhỏ hơn nửa cỡ chuẩn của trang
 DARK_BACKGROUND = 90  # độ sáng trung vị dưới mức này: nền tối, chữ trắng
 LOBE_SIZE = 0.85  # bóng đôi: dàn theo thuỳ khi chữ ≥ 85% cỡ đặt được trong khung chữ nhật
+EVEN_KINDS = {"normal", "thought"}  # thoại thường / suy nghĩ: cùng cỡ trên một trang (ô dẫn truyện, SFX, hét thì không)
+EVEN_SLACK = 1.1  # …bóng nào cho chữ to hơn 1,1 lần cỡ chung của trang thì hạ xuống
+EVEN_MIN_REGIONS = 3  # …khi trang có từ 3 bóng thoại
 SHARED_GAP = 0.4  # hai câu chung một bóng: khối chữ cách nhau ≥ 0,4 cỡ chuẩn (bản type tay: 5–20px ở trang 840px)
 SHARED_SIZE_TOL = 0.95  # …chọn cặp khối gọn nhất trong các cặp có cỡ chữ ≥ 95% cỡ to nhất
 TRIM_OPTIONS = 6  # …chạm nhau thì thử cắt bớt 6 khung cho chữ to nhất của mỗi câu
@@ -447,6 +450,29 @@ class Page:
         for r in regions:
             if r.cleaned:
                 self.clean(r, fit_bubble)  # đã xoá rồi: chỉ tính lại khung đặt chữ
+        self.even_sizes()
+
+    def even_sizes(self) -> None:
+        """Như người type (bản type tay, nhóm NaJung): thoại thường trên một trang cùng một cỡ chữ – bóng to thì để
+        lề rộng chứ không phóng chữ to theo bóng. Cỡ chung = trung vị cỡ vừa khít của các bóng thoại; bóng nào cho
+        chữ to hơn EVEN_SLACK lần cỡ đó thì hạ xuống, bóng nhỏ giữ cỡ của nó (câu rất ngắn vẫn được to hơn chút)."""
+        from .typeset_profiles import region_kind
+        talk = [r for r in self.regions if r.cleaned and r.text.strip() and not r.orphan and not r.manual_rect
+                and r.style.size == 0 and r.style.max_size == 0 and region_kind(self, r) in EVEN_KINDS]
+        for r in talk:
+            r.auto_cap = self.auto_cap
+
+        def size(r):
+            x1, y1, x2, y2 = r.text_rect
+            return layout(r.text, r.effective_style, x2 - x1, y2 - y1)[0].size
+
+        fits = [size(r) for r in talk]
+        if len(fits) < EVEN_MIN_REGIONS:
+            return
+        cap = float(np.median(fits)) * EVEN_SLACK
+        for r, fit in zip(talk, fits):
+            if fit > cap:
+                r.auto_cap = cap
 
     def reset(self, region: Region) -> None:
         """Hoàn tác vùng: khôi phục ảnh gốc và bỏ chữ."""
