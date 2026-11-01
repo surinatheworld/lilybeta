@@ -38,7 +38,7 @@ from .core.fonts import files_for
 from .core.page import Page
 from .core.paths import model_path
 from .core.psd_export import clean_layer, layer_specs
-from .core.typeset import TextStyle
+from .core.typeset import TextStyle, clear_caches
 from .core.typeset_profiles import CUSTOM, GAI_BANG, PROFILES, kinds_for, fonts_for, region_kind
 
 PROTOCOL = 1
@@ -66,7 +66,7 @@ def load_request(path: Path) -> dict:
     request = json.loads(path.read_text(encoding="utf-8-sig"))
     if request.get("protocol") != PROTOCOL:
         raise ValueError("Phiên bản công cụ và bộ xử lý không khớp.")
-    if request.get("engine", "simple") not in ("lama", "opencv", "simple"):
+    if request.get("engine", "simple") not in ("opencv", "simple"):
         raise ValueError("Chế độ xoá chữ không hợp lệ.")
     mode = request.get("mode", "page")
     if mode == "sfx":
@@ -183,6 +183,7 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
     cv2.imencode(".png", clean_layer(page))[1].tofile(folder / f"{prefix}redraw.png")
     project.save(str(folder / f"{prefix}editable.lzp"), [page])
     specs = layer_specs(page)
+    clear_caches()  # làm cả chương: RAM không tăng dần theo số trang
     for r, spec in zip(translated, specs):
         spec["source_box"] = list(r.box)
         spec["family"] = r.style.family

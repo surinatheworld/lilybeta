@@ -144,7 +144,7 @@ def main():
         raise ValueError("No translation found for the test image's page number")
     config = {"input":str(input_path.resolve()), "output":str(args.output.resolve()),
               "scriptFolder":str(args.script_folder.resolve()), "resolutions":[72,300],
-              "stem":args.image.stem, "request":{"protocol":1, "profile":args.profile, "engine":"lama", "right_to_left":True, "lines":lines}}
+              "stem":args.image.stem, "request":{"protocol":1, "profile":args.profile, "engine":"simple", "right_to_left":True, "lines":lines}}
     if args.reuse_job:
         config["data"] = json.loads((args.reuse_job / "result.json").read_text(encoding="utf-8"))
     source = (ROOT / "photoshop/Lilyzono.jsx").read_text(encoding="utf-8")

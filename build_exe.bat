@@ -10,6 +10,7 @@ if not exist .venv (
 rem Uu tien DLL he thong, tranh dong goi nham icuuc.dll/CRT tu ung dung khac trong PATH.
 set "PATH=%SystemRoot%\System32;%SystemRoot%;%PATH%"
 .venv\Scripts\python -m PyInstaller --noconfirm --clean --windowed ^
+  --exclude-module onnxruntime ^
   --name Lilyzono ^
   --icon assets\icon.ico ^
   --collect-submodules keyring.backends ^
@@ -18,9 +19,9 @@ set "PATH=%SystemRoot%\System32;%SystemRoot%;%PATH%"
   --collect-data psd_tools ^
   Lilyzono.py || goto :err
 
-rem Bieu tuong va model AI dat canh Lilyzono.exe (model co san thi chep sang, khoi phai tai lai).
+rem Bieu tuong va model nhan dien chu dat canh Lilyzono.exe (model co san thi chep sang, khoi phai tai lai).
 xcopy /y /i /q assets dist\Lilyzono\assets >nul
-if exist models\*.onnx xcopy /y /i /q models\*.onnx dist\Lilyzono\models >nul
+if exist models\comictextdetector.pt.onnx xcopy /y /i /q models\comictextdetector.pt.onnx dist\Lilyzono\models\ >nul
 
 echo.
 echo Xong: dist\Lilyzono\Lilyzono.exe

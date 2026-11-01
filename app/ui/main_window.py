@@ -37,13 +37,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core import cloud, lama, secrets
+from ..core import cloud, secrets
 from ..core.detect import TextDetector
 from ..core.assign import apply_plan, assign_lines
 from ..core import project
 from ..core.chapter import Chapter
 from ..core.document import Stroke, affine, doc_for
-from ..core.clean import skip_hard, small_only
+from ..core.clean import opencv_inpaint, skip_hard
 from ..core.docs import load_lines, load_pages, page_number
 from ..core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available
 from ..core.page import Page, Region
@@ -107,19 +107,6 @@ class DetectWorker(QThread):
             self.failed.emit(str(e))
 
 
-class LamaLoader(QThread):
-    """Nạp sẵn model AI vẽ nền ở luồng nền (mất ~30-40 giây)."""
-
-    done = Signal(str)
-
-    def run(self):
-        try:
-            lama.get_session()
-            self.done.emit("")
-        except Exception as e:  # noqa: BLE001
-            self.done.emit(str(e))
-
-
 class BatchWorker(QThread):
     """Tác vụ dài cho cả chương (nhận diện, xử lý, xuất PSD) ở luồng nền; báo tiến độ từng bước."""
 
@@ -156,14 +143,11 @@ class CleanWorker(QThread):
 
 
 ENGINES = [
-    ("auto", "Tự động – bóng thoại + SFX nhỏ (LaMa), chữ trên tranh để redraw"),
-    ("simple", "Chỉ xoá chỗ đơn giản – nền khó để nguyên, tự redraw sau"),
+    ("simple", "Chỉ xoá chỗ đơn giản – nền khó (SFX, tranh) để nguyên, chữ đặt đè lên"),
     ("opencv", "Thường (OpenCV) – nhanh, nền tranh hơi mờ"),
-    ("lama", "AI LaMa – chạy trên máy, miễn phí"),
     ("gemini", "AI Google Gemini – cần API key"),
     ("openai", "AI OpenAI (ChatGPT) – cần API key"),
 ]
-LOCAL_AI = ("auto", "lama")  # các lựa chọn dùng LaMa trên máy
 
 # Hộp công cụ: (công cụ, ký tự icon, mô tả, phím tắt)
 TOOLS = [
@@ -171,7 +155,7 @@ TOOLS = [
     (TOOL_MARQUEE, "⬚", "Rectangular Marquee – vùng chọn chữ nhật", "M"),
     (TOOL_LASSO_SEL, "➰", "Lasso – vùng chọn tự do", "L"),
     (TOOL_WAND, "✦", "Magic Wand – chọn vùng cùng màu", "W"),
-    (TOOL_HEAL, "✚", "Spot Healing – tô lên chỗ cần xoá, AI vẽ lại khi nhả chuột", "J"),
+    (TOOL_HEAL, "✚", "Spot Healing – tô lên chỗ cần xoá, vẽ lại theo nền khi nhả chuột", "J"),
     (TOOL_BRUSH, "✎", "Brush – cọ (màu trước)", "B"),
     (TOOL_CLONE, "⎘", "Clone Stamp – Alt+bấm lấy điểm mẫu rồi tô", "S"),
     (TOOL_ERASER, "⌫", "Eraser – tẩy (trên layer Redraw: trả về ảnh raw)", "E"),
@@ -432,7 +416,7 @@ class MainWindow(QMainWindow):
         A(m, "Lùi một bước", self.undo, "Ctrl+Alt+Z")
         m.addSeparator()
         A(m, "Tô vùng chọn (Fill)…", self.fill_dialog, ["Shift+F5", "Shift+Backspace"])
-        A(m, "Content-Aware Fill (AI LaMa)", lambda: self.content_aware())
+        A(m, "Content-Aware Fill", lambda: self.content_aware())
         A(m, "Tô màu trước", lambda: self.fill_color(True), "Alt+Backspace")
         A(m, "Tô màu nền", lambda: self.fill_color(False), "Ctrl+Backspace")
         A(m, "Xoá (Delete)", self.delete_key, "Delete")
@@ -570,7 +554,7 @@ class MainWindow(QMainWindow):
             sm.changed.connect(self._sel_mode_changed)
         self.opt_feather = spin(0, 250, 0, " px")
         i_sel = page(self.sel_modes[0], "|", labeled("Feather:", self.opt_feather), "|",
-                     button("Content-Aware Fill", lambda: self.content_aware(), "Vẽ lại phần trong vùng chọn bằng AI LaMa"),
+                     button("Content-Aware Fill", lambda: self.content_aware(), "Vẽ lại phần trong vùng chọn theo nền xung quanh"),
                      button("Tô…", self.fill_dialog), button("Tạo khung chữ", self.region_from_selection,
                                                             "Biến vùng chọn thành khung chữ để xoá chữ & đặt bản dịch"))
         self.opt_tol = spin(0, 255, 32)
@@ -632,7 +616,7 @@ class MainWindow(QMainWindow):
                 TOOL_BRUSH: "Vẽ màu trước lên layer đang chọn · [ ]: đổi cỡ",
                 TOOL_ERASER: "Layer Redraw: tẩy = trả về ảnh raw · layer ảnh: xoá thành trong suốt",
                 TOOL_CLONE: "Alt+bấm để lấy điểm mẫu, rồi tô (giữ khoảng cách mẫu giữa các nét)",
-                TOOL_HEAL: "Tô kín chỗ cần xoá (chữ, SFX…), nhả chuột: AI LaMa vẽ lại theo nền xung quanh",
+                TOOL_HEAL: "Tô kín chỗ cần xoá (chữ, SFX…), nhả chuột: vẽ lại theo nền xung quanh (OpenCV)",
             }[tool])
 
     def _paint_opts_changed(self, *_):
@@ -878,8 +862,8 @@ class MainWindow(QMainWindow):
         for eid, label in ENGINES:
             self.engine_box.addItem(label, eid)
         self.engine_box.setToolTip("Cách vẽ lại nền sau khi xoá chữ. Bóng thoại trắng / nền trơn luôn được tô màu "
-                                   "nền (tức thì); AI chỉ dùng cho nền có hoạ tiết (tranh, lưới chấm, SFX).")
-        idx = self.engine_box.findData(self.settings.value("ai/engine", "auto"))
+                                   "nền (tức thì); nền có hoạ tiết (tranh, lưới chấm, SFX) để nguyên, chữ đặt đè lên.")
+        idx = self.engine_box.findData(self.settings.value("ai/engine", "simple"))
         self.engine_box.setCurrentIndex(max(0, idx))
         self.engine_box.currentIndexChanged.connect(self._engine_changed)
         btn_api = QPushButton("API key…")
@@ -1150,9 +1134,7 @@ class MainWindow(QMainWindow):
     def _engine_changed(self, *_):
         self.settings.setValue("ai/engine", self.engine)
         self.lbl_ai.setText("")
-        if self.engine in LOCAL_AI:
-            self._preload_lama()
-        elif self.engine in PROVIDERS:
+        if self.engine in PROVIDERS:
             if not secrets.get_key(self.engine):
                 self.open_api_dialog()
             self._update_ai_label()
@@ -1169,36 +1151,14 @@ class MainWindow(QMainWindow):
 
     def _make_inpainter(self):
         """Hàm vẽ lại nền theo lựa chọn hiện tại (None = OpenCV)."""
-        if self.engine == "lama":
-            return lama.inpaint
-        if self.engine == "auto":
-            return small_only(lama.inpaint)
         if self.engine == "simple":
             return skip_hard
         if self.engine in PROVIDERS:
             key = secrets.get_key(self.engine)
             if not key:
-                raise cloud.CloudError("Chưa nhập API key. Bấm “API key…” để nhập, hoặc chọn LaMa.")
+                raise cloud.CloudError("Chưa nhập API key. Bấm “API key…” để nhập, hoặc chọn cách xoá khác.")
             return cloud.make_inpainter(self.engine, key, model_for(self.settings, self.engine))
         return None
-
-    def _preload_lama(self):
-        if lama.is_ready() or getattr(self, "_lama_loader", None) is not None:
-            return
-        self._lama_loader = LamaLoader(self)
-        self._lama_loader.done.connect(self._lama_loaded)
-        self._lama_loader.start()
-        self.lbl_ai.setText("⏳ Đang nạp AI vẽ nền (lần đầu ~30 giây)…")
-
-    def _lama_loaded(self, err: str):
-        self._lama_loader = None
-        if err:
-            self.lbl_ai.setText("⚠ Không nạp được LaMa, chuyển sang cách thường.")
-            self.engine_box.setCurrentIndex(self.engine_box.findData("opencv"))
-            QMessageBox.warning(self, "AI vẽ nền", err)
-        else:
-            if self.engine in LOCAL_AI:
-                self.lbl_ai.setText("✓ AI LaMa sẵn sàng")
 
     def _clean_then(self, r, after):
         """Xoá chữ (1 vùng hoặc danh sách vùng) ở luồng nền, xong thì gọi `after()`.
@@ -1217,7 +1177,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "AI vẽ nền", str(e))
             return
         name = self.engine_box.currentText().split(" – ")[0]
-        wait = " (đang chờ nạp model)" if self.engine in LOCAL_AI and not lama.is_ready() else ""
+        wait = ""
         what = f"{len(r)} vùng" if isinstance(r, list) else f"vùng #{self.selected + 1}"
         self.statusBar().showMessage(f"Đang xoá chữ {what} – {name}{wait}…")
         self.centralWidget().setEnabled(False)
@@ -1390,8 +1350,6 @@ class MainWindow(QMainWindow):
         if not self.page.detected:
             self.run_detect()
         self._update_document_enabled()
-        if self.engine in LOCAL_AI:
-            self._preload_lama()
 
     def close_document(self, index: int):
         if not (0 <= index < self.document_tab.count()) or not self._can_switch_document():
@@ -1665,7 +1623,7 @@ class MainWindow(QMainWindow):
         """
         if self.engine in PROVIDERS or self.engine == "simple":
             return (skip_hard, False, self.chk_bubble.isChecked())
-        return (lama.inpaint if self.engine in LOCAL_AI else None, False, self.chk_bubble.isChecked())
+        return (None, False, self.chk_bubble.isChecked())
 
     def _detect_done(self, worker):
         doc_for(worker.page).end()
@@ -2261,7 +2219,7 @@ class MainWindow(QMainWindow):
     def fill_dialog(self):
         if self.doc is None:
             return
-        items = ["Content-Aware (AI LaMa vẽ lại theo nền)", "Màu trước", "Màu nền", "Trắng", "Đen"]
+        items = ["Content-Aware (vẽ lại theo nền)", "Màu trước", "Màu nền", "Trắng", "Đen"]
         item, ok = QInputDialog.getItem(self, "Tô (Fill)", "Nội dung:", items, 0, False)
         if not ok:
             return
@@ -2285,9 +2243,8 @@ class MainWindow(QMainWindow):
         doc.begin(name, [L])
         self._busy = True
         QApplication.setOverrideCursor(Qt.WaitCursor)
-        wait = " (đang nạp AI, lần đầu ~30 giây)" if not lama.is_ready() else ""
-        self.statusBar().showMessage(f"{name}: AI LaMa đang vẽ lại{wait}…")
-        worker = CleanWorker(self, lambda: doc.content_aware_fill(L, lama.inpaint, mask))
+        self.statusBar().showMessage(f"{name}: đang vẽ lại…")
+        worker = CleanWorker(self, lambda: doc.content_aware_fill(L, opencv_inpaint, mask))
         worker.failed.connect(lambda msg: QMessageBox.warning(self, name, msg))
 
         def finished():

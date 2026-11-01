@@ -4,7 +4,7 @@ if not exist .venv (
   echo Dang cai dat lan dau...
   python -m venv .venv || goto :err
 )
-.venv\Scripts\python -c "import PySide6, cv2, numpy, docx, onnxruntime, keyring" 2>nul || (
+.venv\Scripts\python -c "import PySide6, cv2, numpy, docx, keyring" 2>nul || (
   echo Dang cai thu vien...
   .venv\Scripts\python -m pip install -r requirements.txt || goto :err
 )
