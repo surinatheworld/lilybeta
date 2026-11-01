@@ -32,10 +32,13 @@ def reserve_uids(upto: int) -> None:
 
 
 MIN_READABLE = .5  # chữ ngoài bóng / SFX không nhỏ hơn nửa cỡ chuẩn của trang
+OVERLAY_READABLE = .8  # chữ dịch đè lên chữ gốc (không xoá được): nới khung tới khi ≥ 80% cỡ chuẩn
+OVERLAY_STROKE = .12  # …và viền trắng ~3px (12% cỡ chuẩn) để đọc được trên nét chữ gốc / tranh
 DARK_BACKGROUND = 90  # độ sáng trung vị dưới mức này: nền tối, chữ trắng
 LOBE_SIZE = 0.85  # bóng đôi: dàn theo thuỳ khi chữ ≥ 85% cỡ đặt được trong khung chữ nhật
 EVEN_KINDS = {"normal", "thought"}  # thoại thường / suy nghĩ: cùng cỡ trên một trang (ô dẫn truyện, SFX, hét thì không)
 EVEN_SLACK = 1.1  # …bóng nào cho chữ to hơn 1,1 lần cỡ chung của trang thì hạ xuống
+EVEN_GROW = 1.15  # …câu ngắn ở bóng đã hạ cỡ: to thêm tối đa 15% (≈1,25 lần cỡ chung), không phải 1,5 lần
 EVEN_MIN_REGIONS = 3  # …khi trang có từ 3 bóng thoại
 BOX_KINDS = {"square"}  # ô dẫn truyện: cùng cỡ với nhau trên một trang…
 BOX_OUTLIER = 0.7  # …theo ô chật nhất, bỏ qua ô chật bất thường (cỡ < 70% trung vị)
@@ -65,6 +68,8 @@ class Region:
     typeset_kind: str = "auto"  # automatic balloon shape, or a user-selected font category
     orphan: bool = False  # câu không ghép được vào bóng nào: khung tạm, người dùng kéo vào đúng chỗ
     tight: bool = False  # chung bóng với câu khác mà không tách được thuỳ: ưu tiên chữ to, dòng ngắn
+    even: bool = False  # cỡ đã hạ về cỡ chung của trang (even_sizes)
+    group: int = 0  # các câu tách từ cùng một bóng mang chung số này: cùng cỡ chữ
     # Dáng lòng bóng (cx, cy, ((y, trái, phải), …)) để dàn chữ theo đúng hình bóng; None = chỉ dùng text_rects.
     text_shape: tuple | None = None
 
@@ -87,6 +92,10 @@ class Region:
         if self.tight and len(self.text.split()) > TIGHT_MIN_WORDS:
             # chỗ chật vì nhường chỗ cho câu kia: không thu cỡ thêm, chữ to dòng ngắn (câu 2–3 từ thì không cần)
             style = replace(style, fit_scale=1.0, tight=True)
+        if self.even:  # đã hạ về cỡ chung của trang: câu ngắn chỉ được to hơn chút (bản type tay: "Nagi" 1,25 lần)
+            style = replace(style, short_grow=EVEN_GROW)
+        if self.needs_redraw and style.stroke_width == 0 and self.auto_cap:
+            style = replace(style, stroke_width=round(OVERLAY_STROKE * self.auto_cap, 1), stroke_color="#ffffff")
         if style.size == 0 and style.max_size == 0 and self.auto_cap:
             return replace(style, max_size=self.auto_cap)
         return style
@@ -441,8 +450,9 @@ class Page:
         def size(rect):
             return layout(region.text, style, rect[2] - rect[0], rect[3] - rect[1])[0].size
 
+        floor = (OVERLAY_READABLE if region.needs_redraw else MIN_READABLE) * cap
         x1, y1, x2, y2 = region.text_rect
-        if size((x1, y1, x2, y2)) >= MIN_READABLE * cap:
+        if size((x1, y1, x2, y2)) >= floor:
             return
         if region.text_shape:
             # Lòng bóng lấy được quá nhỏ (bóng trong suốt bị nét tóc / nét vẽ cắt ngang): bỏ dáng bóng, nới khung
@@ -463,7 +473,7 @@ class Page:
                 got = size(c)
                 if best is None or got > best[0]:
                     best = (got, c)
-                if got >= MIN_READABLE * cap:
+                if got >= floor:
                     region.text_rects = [c]
                     return
         if best:
@@ -521,7 +531,7 @@ class Page:
                     groups.setdefault("box", []).append(r)
         for group, regions in groups.items():
             for r in regions:
-                r.auto_cap = self.auto_cap
+                r.auto_cap, r.even = self.auto_cap, False
             fits = [self._fit_size(r) for r in regions]
             if group == "talk":
                 if len(fits) < EVEN_MIN_REGIONS:
@@ -534,7 +544,20 @@ class Page:
                 cap = min(usual) * EVEN_SLACK
             for r, fit in zip(regions, fits):
                 if fit > cap:
-                    r.auto_cap = cap
+                    r.auto_cap, r.even = cap, True
+        # Hai câu chung một bóng: cùng cỡ (chap 23 trang 23: 17px cạnh 21px trông như hai bóng khác nhau).
+        shared: dict[int, list[Region]] = {}
+        for r in (r for rs in groups.values() for r in rs):
+            if r.group:
+                shared.setdefault(r.group, []).append(r)
+        for parts in shared.values():
+            if len(parts) < 2:
+                continue
+            fits = [self._fit_size(r) for r in parts]
+            cap = min(fits) * EVEN_SLACK
+            for r, fit in zip(parts, fits):
+                if fit > cap:
+                    r.auto_cap, r.even = min(r.auto_cap, cap), True
 
     def _fit_size(self, r: Region) -> int:
         x1, y1, x2, y2 = r.text_rect

@@ -229,8 +229,53 @@ def sort_reading_order(boxes: list[TextBox], right_to_left: bool = True, img: np
     if img is not None and len(boxes) > 1:
         gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         # Khe giữa panel: trắng, hoặc đen ở trang nền đen (hồi tưởng, mở đầu chương).
-        return _xy_cut((gray >= 235) | (gray <= 25), boxes, (0, 0, gray.shape[1], gray.shape[0]), right_to_left, 0)
+        order = _xy_cut((gray >= 235) | (gray <= 25), boxes, (0, 0, gray.shape[1], gray.shape[0]), right_to_left, 0)
+        return _balloons_together(order, gray)
     return _row_order(boxes, right_to_left)
+
+
+BALLOON_LIGHT = 200  # lòng bóng: điểm sáng hơn mức này
+BALLOON_COVER = 0.4  # khung chữ thuộc một bóng khi ≥ 40% khung là lòng bóng đó
+BALLOON_AREA = 8  # lòng bóng rộng tối đa 8 lần tổng khung chữ trong nó (to hơn: nền trắng của panel, không phải bóng)
+
+
+def _balloons_together(order: list[TextBox], gray: np.ndarray) -> list[TextBox]:
+    """Các câu chung một bóng (bóng đôi, hai cột chữ) đọc liền nhau: SFX / bóng khác nằm giữa theo thứ tự hàng thì
+    dời ra sau (chap 23 trang 21: "…私は蒼太君が大好きで" – "その" chung bóng, SFX "むく…" cao hơn "その" nhưng đọc sau)."""
+    if len(order) < 3:
+        return order
+    h, w = gray.shape
+    n, lab, stats, _ = cv2.connectedComponentsWithStats((gray >= BALLOON_LIGHT).astype(np.uint8), connectivity=4)
+    ids = []
+    for b in order:
+        x1, y1, x2, y2 = max(0, b.x1), max(0, b.y1), min(w, b.x2), min(h, b.y2)
+        inner = lab[y1:y2, x1:x2]
+        inner = inner[inner > 0]
+        top = np.bincount(inner) if inner.size else np.zeros(1, int)
+        # khung chữ trong bóng: phần lớn là lòng bóng; khung SFX trên tranh chỉ chạm mép bóng thì không tính
+        ids.append(int(top.argmax()) if top.max() >= BALLOON_COVER * max(1, (x2 - x1) * (y2 - y1)) else 0)
+    members: dict[int, list[TextBox]] = {}
+    for b, i in zip(order, ids):
+        members.setdefault(i, []).append(b)
+    def balloon(i):
+        if i == 0 or len(members[i]) < 2:
+            return False
+        x, y, bw, bh, area = stats[i]
+        if x == 0 or y == 0 or x + bw >= w or y + bh >= h:
+            return False  # nền trắng chạm mép trang: lề / khe giữa panel
+        return area <= BALLOON_AREA * sum(b.area for b in members[i])
+    out, done = [], set()
+    for k, (b, i) in enumerate(zip(order, ids)):
+        if k in done:
+            continue
+        out.append(b)
+        done.add(k)
+        if balloon(i):
+            for j in range(k + 1, len(order)):
+                if ids[j] == i and j not in done:
+                    out.append(order[j])
+                    done.add(j)
+    return out
 
 
 def _gutters(white: np.ndarray, axis: int, lo: int, hi: int) -> list[int]:
@@ -278,7 +323,61 @@ def _xy_cut(white, boxes, area, rtl, depth):
         for part_area, part in parts:
             out += _xy_cut(white, part, part_area, rtl, depth + 1)
         return out
+    split = _slanted_cut(sub, boxes, area)
+    if split:
+        first, second, axis = split  # phía trên / trái trước
+        parts = [second, first] if axis == 0 and rtl else [first, second]  # khe chéo dọc: manga đọc panel phải trước
+        return [b for part, part_area in parts for b in _xy_cut(white, part, part_area, rtl, depth + 1)]
     return _row_order(boxes, rtl)
+
+
+SLANT_MAX = 0.35  # khe chéo giữa hai panel: lệch tối đa 35% chiều dài khe
+
+
+def _slanted_cut(sub: np.ndarray, boxes: list[TextBox], area):
+    """Khe giữa hai panel chạy chéo (không cắt thẳng được): thử các đường nghiêng, lấy đường trắng suốt dài khối, không
+    đi qua khung chữ nào và chia các khung thành hai phía. Trả về ((khung, vùng) phía trên/trái, (…) phía dưới/phải,
+    trục) hoặc None."""
+    x1, y1, x2, y2 = area
+    for axis in (1, 0):  # 1: khe ngang chéo (hai hàng panel), 0: khe dọc chéo (hai panel trong hàng)
+        m = np.ascontiguousarray(sub.T if axis == 1 else sub).astype(np.uint8)  # mỗi hàng của m: một điểm dọc theo khe
+        h, w = m.shape
+        if h < 40 or w < 40:
+            continue
+        # toạ độ (theo trục cắt) và khoảng dọc khe của từng khung, trong hệ của m
+        spans = [((b.y1 - y1, b.y2 - y1, b.x1 - x1, b.x2 - x1) if axis == 1 else (b.x1 - x1, b.x2 - x1, b.y1 - y1, b.y2 - y1))
+                 for b in boxes]
+        limit = int(SLANT_MAX * h)
+        # nghiêng ít trước: đường đầu tiên chia được các khung là đường gần thẳng nhất
+        for d in sorted((d for d in range(-limit, limit + 1, 2) if abs(d) >= 4), key=abs):
+            # cột c của ảnh xiên = đường từ (c, đầu khe) tới (c + d, cuối khe) trên ảnh gốc
+            shear = np.float32([[1, d / (h - 1), 0], [0, 1, 0]])
+            sheared = cv2.warpAffine(m, shear, (w, h), flags=cv2.INTER_NEAREST | cv2.WARP_INVERSE_MAP, borderValue=0)
+            white = np.concatenate(([0], (sheared.mean(axis=0) >= 0.995).astype(np.int8), [0]))
+            edges = np.flatnonzero(np.diff(white))
+            for a, b in zip(edges[::2], edges[1::2]):  # dải trắng [a, b)
+                if b - a < 4 or a == 0 or b == w:
+                    continue
+                mid = (a + b) // 2  # đường giữa khe: điểm đầu tại `mid`, điểm cuối tại mid + d
+                sides = []
+                for a0, a1, s0, s1 in spans:
+                    lo = mid + d * max(0, s0) / (h - 1)
+                    hi = mid + d * min(h - 1, s1) / (h - 1)
+                    if a1 - 2 <= min(lo, hi):
+                        sides.append(0)
+                    elif a0 + 2 >= max(lo, hi):
+                        sides.append(1)
+                    else:
+                        break
+                if len(sides) < len(spans) or not 0 < sum(sides) < len(sides):
+                    continue
+                first = [bx for bx, side in zip(boxes, sides) if side == 0]
+                second = [bx for bx, side in zip(boxes, sides) if side == 1]
+                far, near = mid + max(0, d), mid + min(0, d)
+                if axis == 1:
+                    return (first, (x1, y1, x2, y1 + far)), (second, (x1, y1 + near, x2, y2)), axis
+                return (first, (x1, y1, x1 + far, y2)), (second, (x1 + near, y1, x2, y2)), axis
+    return None
 
 
 def _row_order(boxes: list[TextBox], right_to_left: bool = True) -> list[TextBox]:

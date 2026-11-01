@@ -993,7 +993,10 @@ class MainWindow(QMainWindow):
         for key, default in vars(TextStyle()).items():
             v = self.settings.value(f"style/{key}")
             if v is not None:
-                setattr(s, key, type(default)(v) if not isinstance(default, bool) else v in (True, "true"))
+                try:
+                    setattr(s, key, type(default)(v) if not isinstance(default, bool) else v in (True, "true"))
+                except (TypeError, ValueError):
+                    pass  # giá trị cũ khác kiểu (trường đã đổi): giữ mặc định
         self._apply_style_to_ui(s)
         self._update_warning()
 

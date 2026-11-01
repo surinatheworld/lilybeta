@@ -95,6 +95,30 @@ class ReadableSizeTests(unittest.TestCase):
             type(page).auto_cap = _CAP
         self.assertGreaterEqual(_size(r), MIN_READABLE * 40)
 
+    def test_translation_laid_over_kept_lettering_is_readable_and_outlined(self):
+        # chap 23 trang 8: chữ trên nền tranh không xoá được, chữ dịch đè lên phải đủ to và có viền trắng.
+        from app.core.page import OVERLAY_READABLE
+        page = _page(np.full((800, 600, 3), 160, np.uint8))
+        r = Region((280, 380, 300, 440), text="Cứ như thể", cleaned=True, needs_redraw=True)
+        r.style = TextStyle(max_size=40)
+        page.regions = [r]
+        type(page).auto_cap = property(lambda self: 40.)
+        try:
+            page.clean(r)
+        finally:
+            type(page).auto_cap = _CAP
+        self.assertGreaterEqual(_size(r), OVERLAY_READABLE * 40)
+        self.assertGreater(r.effective_style.stroke_width, 0)
+        self.assertEqual(r.effective_style.stroke_color, "#ffffff")
+
+    def test_shrinking_for_shape_stays_near_the_page_size_but_may_go_further_to_keep_words_whole(self):
+        from app.core.typeset import SHRINK_FLOOR, _smallest
+        style = TextStyle(max_size=26)
+        whole = [("Không", True, False), ("có gì", False, False), ("đâu.", False, True)]
+        self.assertGreaterEqual(_smallest(style, 23, whole), SHRINK_FLOOR * 26)  # không tụt 23 → 18 chỉ vì dáng khối
+        split = [("Chuyện", True, False), ("ở công", False, False), ("viên", False, False), ("giải trí", False, True)]
+        self.assertLessEqual(_smallest(style, 25, split), 18)  # được nhỏ đi để "công viên" khỏi bị cắt đôi
+
     def test_joined_balloons_give_each_line_its_own_lobe(self):
         img = np.full((700, 900, 3), 120, np.uint8)
         for c in ((280, 330), (600, 330)):  # hai bóng tròn dính nhau qua một chỗ thắt hẹp
