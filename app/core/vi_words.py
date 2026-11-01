@@ -51,7 +51,7 @@ mẹ con, vợ chồng, cô dâu, chú rể, hôn nhân, thông gia, họ hàng,
 làm phiền, phiền phức, rắc rối, lo xa, yên tâm, an tâm, cảm động, xúc động, khó khăn, dễ dàng, đơn giản,
 phức tạp, ít khi, có khi, lý do, lí do, tự do, nhân vật, hoạt hình, tụi mình, tụi tớ, như này, như kia, cao hơn,
 ở trên, ở dưới, phía dưới, phía trên, công bằng, sư phụ, đệ tử, không tệ, du khách, rõ ràng, khắp nơi,
-lang thang, trẻ con, nhiều lắm
+lang thang, trẻ con
 """
 
 COMPOUNDS: frozenset[tuple[str, str]] = frozenset(
