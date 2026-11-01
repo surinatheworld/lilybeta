@@ -607,6 +607,19 @@ def best_rect(text: str, style: TextStyle, rects: list[tuple[int, int, int, int]
     return max(rects, key=score)
 
 
+def block_box(text: str, style: TextStyle, rect):
+    """Khối chữ thật khi dàn trong `rect` (căn giữa như draw_text): (trái, trên, phải, dưới, cỡ chữ, khung từng dòng)."""
+    x1, y1, x2, y2 = rect
+    m, lines = layout(text, style, x2 - x1, y2 - y1)
+    pad, iw, _ = _inner(style, x2 - x1, y2 - y1)
+    cx, top = x1 + pad + style.indent_left + iw / 2, (y1 + y2) / 2 - _block_height(lines, m, style) / 2
+    rows = tuple((cx - m.adv(ln) / 2, top + i * m.lh, cx + m.adv(ln) / 2, top + (i + 1) * m.lh)
+                 for i, (ln, _, _) in enumerate(lines))
+    if not rows:
+        return cx, top, cx, top, m.size, rows
+    return min(r[0] for r in rows), top, max(r[2] for r in rows), rows[-1][3], m.size, rows
+
+
 def _line_path(text: str, m: _Metrics, gap: float = 0.0) -> QPainterPath:
     """Đường nét của một dòng tại gốc (0, đường cơ sở); `gap` = khoảng thêm giữa các từ khi dàn đều."""
     path = QPainterPath()
