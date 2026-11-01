@@ -12,7 +12,7 @@ from app.core.assign import apply_plan, assign_lines
 from app.core.clean import lobe_shape
 from app.core.detect import TextBox, sort_reading_order
 from app.core.page import MIN_READABLE, Page, Region
-from app.core.typeset import TextStyle, layout
+from app.core.typeset import TextStyle, block_box, layout
 
 FONT = os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", "arial.ttf")
 _CAP = Page.auto_cap
@@ -115,6 +115,31 @@ class ReadableSizeTests(unittest.TestCase):
             x1, _, x2, _ = r.text_rect
             self.assertTrue(lo - 5 <= x1 and x2 <= hi + 5, (r.text, r.text_rect))  # chữ nằm gọn trong bóng của nó
             self.assertGreaterEqual(_size(r), 30)
+
+    def test_staggered_lines_in_one_balloon_do_not_touch(self):
+        img = np.full((1400, 1400, 3), 120, np.uint8)
+        cv2.ellipse(img, (480, 300), (190, 230), 0, 0, 360, (255, 255, 255), -1)  # thuỳ trên phải
+        cv2.ellipse(img, (300, 480), (190, 230), 0, 0, 360, (255, 255, 255), -1)  # thuỳ dưới trái, dính liền
+        page = _page(img)
+        a = Region((500, 150, 560, 400), text="nãy giờ ông cứ ngó qua ngó lại rồi đi lang thang khắp nơi", cleaned=True)
+        b = Region((250, 420, 310, 640), text="vậy nên, rõ ràng ông là du khách Nhật", cleaned=True)
+        page.regions = [a, b]
+        type(page).auto_cap = property(lambda self: 40.)
+        try:
+            for r in (a, b):
+                r.style = TextStyle(max_size=40)
+                page.clean(r)
+            boxes = [block_box(r.text, r.effective_style, r.text_rect) for r in (a, b)]
+        finally:
+            type(page).auto_cap = _CAP
+        (*_, sa, la), (*_, sb, lb) = boxes
+        gap = 0.4 * 40 - 1
+        for p in la:  # không dòng nào của câu này chạm dòng của câu kia
+            for q in lb:
+                self.assertTrue(q[2] + gap <= p[0] or p[2] + gap <= q[0] or p[3] + gap <= q[1] or q[3] + gap <= p[1],
+                                (p, q))
+        self.assertLess(boxes[0][1], boxes[1][1])  # bậc thang: câu trước cao hơn câu sau
+        self.assertLessEqual(abs(sa - sb), 0.15 * max(sa, sb), boxes)  # cỡ chữ hai câu gần bằng nhau
 
     def test_a_big_middle_lobe_does_not_swallow_a_small_end_lobe(self):
         img = np.full((600, 1100, 3), 120, np.uint8)

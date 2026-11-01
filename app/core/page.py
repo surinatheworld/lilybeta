@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 import os
 from dataclasses import dataclass, field, replace
 
@@ -12,7 +13,7 @@ from PySide6.QtGui import QImage, QPainter
 
 from .clean import MARGIN, clean_local, fill_bubble, is_small_sfx, lobe_shape, text_area
 from .detect import TextDetector, sort_reading_order
-from .typeset import TextStyle, best_rect, draw_text, layout, place_in_shape
+from .typeset import TextStyle, best_rect, block_box, draw_text, layout, place_in_shape
 from .typeset_profiles import apply_profile, profile_style
 
 Box = tuple[int, int, int, int]
@@ -33,6 +34,9 @@ def reserve_uids(upto: int) -> None:
 MIN_READABLE = .5  # chữ ngoài bóng / SFX không nhỏ hơn nửa cỡ chuẩn của trang
 DARK_BACKGROUND = 90  # độ sáng trung vị dưới mức này: nền tối, chữ trắng
 LOBE_SIZE = 0.85  # bóng đôi: dàn theo thuỳ khi chữ ≥ 85% cỡ đặt được trong khung chữ nhật
+SHARED_GAP = 0.4  # hai câu chung một bóng: khối chữ cách nhau ≥ 0,4 cỡ chuẩn (bản type tay: 5–20px ở trang 840px)
+SHARED_SIZE_TOL = 0.95  # …chọn cặp khối gọn nhất trong các cặp có cỡ chữ ≥ 95% cỡ to nhất
+TRIM_OPTIONS = 6  # …chạm nhau thì thử cắt bớt 6 khung cho chữ to nhất của mỗi câu
 
 
 @dataclass
@@ -269,6 +273,7 @@ class Page:
         else:
             region.text_rects = [region.box]
         self._readable(region)
+        self._separate(region)
         self._contrast(region)
 
     def _contrast(self, region: Region) -> None:
@@ -279,6 +284,60 @@ class Page:
         patch = self.working[max(0, y1):y2, max(0, x1):x2]
         if patch.size and float(np.median(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY))) < DARK_BACKGROUND:
             region.style = replace(region.style, color="#ffffff")
+
+    def _separate(self, region: Region) -> None:
+        """Hai câu chung một bóng: khối chữ không được chồng / sát nhau. Chạm thì chọn lại khung cho cả hai cùng lúc,
+        cỡ chữ hai bên càng đều càng tốt (bản type tay: khối trước ở thuỳ trên phải, khối sau thuỳ dưới trái)."""
+        if region.kind == "sfx" or region.orphan or region.manual_rect or not region.text.strip():
+            return
+        gap = SHARED_GAP * region.auto_cap
+
+        def apart(a, b):
+            """Không dòng nào của khối này sát dòng nào của khối kia (khung bao chồng góc vẫn được: dòng đầu/cuối
+            ngắn, như bản type tay)."""
+            return not any(p[0] < q[2] + gap and q[0] < p[2] + gap and p[1] < q[3] + gap and q[1] < p[3] + gap
+                           for p in a[5] for q in b[5])
+
+        def options(r):
+            """(khung, có giữ dáng bóng không, khung khối chữ) – khung đang dùng đứng đầu."""
+            current = r.text_rect
+            if r.manual_rect:
+                return [(current, True, block_box(r.text, r.effective_style, current))]
+            rects = [current] + [c for c in r.text_rects if c != current]
+            return [(c, bool(r.text_shape) and i == 0, block_box(r.text, r.effective_style, c))
+                    for i, c in enumerate(rects)]
+
+        for other in self.regions:
+            if (other is region or other.kind == "sfx" or other.orphan or not other.cleaned
+                    or not other.text.strip() or not (other.text_rects or other.text_shape or other.manual_rect)):
+                continue
+            mine, theirs = options(region), options(other)
+            if apart(mine[0][2], theirs[0][2]):
+                continue
+            pairs = [(a, b) for a in mine for b in theirs if apart(a[2], b[2])]
+            # Khung to bị khối kia chiếm một góc: cắt bỏ phần đó (khối trước nhích lên, khối sau nhích xuống).
+            big = lambda opts: sorted(opts, key=lambda o: -o[2][4])[:TRIM_OPTIONS]  # noqa: E731
+            for a in big(mine):
+                for b in big(theirs):
+                    if apart(a[2], b[2]):
+                        continue
+                    for r, keep, fixed, flip in ((region, a, b, False), (other, b, a, True)):
+                        if keep[1] and (r.manual_rect or r.text_shape):
+                            continue
+                        for cut in _cuts(keep[0], fixed[2], gap):
+                            o = (cut, False, block_box(r.text, r.effective_style, cut))
+                            if apart(o[2], fixed[2]):
+                                pairs.append((fixed, o) if flip else (o, fixed))
+            if not pairs:
+                continue
+            # Cỡ chữ hai bên đều và to nhất; gần bằng nhau (≤ 5%) thì chọn cặp khối gọn (gần vuông), tránh cột dài
+            # mỗi dòng một từ.
+            top = max(min(a[2][4], b[2][4]) for a, b in pairs)
+            pairs = [p for p in pairs if min(p[0][2][4], p[1][2][4]) >= SHARED_SIZE_TOL * top]
+            a, b = min(pairs, key=lambda p: (max(_lanky(p[0][2]), _lanky(p[1][2])), -p[0][2][4] - p[1][2][4]))
+            for r, (rect, keep, _) in ((region, a), (other, b)):
+                if not keep:
+                    r.text_shape, r.text_rects = None, [rect]
 
     def _shared_shape(self, region: Region, shape, span):
         """Dáng đặt chữ khi bóng chứa cả chữ của câu khác: bóng đôi thì lấy thuỳ của câu này (tách tại chỗ thắt),
@@ -421,6 +480,20 @@ class Page:
     def export(self, path: str) -> None:
         if not self.render().save(path, None, 95):  # JPEG chất lượng 95
             raise IOError(f"Không lưu được: {path}")
+
+
+def _lanky(block) -> float:
+    """Khối chữ dài / bẹt cỡ nào: 0 = vuông."""
+    return abs(math.log(max(block[3] - block[1], 1) / max(block[2] - block[0], 1)))
+
+
+def _cuts(rect, block, gap):
+    """Phần của `rect` nằm hẳn một phía (trái / phải / trên / dưới) của khối chữ `block`, cách `gap`."""
+    x1, y1, x2, y2 = rect
+    bx1, by1, bx2, by2 = (int(v) for v in block[:4])
+    out = [(x1, y1, min(x2, bx1 - int(gap)), y2), (max(x1, bx2 + int(gap)), y1, x2, y2),
+           (x1, y1, x2, min(y2, by1 - int(gap))), (x1, max(y1, by2 + int(gap)), x2, y2)]
+    return [c for c in out if c[2] - c[0] > 20 and c[3] - c[1] > 20 and c != rect]
 
 
 def color_text_mask(img: np.ndarray) -> np.ndarray:
