@@ -531,6 +531,28 @@ var LilyzonoPS = (function () {
         return win.show() === 1;
     }
 
+    // Viền chữ (Layer Style > Stroke) cho layer đang chọn: chữ dịch đè lên chữ gốc / tranh vẫn đọc được.
+    function addStroke(size, hexColor) {
+        var c = charIDToTypeID, d = new ActionDescriptor(), r = new ActionReference();
+        r.putProperty(c("Prpr"), c("Lefx"));
+        r.putEnumerated(c("Lyr "), c("Ordn"), c("Trgt"));
+        d.putReference(c("null"), r);
+        var fx = new ActionDescriptor(), st = new ActionDescriptor(), rgb = new ActionDescriptor(), color = new SolidColor();
+        color.rgb.hexValue = hexColor;
+        fx.putUnitDouble(c("Scl "), c("#Prc"), 100);
+        st.putBoolean(c("enab"), true);
+        st.putEnumerated(c("Styl"), c("FStl"), c("OutF"));
+        st.putEnumerated(c("PntT"), c("FrFl"), c("SClr"));
+        st.putEnumerated(c("Md  "), c("BlnM"), c("Nrml"));
+        st.putUnitDouble(c("Opct"), c("#Prc"), 100);
+        st.putUnitDouble(c("Sz  "), c("#Pxl"), size);
+        rgb.putDouble(c("Rd  "), color.rgb.red); rgb.putDouble(c("Grn "), color.rgb.green); rgb.putDouble(c("Bl  "), color.rgb.blue);
+        st.putObject(c("Clr "), c("RGBC"), rgb);
+        fx.putObject(c("FrFX"), c("FrFX"), st);
+        d.putObject(c("T   "), c("Lefx"), fx);
+        executeAction(c("setd"), d, DialogModes.NO);
+    }
+
     function apply() {
         var doc = context.doc, data = context.data;
         var oldRuler = app.preferences.rulerUnits, oldType = app.preferences.typeUnits, oldDialogs = app.displayDialogs;
@@ -567,6 +589,7 @@ var LilyzonoPS = (function () {
                 text.position = [new UnitValue(layer.left - slack / 2, "px"), new UnitValue(layer.first_baseline - layer.ascent, "px")];
                 text.hyphenation = false;
                 art.name = (layer.orphan ? "CHƯA ĐẶT · " : "") + (layer.redraw ? "REDRAW · " : "") + (i + 1) + ". " + layer.contents.replace(/[\r\u0003]/g, " ");
+                if (layer.stroke > 0) { doc.activeLayer = art; addStroke(layer.stroke, layer.stroke_color || "ffffff"); }
             }
             doc.activeLayer = group;
         } finally {

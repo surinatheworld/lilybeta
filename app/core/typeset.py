@@ -58,6 +58,8 @@ SYMMETRY_WEIGHT = 0.6  # phạt khối bo tròn lệch: dòng trên và dòng d�
 SHRINK_MAX = 0.25  # được nhỏ chữ tối đa 25% so với cỡ lớn nhất vừa khung (khi nhờ đó khỏi cắt từ, khỏi thụt thò)…
 TIGHT_SHRINK = 0.08  # …chỗ chật thì chỉ 8%: chữ to, dòng ngắn theo dáng bóng (tách cả từ ghép) hơn là chữ bé dòng đều
 SHRINK_COST = 1.2  # …nếu điểm dáng tốt lên hơn 0,12 cho mỗi 10% nhỏ đi
+SHRINK_FLOOR = 0.8  # …và không nhỏ hơn 80% cỡ chuẩn của trang (đã chật sẵn dưới mức đó thì không thu thêm)
+SPLIT_SHRINK = 0.3  # cỡ lớn nhất phải cắt đôi từ ghép: được nhỏ tới 30% để giữ nguyên từ
 SCRIPT_SIZE = 0.583  # cỡ chỉ số trên/dưới so với cỡ chữ (mặc định Photoshop 58.3%)
 SCRIPT_POS = 0.333  # độ nâng/hạ chỉ số trên/dưới (mặc định Photoshop 33.3%)
 
@@ -110,6 +112,7 @@ class TextStyle:
     shape: str = "round"  # "round" = bo tròn (dòng giữa dài, trên/dưới ngắn) | "even" = các dòng dài đều | "" = lấp đầy dòng
     fit_scale: float = 1.0  # tự co: dàn xong thì thu cỡ chữ theo tỉ lệ này, giữ nguyên cách xuống dòng (chừa lề rộng hơn)
     tight: bool = False  # chỗ chật (bóng chung hai câu không tách được thuỳ): ưu tiên chữ to, dòng ngắn, được tách từ ghép
+    short_grow: float = 0.0  # câu ngắn được to hơn cỡ tối đa tới chừng này lần (0 = SHORT_GROW); cỡ đã hạ về cỡ chung thì ít hơn
 
     def copy(self) -> "TextStyle":
         return TextStyle(**asdict(self))
@@ -268,15 +271,36 @@ def _layout(text: str, style_key: tuple, w: int, h: int):
     if shaped and style.size <= 0:
         # Như người typeset: chịu nhỏ chữ đi chút (≤25%) nếu nhờ đó khối chữ đẹp hơn, không cắt đôi từ ghép.
         top = size
-        for smaller in range(top - 1, max(MIN_SIZE, int(top * (1 - _shrink_max(style)))) - 1, -1):
+        for smaller in range(top - 1, max(MIN_SIZE, math.ceil(_smallest(style, top, shaped[1]))) - 1, -1):
             res = _shape_lines(text, style, style_key, smaller, iw, ih, fit(smaller)[2])
             if res and res[0] + SHRINK_COST * (1 - smaller / top) < shaped[0] + SHRINK_COST * (1 - size / top):
                 shaped, size = res, smaller
     return ok, _fit(style, size), shaped[1] if shaped else lines
 
 
-def _shrink_max(style: TextStyle) -> float:
-    return TIGHT_SHRINK if style.tight else SHRINK_MAX
+def _smallest(style: TextStyle, top: float, lines=None) -> float:
+    """Cỡ nhỏ nhất được chịu để khối chữ đẹp hơn: bớt tối đa SHRINK_MAX (chỗ chật TIGHT_SHRINK) so với cỡ lớn nhất
+    vừa khung `top`. Khối chữ ở cỡ `top` không cắt đôi từ ghép nào (`lines`) thì chỉ còn lý do dáng khối: không xuống
+    dưới SHRINK_FLOOR cỡ chuẩn của trang – một trang một cỡ chữ (chap 23 trang 8: "Không / có gì / đâu." 23px tụt
+    thành "Không có / gì đâu." 18px khi cỡ chuẩn 26px). Còn cắt từ thì vẫn được nhỏ đi để giữ nguyên từ."""
+    floor = top * (1 - (TIGHT_SHRINK if style.tight else SHRINK_MAX))
+    if lines is None or style.tight:
+        return floor
+    if _splits(lines):  # ô hẹp: "Chuyện / ở công / viên / giải / trí" → "Chuyện ở / công viên / giải trí" nhỏ hơn 28%
+        return top * (1 - SPLIT_SHRINK)
+    if style.max_size > 0:
+        floor = max(floor, min(top, SHRINK_FLOOR * style.max_size))
+    return floor
+
+
+def _splits(lines) -> int:
+    """Số chỗ xuống dòng cắt đôi từ ghép ("công | viên")."""
+    out = 0
+    for a, b in zip(lines, lines[1:]):
+        wa, wb = a[0].split(), b[0].split()
+        if wa and wb and joined(wa[-1].rstrip(PARA), wb[0].rstrip(PARA)):
+            out += 1
+    return out
 
 
 def clear_caches() -> None:
@@ -567,7 +591,7 @@ def _place(text: str, style_key: tuple, shape):
                 # Câu ngắn trong bóng rộng ("Ừ.", "Vâng"): người typeset để chữ to hơn cỡ chuẩn của trang (tới ~1,4 lần)
                 # cho khỏi lọt thỏm – to dần tới khi chữ phủ được SHORT_FILL bề ngang bóng. Câu dài hơn 3 từ thì giữ cỡ
                 # chung của trang, bóng to để lề rộng.
-                for size in range(cap + 1, int(cap * SHORT_GROW) + 1):
+                for size in range(cap + 1, int(cap * (style.short_grow or SHORT_GROW)) + 1):
                     cuts, m = best[2], best[3]
                     seg = _segments(words, style_key, best[1])
                     widest = max(seg[a][b] for a, b in zip(cuts, cuts[1:]))
@@ -580,7 +604,8 @@ def _place(text: str, style_key: tuple, shape):
             if best is not None:
                 # Như người typeset: chịu nhỏ chữ đi chút (≤25%) nếu nhờ đó khối chữ tròn hơn, không cắt đôi từ ghép.
                 top = best[1]
-                for size in range(top - 1, max(MIN_SIZE, int(top * (1 - _shrink_max(style)))) - 1, -1):
+                floor = _smallest(style, top, _lines_of(words, best[2]))
+                for size in range(top - 1, max(MIN_SIZE, math.ceil(floor)) - 1, -1):
                     res = fit(size)
                     if res and res[0] + SHRINK_COST * (1 - size / top) < best[0] + SHRINK_COST * (1 - best[1] / top):
                         best = res
@@ -599,8 +624,10 @@ def _place(text: str, style_key: tuple, shape):
                 found.append(res)
         if found:
             # Lề rộng cho chữ to hơn, nhưng không lấy nếu khối chữ vì thế mà cắt từ / thụt thò: so cùng thang điểm.
-            top = max(r[1] for r in found)
-            best = min((r for r in found if r[1] >= top * (1 - _shrink_max(style))),
+            biggest = max(found, key=lambda r: r[1])
+            top = biggest[1]
+            floor = _smallest(style, top, _lines_of(words, biggest[2]))
+            best = min((r for r in found if r[1] >= floor - 1e-6),
                        key=lambda r: r[0] + SHRINK_COST * (1 - r[1] / top))
     if best is None:
         return None
@@ -722,7 +749,7 @@ def best_rect(text: str, style: TextStyle, rects: list[tuple[int, int, int, int]
 
     def cost(f):
         ok, size, area, shape = f[1]
-        if not ok or size < top * (1 - _shrink_max(style)):
+        if not ok or size < _smallest(style, top) - 1e-6:
             return (1, -size, -area)
         return (0, shape + SHRINK_COST * (1 - size / top), -area)
 

@@ -338,6 +338,7 @@ def apply_plan(page, plan, style=None) -> int:
             i = page.regions.index(r)
             page.regions[i:i + 1] = parts
             for part in parts:
+                part.group = r.uid  # cùng một bóng: cùng cỡ chữ (Page.even_sizes)
                 part.uid = new_uid()  # mỗi phần là một vùng (một layer chữ) riêng
                 if part.cleaned:  # bóng đã xoá chữ sẵn: tính lại khung đặt chữ cho từng phần
                     page.clean(part)

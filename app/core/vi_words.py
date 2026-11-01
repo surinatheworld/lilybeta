@@ -62,7 +62,8 @@ cũng được, được rồi, thôi nào, đi thôi, đúng vậy, đúng rồ
 thật sự, thực sự, hoàn toàn, tuyệt đối, một chút, một lúc, một lần, mãi mãi, bình yên, an toàn, nguy hiểm,
 phim kinh dị, kinh dị, ma quỷ, sợ hãi, run rẩy, hồi hộp, căng thẳng, xấu hổ, ngượng ngùng, đỏ mặt, trái tim,
 nhịp tim, giấc ngủ, đi ngủ, buồn ngủ, chăn gối, cái gối, giường ngủ, ban đêm, nửa đêm, sáng sớm, buổi sáng,
-buổi trưa, buổi chiều, buổi tối, bữa sáng, bữa tối, nấu ăn, món ăn, ăn uống, rửa bát, dọn dẹp, giặt giũ
+buổi trưa, buổi chiều, buổi tối, bữa sáng, bữa tối, nấu ăn, món ăn, ăn uống, rửa bát, dọn dẹp, giặt giũ,
+xem mắt, giải trí, ích kỷ, sẵn sàng, giải quyết, cùng nhau, sống chung, bước tiếp, ham muốn, rất nhiều
 """
 
 COMPOUNDS: frozenset[tuple[str, str]] = frozenset(

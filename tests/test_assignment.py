@@ -30,6 +30,27 @@ class ReadingOrderTests(unittest.TestCase):
         bubble_right = TextBox(353, 940, 427, 1047, 1)
         self.assertEqual(sort_reading_order([sfx_left, bubble_right]), [bubble_right, sfx_left])
 
+    def test_two_texts_in_one_balloon_are_read_together_before_a_nearby_sfx(self):
+        # Hai cụm chữ chung một bóng. SFX ở ngoài bóng và cao hơn cụm thứ hai.
+        image = np.full((400, 400), 120, np.uint8)
+        import cv2
+        cv2.ellipse(image, (200, 200), (120, 80), 0, 0, 360, 255, -1)
+        first = TextBox(220, 140, 280, 200, 1)
+        second = TextBox(150, 215, 175, 250, 1)
+        sfx = TextBox(40, 150, 75, 190, 1, "sfx")
+        self.assertEqual(sort_reading_order([sfx, second, first], img=image), [first, second, sfx])
+
+    def test_panels_split_by_a_slanted_gutter_read_right_panel_first(self):
+        # chap 23 trang 21: khe chéo giữa hai panel dưới; ô trái cao hơn ô phải nhưng panel phải đọc trước.
+        import cv2
+        image = np.full((400, 400), 255, np.uint8)
+        cv2.fillPoly(image, [np.array([(10, 10), (190, 10), (140, 390), (10, 390)])], 120)
+        cv2.fillPoly(image, [np.array([(210, 10), (390, 10), (390, 390), (160, 390)])], 120)
+        left_high = TextBox(40, 40, 80, 120, 1)
+        left_low = TextBox(40, 250, 80, 330, 1)
+        right = TextBox(300, 250, 340, 330, 1)
+        self.assertEqual(sort_reading_order([left_high, left_low, right], img=image), [right, left_high, left_low])
+
     def test_separate_rows_and_separate_panels_keep_their_order(self):
         top = TextBox(80, 70, 120, 120, 1)
         bottom = TextBox(260, 250, 300, 300, 1)
