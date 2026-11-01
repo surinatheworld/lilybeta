@@ -38,6 +38,8 @@ EVEN_KINDS = {"normal", "thought"}  # thoại thường / suy nghĩ: cùng cỡ 
 EVEN_SLACK = 1.1  # …bóng nào cho chữ to hơn 1,1 lần cỡ chung của trang thì hạ xuống
 EVEN_MIN_REGIONS = 3  # …khi trang có từ 3 bóng thoại
 TIGHT_MIN_WORDS = 3  # chế độ chỗ chật chỉ cho câu dài hơn 3 từ
+PART_GAIN = 1.15  # khung đã căn giữa thuỳ: chỉ đổi sang dáng phần bóng khi chữ to hơn rõ (> 15%)
+LOBE_OFF_CENTER = 0.5  # khối chữ lệch khỏi tâm thuỳ quá nửa bán kính thuỳ: không còn là "căn giữa" (lệch 0,44 vẫn đẹp, 0,61 thì sát mép)
 STAGGER = 0.3  # hai câu chung bóng là "so le" khi tâm chữ gốc lệch nhau ≥ 30% bề cao cột chữ
 SHARED_GAP = 0.4  # hai câu chung một bóng: khối chữ cách nhau ≥ 0,4 cỡ chuẩn (bản type tay: 5–20px ở trang 840px)
 SHARED_SIZE_TOL = 0.9  # …chọn cặp có dáng dòng đẹp nhất trong các cặp có cỡ chữ ≥ 90% cỡ to nhất…
@@ -387,8 +389,15 @@ class Page:
         if len(region.text.split()) > TIGHT_MIN_WORDS and mates and all(
                 len(o.text.split()) > TIGHT_MIN_WORDS for o in mates):
             part = _shared_part(shape, region.box, [o.box for o in mates], SHARED_GAP * region.auto_cap)
-            if part and size(place_in_shape(region.text, style, part)) >= LOBE_SIZE * boxed:
-                return part
+            if part:
+                # Khung chữ nhật cho chữ to hơn và khối chữ vẫn nằm giữa thuỳ: giữ khung (chữ to). Khung làm khối lệch
+                # khỏi giữa thuỳ (sát mép bóng): dàn theo dáng phần bóng cho khối căn giữa, chịu nhỏ hơn chút.
+                lx, ly, radius = _lobe_center(part[2])
+                b = block_box(region.text, style, best_rect(region.text, style, region.text_rects))
+                off = math.hypot((b[0] + b[2]) / 2 - lx, (b[1] + b[3]) / 2 - ly) / max(radius, 1)
+                placed = size(place_in_shape(region.text, style, part))
+                if placed > PART_GAIN * boxed or (off > LOBE_OFF_CENTER and placed >= LOBE_SIZE * boxed):
+                    return part
         band = self._shared_band(region, shape, span)
         # Hai bóng dính nhau nằm ngang thì từng khung riêng vẫn tốt hơn: chỉ dùng dải khi chữ to hơn rõ.
         return band if band and size(place_in_shape(region.text, style, band)) > 1.1 * boxed else None
@@ -586,6 +595,19 @@ def _shared_part(shape, box, others, gap):
     cx = float(np.median([(a + b) / 2 for _, a, b in part]))
     cy = (part[0][0] + part[-1][0]) / 2
     return cx, cy, tuple(part)
+
+
+def _lobe_center(rows):
+    """Tâm thuỳ của một phần bóng: điểm nằm sâu nhất (xa viền nhất) và bán kính hình tròn lớn nhất đặt vừa ở đó –
+    giữa thuỳ tròn, không bị dải thừa (đuôi, chỗ nối sang thuỳ kia) kéo lệch như khi lấy giữa các hàng."""
+    y0 = rows[0][0]
+    x0 = min(a for _, a, _ in rows)
+    mask = np.zeros((rows[-1][0] - y0 + 3, max(b for _, _, b in rows) - x0 + 2), np.uint8)
+    for y, a, b in rows:
+        mask[y - y0 + 1, a - x0 + 1:b - x0 + 1] = 255
+    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    py, px = np.unravel_index(int(np.argmax(dist)), dist.shape)
+    return float(px + x0 - 1), float(py + y0 - 1), float(dist[py, px])
 
 
 def _lanky(block) -> float:

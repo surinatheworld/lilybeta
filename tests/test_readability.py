@@ -1,3 +1,4 @@
+import math
 import os
 import unittest
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ from PySide6.QtGui import QFontDatabase, QGuiApplication
 from app.core.assign import apply_plan, assign_lines
 from app.core.clean import lobe_shape
 from app.core.detect import TextBox, sort_reading_order
-from app.core.page import MIN_READABLE, Page, Region
+from app.core.page import MIN_READABLE, Page, Region, _lobe_center
 from app.core.typeset import TextStyle, block_box, layout
 
 FONT = os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", "arial.ttf")
@@ -126,6 +127,21 @@ class ReadableSizeTests(unittest.TestCase):
         big, _ = layout(text, TextStyle(max_size=60, tight=True), 120, 400)
         small, _ = layout(text, TextStyle(max_size=60), 120, 400)
         self.assertGreaterEqual(big.size, small.size)  # chữ to, dòng ngắn hơn là chữ bé dòng đều
+
+    def test_text_centers_on_the_lobe_not_on_its_tail(self):
+        # Thuỳ tròn tâm (300, 300) bán kính 150, kèm một đuôi dài chĩa xuống (chỗ nối sang thuỳ kia).
+        mask = np.zeros((900, 600), np.uint8)
+        cv2.circle(mask, (300, 300), 150, 255, -1)
+        mask[400:850, 380:440] = 255
+        rows = []
+        for y in range(mask.shape[0]):
+            xs = np.flatnonzero(mask[y])
+            if len(xs):
+                rows.append((y, int(xs[0]), int(xs[-1]) + 1))
+        x, y, radius = _lobe_center(rows)
+        self.assertLess(math.hypot(x - 300, y - 300), 10)  # giữa thuỳ tròn, không bị dải thừa kéo lệch
+        self.assertGreater(radius, 140)
+        self.assertGreater((rows[0][0] + rows[-1][0]) / 2, 400)  # cách cũ (giữa hàng trên – hàng dưới) bị đuôi kéo lệch
 
     def test_dialogue_on_a_page_shares_one_size(self):
         img = np.full((1400, 1400, 3), 120, np.uint8)
