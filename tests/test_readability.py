@@ -116,6 +116,17 @@ class ReadableSizeTests(unittest.TestCase):
             self.assertTrue(lo - 5 <= x1 and x2 <= hi + 5, (r.text, r.text_rect))  # chữ nằm gọn trong bóng của nó
             self.assertGreaterEqual(_size(r), 30)
 
+    def test_tight_shared_balloons_keep_big_text(self):
+        long = Region((0, 0, 10, 10), text="nãy giờ ông cứ ngó qua ngó lại", style=TextStyle(fit_scale=.88), tight=True)
+        self.assertEqual(long.effective_style.fit_scale, 1.0)  # chỗ chật: không thu cỡ thêm
+        self.assertTrue(long.effective_style.tight)
+        short = Region((0, 0, 10, 10), text="uầy~", style=TextStyle(fit_scale=.88), tight=True)
+        self.assertFalse(short.effective_style.tight)  # câu ngắn thì không cần
+        text = "rồi đi lang thang khắp nơi suốt cả buổi chiều nay"
+        big, _ = layout(text, TextStyle(max_size=60, tight=True), 120, 400)
+        small, _ = layout(text, TextStyle(max_size=60), 120, 400)
+        self.assertGreaterEqual(big.size, small.size)  # chữ to, dòng ngắn hơn là chữ bé dòng đều
+
     def test_dialogue_on_a_page_shares_one_size(self):
         img = np.full((1400, 1400, 3), 120, np.uint8)
         centers = ((250, 300, 120), (650, 300, 120), (1050, 300, 120), (700, 950, 300))  # bóng cuối to gấp đôi
