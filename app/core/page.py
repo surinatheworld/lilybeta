@@ -426,7 +426,7 @@ class Page:
         """Chữ ngoài bóng / SFX nhỏ hơn MIN_READABLE cỡ chuẩn của trang: nới khung đặt chữ ra xung quanh
         (không lấn sang khung của câu khác) cho tới khi đọc được."""
         cap = region.auto_cap
-        if not cap or region.text_shape or region.manual_rect or not region.text.strip():
+        if not cap or region.manual_rect or not region.text.strip():
             return
         style = region.effective_style
 
@@ -436,6 +436,12 @@ class Page:
         x1, y1, x2, y2 = region.text_rect
         if size((x1, y1, x2, y2)) >= MIN_READABLE * cap:
             return
+        if region.text_shape:
+            # Lòng bóng lấy được quá nhỏ (bóng trong suốt bị nét tóc / nét vẽ cắt ngang): bỏ dáng bóng, nới khung
+            # quanh chữ gốc như chữ ngoài bóng – thà chữ đè nét vẽ mờ còn hơn chữ bé không đọc được.
+            region.text_shape = None
+            region.text_rects = [region.box]
+            x1, y1, x2, y2 = region.box
         w, h = self.size
         cx, cy, bw, bh = (x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1
         others = [o.box for o in self.regions if o is not region and o.text.strip() and not o.orphan]

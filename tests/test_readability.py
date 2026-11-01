@@ -128,6 +128,17 @@ class ReadableSizeTests(unittest.TestCase):
         small, _ = layout(text, TextStyle(max_size=60), 120, 400)
         self.assertGreaterEqual(big.size, small.size)  # chữ to, dòng ngắn hơn là chữ bé dòng đều
 
+    def test_vertical_lines_in_a_wide_balloon_split_into_columns(self):
+        from app.core.assign import split_region
+        img = np.full((400, 400, 3), 255, np.uint8)
+        page = _page(img)
+        for x in (300, 270, 150, 120):  # bốn cột chữ dọc: hai cột câu đầu (phải), hai cột câu sau (trái)
+            page.text_mask[150:260, x:x + 14] = 1
+        r = Region((110, 140, 320, 270), cleaned=True)
+        parts = split_region(page, r, ["Không hề có chuyện đó", "Em làm anh mê mẩn là đằng khác"])
+        self.assertIsNotNone(parts)
+        self.assertGreater(parts[0].box[0], parts[1].box[2])  # câu đầu ở cột bên phải
+
     def test_text_centers_on_the_lobe_not_on_its_tail(self):
         # Thuỳ tròn tâm (300, 300) bán kính 150, kèm một đuôi dài chĩa xuống (chỗ nối sang thuỳ kia).
         mask = np.zeros((900, 600), np.uint8)

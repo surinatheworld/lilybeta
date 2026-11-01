@@ -215,7 +215,14 @@ def _swap_pass(plan, regions, ink, alpha):
 
 def split_region(page, region, lines: list[str]):
     """Bóng mà người dịch tách thành nhiều câu: chia vùng chữ gốc thành từng cụm cột (chữ dọc) hoặc
-    hàng (chữ ngang), mỗi câu một cụm, theo tỉ lệ độ dài câu. Trả về các vùng mới, hoặc None."""
+    hàng (chữ ngang), mỗi câu một cụm, theo tỉ lệ độ dài câu. Trả về các vùng mới, hoặc None.
+    Thử hướng theo dáng khung trước; không chia được thì thử hướng kia (bóng đôi nằm ngang chứa chữ dọc)."""
+    x1, y1, x2, y2 = region.box
+    tall = (y2 - y1) >= (x2 - x1)
+    return _split_region(page, region, lines, tall) or _split_region(page, region, lines, not tall)
+
+
+def _split_region(page, region, lines: list[str], vertical: bool):
     from dataclasses import replace
 
     k = len(lines)
@@ -223,7 +230,6 @@ def split_region(page, region, lines: list[str]):
     strokes = page.text_mask[y1:y2, x1:x2] > 0.3
     if k < 2 or not strokes.any():
         return None
-    vertical = (y2 - y1) >= (x2 - x1)
     prof = strokes.sum(axis=0 if vertical else 1)
     bands, start = [], None
     for i, v in enumerate(np.append(prof, 0)):
