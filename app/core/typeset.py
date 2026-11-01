@@ -45,8 +45,17 @@ SHORT_GROW = 1.5  # …nhưng không quá 1,5 lần cỡ chuẩn (bản typeset 
 BREAK_HYPHEN = 0.3  # ngắt ở dấu gạch trong tên ("Tanaka-|kun", "Yamada-|san"): được, nhưng ưu tiên chỗ cách
 TALL = math.log(1 / 1.6)  # bóng cao hơn 1,6 lần bề ngang: mỗi dòng một từ cũng được ("THẬT / SAO / CƠ!?")
 SHY = "\u00ad"  # đánh dấu chỗ ngắt được trong từ có gạch nối: nối lại thành "-"
+SOFT_BREAK = "\u2028"  # giữa hai câu dịch gộp chung một bóng (khác "\n" = xuống dòng tay): nên, không bắt buộc, xuống dòng
+PARA = "\u2029"  # đánh dấu từ cuối mỗi câu dịch như vậy khi ngắt dòng
+BREAK_PARA = 0.25  # thưởng xuống dòng giữa hai câu dịch gộp chung bóng (hơn dấu phẩy một chút)
+SPLIT_WEIGHT = 0.5  # mỗi chỗ cắt đôi từ ghép trong khối chữ đã chọn…
+SPLIT_MIN_WORDS = 3  # …khi câu dài hơn 3 từ
+JAG_WEIGHT = 1.0  # phạt dòng lởm chởm (dài ngắn đảo chiều nhiều lần)…
+JAG_SLACK = 0.1  # …phần lệch quá 10% dòng dài nhất
+SPARSE_WEIGHT = 0.5  # phạt khối trung bình dưới SPARSE_WORDS từ / dòng (mỗi từ thiếu: +0,5)
+SPARSE_WORDS = 2.0
 SYMMETRY_WEIGHT = 0.6  # phạt khối bo tròn lệch: dòng trên và dòng dưới tương ứng dài khác nhau
-SHRINK_MAX = 0.15  # được nhỏ chữ tối đa 15% so với cỡ lớn nhất vừa khung…
+SHRINK_MAX = 0.25  # được nhỏ chữ tối đa 25% so với cỡ lớn nhất vừa khung (khi nhờ đó khỏi cắt từ, khỏi thụt thò)…
 SHRINK_COST = 1.2  # …nếu điểm dáng tốt lên hơn 0,12 cho mỗi 10% nhỏ đi
 SCRIPT_SIZE = 0.583  # cỡ chỉ số trên/dưới so với cỡ chữ (mặc định Photoshop 58.3%)
 SCRIPT_POS = 0.333  # độ nâng/hạ chỉ số trên/dưới (mặc định Photoshop 33.3%)
@@ -220,7 +229,7 @@ def _layout(text: str, style_key: tuple, w: int, h: int):
     first_w = max(1.0, iw - style.indent_first)
 
     # Từ có gạch nối ("Tanaka-kun") được xuống dòng ngay sau dấu gạch ("Tanaka- / kun") khi thiếu chỗ.
-    flow = "\n".join(" ".join(_words(para)) for para in text.split("\n"))
+    flow = "\n".join(" ".join(_words(para.replace(SOFT_BREAK, " "))) for para in text.split("\n"))
 
     def fit(size: int):
         m = _Metrics(style, size)
@@ -250,7 +259,7 @@ def _layout(text: str, style_key: tuple, w: int, h: int):
         return ok, size, lines
     shaped = _shape_lines(text, style, style_key, size, iw, ih, lines)
     if shaped and style.size <= 0:
-        # Như người typeset: chịu nhỏ chữ đi chút (≤15%) nếu nhờ đó khối chữ đẹp hơn, không cắt đôi từ ghép.
+        # Như người typeset: chịu nhỏ chữ đi chút (≤25%) nếu nhờ đó khối chữ đẹp hơn, không cắt đôi từ ghép.
         top = size
         for smaller in range(top - 1, max(MIN_SIZE, int(top * (1 - SHRINK_MAX))) - 1, -1):
             res = _shape_lines(text, style, style_key, smaller, iw, ih, fit(smaller)[2])
@@ -267,18 +276,36 @@ def _profile(n: int, shape: str) -> list[float]:
     return [(1 - ((i + .5 - r) / r) ** 2) ** ROUND_POWER for i in range(n)]
 
 
+def raw_text(editor) -> str:
+    """Chữ trong ô soạn Qt, giữ SOFT_BREAK (toPlainText đổi nó thành xuống dòng tay)."""
+    return editor.document().toRawText().replace("\u2029", "\n")
+
+
+def split_lines(text: str) -> list[str]:
+    """Các câu dịch trong chữ của một vùng (cách nhau bằng xuống dòng tay hoặc SOFT_BREAK)."""
+    return re.split("[\n" + SOFT_BREAK + "]", text)
+
+
 def _words(text: str) -> tuple[str, ...]:
-    """Các từ để ngắt dòng; từ có gạch nối giữa hai chữ ("Tanaka-kun") tách thành hai phần ngắt được."""
+    """Các từ để ngắt dòng; từ có gạch nối giữa hai chữ ("Tanaka-kun") tách thành hai phần ngắt được.
+    Nhiều câu dịch gộp chung bóng (cách nhau SOFT_BREAK) thì từ cuối mỗi câu mang dấu PARA: cả bóng dàn thành một
+    khối, chỗ giữa hai câu chỉ là chỗ nên xuống dòng (người dịch hay tách một lời thoại theo cột chữ Nhật:
+    "không tệ nhỉ" / "ha~" / "sư phụ này, …")."""
     out = []
-    for word in text.split():
-        parts = re.split(r"(?<=\w)-(?=\w)", word)
-        out += [p + SHY for p in parts[:-1]] + [parts[-1]]
+    for para in text.split(SOFT_BREAK):
+        words = []
+        for word in para.split():
+            parts = re.split(r"(?<=\w)-(?=\w)", word)
+            words += [p + SHY for p in parts[:-1]] + [parts[-1]]
+        if words and out:
+            out[-1] += PARA
+        out += words
     return tuple(out)
 
 
 def _join(words) -> str:
     """Ghép các từ thành một dòng: phần của từ có gạch nối nối lại bằng "-", cuối dòng thì giữ "-"."""
-    return " ".join(words).replace(SHY + " ", "-").replace(SHY, "-")
+    return " ".join(words).replace(PARA, "").replace(SHY + " ", "-").replace(SHY, "-")
 
 
 @lru_cache(maxsize=2048)
@@ -303,16 +330,19 @@ def _break(words: tuple[str, ...], style_key: tuple, size: int, caps: tuple[floa
     W = max(1.0, (letters + (k - n) * space) / sum(p))
     # Xuống dòng giữa từ ghép ("Cảm | ơn") bị phạt nặng (BREAK_WORD); sau dấu phẩy/chấm thì được thưởng.
     after = [0.0] * (k + 1)
+    w = [x.rstrip(PARA) for x in words]
     for j in range(1, k):
-        if words[j - 1].endswith(SHY):
+        if words[j - 1].endswith(PARA):  # giữa hai câu dịch gộp chung bóng
+            after[j] = -(BREAK_PARA * W) ** 2
+        elif w[j - 1].endswith(SHY):
             after[j] = (BREAK_HYPHEN * W) ** 2
-        elif joined(words[j - 1], words[j]):
+        elif joined(w[j - 1], w[j]):
             after[j] = (BREAK_WORD * W) ** 2
-        elif final_particle(words[j - 1], words[j]):  # "ạ." một chữ cái đứng riêng trông như rơi chữ: phạt nặng
-            after[j] = ((BREAK_WORD if len(bare(words[j])) == 1 else BREAK_PARTICLE) * W) ** 2
-        elif dangling(words[j - 1], words[j], words[j - 2] if j > 1 else ""):
+        elif final_particle(w[j - 1], w[j]):  # "ạ." một chữ cái đứng riêng trông như rơi chữ: phạt nặng
+            after[j] = ((BREAK_WORD if len(bare(w[j])) == 1 else BREAK_PARTICLE) * W) ** 2
+        elif dangling(w[j - 1], w[j], w[j - 2] if j > 1 else ""):
             after[j] = (BREAK_FUNCTION * W) ** 2
-        elif ends_clause(words[j - 1]):
+        elif ends_clause(w[j - 1]):
             after[j] = -(BREAK_CLAUSE * W) ** 2
     inf = float("inf")
     cost = [[inf] * (k + 1) for _ in range(n + 1)]
@@ -338,13 +368,14 @@ def _break(words: tuple[str, ...], style_key: tuple, size: int, caps: tuple[floa
     return math.sqrt(max(0.0, cost[n][k]) / n) / W, tuple(reversed(cuts))
 
 
-def _score(style: TextStyle, seg, res, lh: float, want: float, k: int) -> float:
-    """Điểm (càng nhỏ càng đẹp) của một cách ngắt: lệch dáng + khối chữ khác tỉ lệ khung + bị "thắt eo"."""
+def _score(style: TextStyle, seg, res, lh: float, want: float, k: int, words=(), aspect: bool = True) -> float:
+    """Điểm (càng nhỏ càng đẹp) của một cách ngắt: lệch dáng + khối chữ khác tỉ lệ khung + bị "thắt eo" + cắt từ
+    ghép + thụt thò. `aspect=False`: bỏ phần so tỉ lệ khung (để so khối chữ ở các khung khác nhau)."""
     dev, cuts = res
     n = len(cuts) - 1
     widths = [seg[a][b] for a, b in zip(cuts, cuts[1:])]
     widest = max(widths)
-    score = dev + ASPECT_WEIGHT * abs(math.log(widest / (n * lh)) - want)
+    score = dev + (ASPECT_WEIGHT * abs(math.log(widest / (n * lh)) - want) if aspect else 0.0)
     if style.shape == "round" and n >= 3:
         # Khối bo tròn không được "thắt eo": dòng gần giữa phải dài hơn dòng ở mép.
         mid = (n - 1) / 2
@@ -353,8 +384,25 @@ def _score(style: TextStyle, seg, res, lh: float, want: float, k: int) -> float:
         # …và cân hai đầu: dòng trên và dòng dưới tương ứng dài gần bằng nhau (không chỉ một chữ trơ trọi ở đỉnh).
         pairs = n // 2
         score += SYMMETRY_WEIGHT * sum(abs(widths[i] - widths[n - 1 - i]) for i in range(pairs)) / (pairs * widest)
-    if n > max(1, (2 * k + 2) // 3) and want > TALL:
-        score += 1.0  # trung bình mỗi dòng dưới 1,5 từ: chỉ dùng khi không còn cách khác (trừ bóng cao, hẹp)
+    # Cắt đôi từ ghép ("sư | phụ", "không | tệ"): phạt riêng từng chỗ, để thà nhỏ chữ chút còn hơn cắt từ. Câu
+    # 2–3 từ trong bóng hẹp thì không còn chỗ nào khác để ngắt (bản type tay: "THẾ / NHƯNG / …").
+    # Tiểu từ một chữ cái đứng trơ một dòng ("đâu / ạ.") cũng vậy.
+    if k > SPLIT_MIN_WORDS:
+        plain = [w.rstrip(PARA) for w in words]
+        score += SPLIT_WEIGHT * sum(1 for j in cuts[1:-1] if joined(plain[j - 1], plain[j]) or
+                                    (final_particle(plain[j - 1], plain[j]) and len(bare(plain[j])) == 1))
+    # Thụt thò: bề dài các dòng phải lên dần rồi xuống dần (một đỉnh); mỗi lần đảo chiều thêm là dòng lởm chởm
+    # (bản type tay: 89% khối không có dòng nào thụt vào so với cả hai dòng kề).
+    if n >= 3:
+        travel = sum(abs(b - a) for a, b in zip(widths, widths[1:]))
+        excess = travel - (2 * widest - widths[0] - widths[-1])
+        score += JAG_WEIGHT * max(0.0, excess - JAG_SLACK * widest) / widest
+    if want > TALL:
+        # Bản type tay: trung vị ~2,25 từ / dòng; khối mỗi dòng 1–2 từ trông như cột, dòng dài ngắn lởm chởm.
+        if k > SPLIT_MIN_WORDS:  # câu 2–3 từ ("Thế / nhưng…") thì mỗi dòng một từ là bình thường
+            score += SPARSE_WEIGHT * max(0.0, SPARSE_WORDS - k / n)
+        if n > max(1, (2 * k + 2) // 3):
+            score += 1.0  # trung bình mỗi dòng dưới 1,5 từ: chỉ dùng khi không còn cách khác (trừ bóng cao, hẹp)
     return score
 
 
@@ -394,7 +442,7 @@ def _shape_lines(text: str, style: TextStyle, style_key: tuple, size: int, iw: f
             res = _break(words, style_key, size, (float(int(iw)),) * n)
         if res is None:
             continue
-        score = _score(style, seg, res, lh, want, k)
+        score = _score(style, seg, res, lh, want, k, words)
         if best is None or score < best[0] - 1e-6:
             best = (score, res[1])
     return None if best is None else (best[0], _lines_of(words, best[1]))
@@ -466,7 +514,7 @@ def _place(text: str, style_key: tuple, shape):
             res = _break(words, style_key, size, tuple(caps))
             if res is None:
                 continue
-            score = _score(style, seg, res, m.lh, want, k)
+            score = _score(style, seg, res, m.lh, want, k, words)
             if best is None or score < best[0] - 1e-6:
                 best = (score, size, res[1], m)
         return best
@@ -498,7 +546,7 @@ def _place(text: str, style_key: tuple, shape):
                         break
                     best = res
             if best is not None:
-                # Như người typeset: chịu nhỏ chữ đi chút (≤15%) nếu nhờ đó khối chữ tròn hơn, không cắt đôi từ ghép.
+                # Như người typeset: chịu nhỏ chữ đi chút (≤25%) nếu nhờ đó khối chữ tròn hơn, không cắt đôi từ ghép.
                 top = best[1]
                 for size in range(top - 1, max(MIN_SIZE, int(top * (1 - SHRINK_MAX))) - 1, -1):
                     res = fit(size)
@@ -510,12 +558,18 @@ def _place(text: str, style_key: tuple, shape):
     if style.size <= 0 and style.max_size > 0:
         # Bóng hẹp: giữ đúng lề 80% thì chữ teo hẳn (vd 17px khi cỡ chuẩn 26px). Nới dần lề cho bóng hẹp được phủ
         # nhiều hơn, tới khi chữ về lại ≥ MIN_SIZE_RATIO cỡ chuẩn.
+        found = [best] if best is not None else []
         for fill in BUBBLE_FILL_NARROW:
-            if best is not None and best[1] >= MIN_SIZE_RATIO * style.max_size:
+            if found and max(r[1] for r in found) >= MIN_SIZE_RATIO * style.max_size:
                 break
             res = solve()
-            if res is not None and (best is None or res[1] > best[1]):
-                best = res
+            if res is not None:
+                found.append(res)
+        if found:
+            # Lề rộng cho chữ to hơn, nhưng không lấy nếu khối chữ vì thế mà cắt từ / thụt thò: so cùng thang điểm.
+            top = max(r[1] for r in found)
+            best = min((r for r in found if r[1] >= top * (1 - SHRINK_MAX)),
+                       key=lambda r: r[0] + SHRINK_COST * (1 - r[1] / top))
     if best is None:
         return None
     _, size, cuts, m = best
@@ -587,14 +641,31 @@ def _balance(ink, rows, cx: float, cy: float):
     return x, y
 
 
+def _quality(text: str, style: TextStyle, style_key: tuple, size: int, lines, want: float) -> float:
+    """Điểm riêng của khối chữ đã ngắt (cắt từ ghép, thụt thò, mỗi dòng ít từ…), không tính nó có hợp tỉ lệ khung
+    hay không: để so các khung với nhau."""
+    if not _shapeable(text, style) or len(lines) < 2:
+        return 0.0
+    words = _words(text)
+    cuts, at = [0], 0
+    for ln, _, _ in lines:
+        at += len(_words(ln))
+        cuts.append(at)
+    if at != len(words):
+        return 0.0
+    seg = _segments(words, style_key, size)
+    return _score(style, seg, (0.0, tuple(cuts)), _Metrics(style, size).lh, want, len(words), words, aspect=False)
+
+
 def best_rect(text: str, style: TextStyle, rects: list[tuple[int, int, int, int]]):
-    """Trong các khung ứng viên, chọn khung đặt được chữ to nhất. Cùng cỡ (thường gặp khi chạm cỡ tối đa)
-    thì chọn khung mà khối chữ lấp đều nhất – dáng khối chữ gần dáng khung, như người typeset hay làm."""
+    """Trong các khung ứng viên, chọn khung cho chữ to và khối chữ đẹp: như người typeset, chịu nhỏ chữ đi chút
+    (≤ SHRINK_MAX) nếu ở khung khác khối chữ tròn đều hơn hẳn (khung hẹp cho chữ to nhưng mỗi dòng 1–2 từ, dòng dài
+    ngắn thụt thò). Cùng điểm thì chọn khung mà khối chữ lấp đều nhất – dáng khối chữ gần dáng khung."""
     key = astuple(style)
     t = prepare(text, style)
     metrics: dict[int, _Metrics] = {}
 
-    def score(r):
+    def measure(r):
         x1, y1, x2, y2 = r
         w, h = x2 - x1, y2 - y1
         ok, size, lines = _layout(t, key, w, h)
@@ -602,9 +673,20 @@ def best_rect(text: str, style: TextStyle, rects: list[tuple[int, int, int, int]
         bw = max((m.adv(ln) for ln, _, _ in lines), default=1)
         bh = _block_height(lines, m, style)
         fill = min(bw / max(w, 1), bh / max(h, 1)) / max(bw / max(w, 1), bh / max(h, 1), 1e-6)
-        return (ok, size, w * h * fill)
+        return ok, size, w * h * fill, _quality(t, style, key, size, lines, math.log(max(w, 1) / max(h, 1)))
 
-    return max(rects, key=score)
+    found = [(r, measure(r)) for r in rects]
+    top = max((m[1] for _, m in found if m[0]), default=0)
+    if not top:
+        return max(found, key=lambda f: f[1][:3])[0]
+
+    def cost(f):
+        ok, size, area, shape = f[1]
+        if not ok or size < top * (1 - SHRINK_MAX):
+            return (1, -size, -area)
+        return (0, shape + SHRINK_COST * (1 - size / top), -area)
+
+    return min(found, key=cost)[0]
 
 
 def block_box(text: str, style: TextStyle, rect):

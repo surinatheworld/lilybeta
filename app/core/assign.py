@@ -277,6 +277,7 @@ def apply_plan(page, plan, style=None) -> int:
     """Ghi câu dịch vào các vùng theo `plan`; vùng nhận nhiều câu thì tách thành từng khối nếu được.
     Trả về số vùng có chữ."""
     from .page import new_uid
+    from .typeset import SOFT_BREAK
     from .typeset_profiles import profile_style
 
     n, prev = 0, None
@@ -297,7 +298,7 @@ def apply_plan(page, plan, style=None) -> int:
         else:
             targets = [(r, ls)]
         for reg, lines in targets:
-            reg.text = "\n".join(lines)
+            reg.text = SOFT_BREAK.join(lines)  # một bóng nhiều câu: dàn thành một khối
             if style is not None:
                 reg.style = profile_style(page, reg, style)
             n += 1
