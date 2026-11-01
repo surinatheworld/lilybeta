@@ -36,6 +36,8 @@ def get_session():
             options.intra_op_num_threads = max(1, min(4, (os.cpu_count() or 2) - 1))
             options.add_session_config_entry("session.intra_op.allow_spinning", "0")
             options.add_session_config_entry("session.inter_op.allow_spinning", "0")
+            # Không giữ vùng nhớ dự trữ sau mỗi lần vẽ: RAM ~340MB thay vì ~900MB (chậm hơn ~40%).
+            options.enable_cpu_mem_arena = False
             _session = ort.InferenceSession(MODEL_PATH, sess_options=options, providers=["CPUExecutionProvider"])
         return _session
 

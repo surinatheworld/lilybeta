@@ -37,6 +37,8 @@ LOBE_SIZE = 0.85  # bóng đôi: dàn theo thuỳ khi chữ ≥ 85% cỡ đặt 
 EVEN_KINDS = {"normal", "thought"}  # thoại thường / suy nghĩ: cùng cỡ trên một trang (ô dẫn truyện, SFX, hét thì không)
 EVEN_SLACK = 1.1  # …bóng nào cho chữ to hơn 1,1 lần cỡ chung của trang thì hạ xuống
 EVEN_MIN_REGIONS = 3  # …khi trang có từ 3 bóng thoại
+BOX_KINDS = {"square"}  # ô dẫn truyện: cùng cỡ với nhau trên một trang…
+BOX_OUTLIER = 0.7  # …theo ô chật nhất, bỏ qua ô chật bất thường (cỡ < 70% trung vị)
 TIGHT_MIN_WORDS = 3  # chế độ chỗ chật chỉ cho câu dài hơn 3 từ
 PART_GAIN = 1.15  # khung đã căn giữa thuỳ: chỉ đổi sang dáng phần bóng khi chữ to hơn rõ (> 15%)
 LOBE_OFF_CENTER = 0.5  # khối chữ lệch khỏi tâm thuỳ quá nửa bán kính thuỳ: không còn là "căn giữa" (lệch 0,44 vẫn đẹp, 0,61 thì sát mép)
@@ -491,24 +493,38 @@ class Page:
     def even_sizes(self) -> None:
         """Như người type (bản type tay, nhóm NaJung): thoại thường trên một trang cùng một cỡ chữ – bóng to thì để
         lề rộng chứ không phóng chữ to theo bóng. Cỡ chung = trung vị cỡ vừa khít của các bóng thoại; bóng nào cho
-        chữ to hơn EVEN_SLACK lần cỡ đó thì hạ xuống, bóng nhỏ giữ cỡ của nó (câu rất ngắn vẫn được to hơn chút)."""
+        chữ to hơn EVEN_SLACK lần cỡ đó thì hạ xuống, bóng nhỏ giữ cỡ của nó (câu rất ngắn vẫn được to hơn chút).
+        Ô dẫn truyện trên trang cũng cùng một cỡ (nhóm riêng): theo ô chật nhất, trừ ô chật bất thường."""
         from .typeset_profiles import region_kind
-        talk = [r for r in self.regions if r.cleaned and r.text.strip() and not r.orphan and not r.manual_rect
-                and r.style.size == 0 and r.style.max_size == 0 and region_kind(self, r) in EVEN_KINDS]
-        for r in talk:
-            r.auto_cap = self.auto_cap
+        groups: dict[str, list[Region]] = {}
+        for r in self.regions:
+            if (r.cleaned and r.text.strip() and not r.orphan and not r.manual_rect and r.style.size == 0
+                    and r.style.max_size == 0):
+                kind = region_kind(self, r)
+                if kind in EVEN_KINDS:
+                    groups.setdefault("talk", []).append(r)
+                elif kind in BOX_KINDS:
+                    groups.setdefault("box", []).append(r)
+        for group, regions in groups.items():
+            for r in regions:
+                r.auto_cap = self.auto_cap
+            fits = [self._fit_size(r) for r in regions]
+            if group == "talk":
+                if len(fits) < EVEN_MIN_REGIONS:
+                    continue
+                cap = float(np.median(fits)) * EVEN_SLACK
+            else:
+                if len(fits) < 2:
+                    continue
+                usual = [f for f in fits if f >= BOX_OUTLIER * float(np.median(fits))]
+                cap = min(usual) * EVEN_SLACK
+            for r, fit in zip(regions, fits):
+                if fit > cap:
+                    r.auto_cap = cap
 
-        def size(r):
-            x1, y1, x2, y2 = r.text_rect
-            return layout(r.text, r.effective_style, x2 - x1, y2 - y1)[0].size
-
-        fits = [size(r) for r in talk]
-        if len(fits) < EVEN_MIN_REGIONS:
-            return
-        cap = float(np.median(fits)) * EVEN_SLACK
-        for r, fit in zip(talk, fits):
-            if fit > cap:
-                r.auto_cap = cap
+    def _fit_size(self, r: Region) -> int:
+        x1, y1, x2, y2 = r.text_rect
+        return layout(r.text, r.effective_style, x2 - x1, y2 - y1)[0].size
 
     def reset(self, region: Region) -> None:
         """Hoàn tác vùng: khôi phục ảnh gốc và bỏ chữ."""

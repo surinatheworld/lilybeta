@@ -98,6 +98,7 @@ class DetectWorker(QThread):
             if self.window.detector is None:
                 self.window.detector = TextDetector()
             self.page.detect(self.window.detector, self.rtl)
+            self.window.detector.release()  # ~400MB: nạp lại khi nhận diện trang khác
             if self.auto is not None:
                 self.page.inpainter, small, fit = self.auto
                 self.cleaned = self.page.auto_clean(small, fit)
@@ -2656,6 +2657,7 @@ class MainWindow(QMainWindow):
         def job(report):
             if self.detector is None:
                 self.detector = TextDetector()
+            detected = False
             for i, path in enumerate(ch.paths):
                 report(f"trang {i + 1}/{len(ch.paths)} ({os.path.basename(path)})…")
                 page = ch.page(path)
@@ -2665,6 +2667,7 @@ class MainWindow(QMainWindow):
                 page.typeset_profile = profile
                 if not page.detected:
                     page.detect(self.detector, rtl)
+                    detected = True
                     page.inpainter, small, _ = auto
                     page.auto_clean(small, fit)
                     page.inpainter = inpainter
@@ -2674,6 +2677,8 @@ class MainWindow(QMainWindow):
                 regs = [r for r in page.regions if r.text.strip() and not r.cleaned]
                 page.clean_many(regs, fit)
                 doc.end()
+            if detected:
+                self.detector.release()  # ~400MB: nạp lại khi nhận diện lần sau
 
         def summary():
             hard = sum(r.needs_redraw for pg in ch.pages.values() for r in pg.regions)

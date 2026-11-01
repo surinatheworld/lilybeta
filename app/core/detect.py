@@ -46,8 +46,20 @@ def ensure_model(path: str = MODEL_PATH) -> str:
 class TextDetector:
     def __init__(self, model_path: str = MODEL_PATH):
         ensure_model(model_path)
-        # OpenCV DNN chạy model này nhanh hơn onnxruntime rất nhiều trên CPU (~1-2s/ảnh).
-        self.net = cv2.dnn.readNetFromONNX(model_path)
+        self.model_path = model_path
+        self._net = None
+
+    @property
+    def net(self):
+        # OpenCV DNN chạy model này nhanh hơn onnxruntime rất nhiều trên CPU (~1-2s/ảnh), nhưng giữ ~400MB bộ đệm
+        # sau lần chạy đầu: nạp khi cần, xong việc thì release().
+        if self._net is None:
+            self._net = cv2.dnn.readNetFromONNX(self.model_path)
+        return self._net
+
+    def release(self) -> None:
+        """Bỏ model khỏi RAM (~400MB); lần nhận diện sau tự nạp lại (~1 giây)."""
+        self._net = None
 
     def detect(self, img_bgr: np.ndarray) -> tuple[list[TextBox], np.ndarray]:
         """Trả về (danh sách khung chữ, mask nét chữ float32 0..1 cùng cỡ ảnh)."""
