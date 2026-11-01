@@ -111,6 +111,13 @@ class LineShapeTests(unittest.TestCase):
             for a, b, c in zip(widths, widths[1:], widths[2:]):  # không thụt thò
                 self.assertFalse(b < min(a, c) - .15 * max(widths), (w, h, texts))
 
+    def test_fit_scale_keeps_the_breaks_but_leaves_more_room(self):
+        text = "nên chắc cậu cũng đi chơi như này nhiều lắm nhỉ?"
+        m, lines = layout(text, TextStyle(max_size=40), 200, 300)
+        m2, lines2 = layout(text, TextStyle(max_size=40, fit_scale=.88), 200, 300)
+        self.assertEqual([ln for ln, _, _ in lines], [ln for ln, _, _ in lines2])
+        self.assertEqual(m2.size, round(m.size * .88))
+
     def test_manual_line_breaks_are_kept(self):
         _, lines = layout("Cảm ơn\nanh rất nhiều.", TextStyle(max_size=20), 300, 300)
         self.assertEqual(lines[0][0], "Cảm ơn")

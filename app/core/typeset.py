@@ -52,8 +52,8 @@ SPLIT_WEIGHT = 0.5  # mỗi chỗ cắt đôi từ ghép trong khối chữ đã
 SPLIT_MIN_WORDS = 3  # …khi câu dài hơn 3 từ
 JAG_WEIGHT = 1.0  # phạt dòng lởm chởm (dài ngắn đảo chiều nhiều lần)…
 JAG_SLACK = 0.1  # …phần lệch quá 10% dòng dài nhất
-SPARSE_WEIGHT = 0.5  # phạt khối trung bình dưới SPARSE_WORDS từ / dòng (mỗi từ thiếu: +0,5)
-SPARSE_WORDS = 2.0
+PEAK_WEIGHT = 3.0  # phạt dòng thò ra so với cả hai dòng kề…
+PEAK_SLACK = 0.2  # …quá 20% dòng dài nhất
 SYMMETRY_WEIGHT = 0.6  # phạt khối bo tròn lệch: dòng trên và dòng dưới tương ứng dài khác nhau
 SHRINK_MAX = 0.25  # được nhỏ chữ tối đa 25% so với cỡ lớn nhất vừa khung (khi nhờ đó khỏi cắt từ, khỏi thụt thò)…
 SHRINK_COST = 1.2  # …nếu điểm dáng tốt lên hơn 0,12 cho mỗi 10% nhỏ đi
@@ -107,6 +107,7 @@ class TextStyle:
     shadow_size: float = 5.0  # px, độ nhoè
     # --- Dáng khối chữ khi tự xuống dòng (chỉ với căn giữa, một đoạn) ---
     shape: str = "round"  # "round" = bo tròn (dòng giữa dài, trên/dưới ngắn) | "even" = các dòng dài đều | "" = lấp đầy dòng
+    fit_scale: float = 1.0  # tự co: dàn xong thì thu cỡ chữ theo tỉ lệ này, giữ nguyên cách xuống dòng (chừa lề rộng hơn)
 
     def copy(self) -> "TextStyle":
         return TextStyle(**asdict(self))
@@ -265,7 +266,14 @@ def _layout(text: str, style_key: tuple, w: int, h: int):
             res = _shape_lines(text, style, style_key, smaller, iw, ih, fit(smaller)[2])
             if res and res[0] + SHRINK_COST * (1 - smaller / top) < shaped[0] + SHRINK_COST * (1 - size / top):
                 shaped, size = res, smaller
-    return ok, size, shaped[1] if shaped else lines
+    return ok, _fit(style, size), shaped[1] if shaped else lines
+
+
+def _fit(style: TextStyle, size: int) -> int:
+    """Cỡ chữ cuối cùng khi tự co: thu theo style.fit_scale (giữ nguyên các dòng đã ngắt)."""
+    if style.size > 0 or style.fit_scale >= 1:
+        return size
+    return max(MIN_SIZE, int(round(size * style.fit_scale)))
 
 
 def _profile(n: int, shape: str) -> list[float]:
@@ -397,12 +405,12 @@ def _score(style: TextStyle, seg, res, lh: float, want: float, k: int, words=(),
         travel = sum(abs(b - a) for a, b in zip(widths, widths[1:]))
         excess = travel - (2 * widest - widths[0] - widths[-1])
         score += JAG_WEIGHT * max(0.0, excess - JAG_SLACK * widest) / widest
-    if want > TALL:
-        # Bản type tay: trung vị ~2,25 từ / dòng; khối mỗi dòng 1–2 từ trông như cột, dòng dài ngắn lởm chởm.
-        if k > SPLIT_MIN_WORDS:  # câu 2–3 từ ("Thế / nhưng…") thì mỗi dòng một từ là bình thường
-            score += SPARSE_WEIGHT * max(0.0, SPARSE_WORDS - k / n)
-        if n > max(1, (2 * k + 2) // 3):
-            score += 1.0  # trung bình mỗi dòng dưới 1,5 từ: chỉ dùng khi không còn cách khác (trừ bóng cao, hẹp)
+        # …và "thò": một dòng dài vọt hẳn so với cả hai dòng kề ("cậu cũng / đi chơi như này / nhiều lắm"); khối
+        # hình thoi dài dần đều thì dòng giữa chỉ nhỉnh hơn hai bên một chút.
+        poke = sum(max(0.0, widths[i] - max(widths[i - 1], widths[i + 1]) - PEAK_SLACK * widest) for i in range(1, n - 1))
+        score += PEAK_WEIGHT * poke / widest
+    if n > max(1, (2 * k + 2) // 3) and want > TALL:
+        score += 1.0  # trung bình mỗi dòng dưới 1,5 từ: chỉ dùng khi không còn cách khác (trừ bóng cao, hẹp)
     return score
 
 
@@ -573,6 +581,9 @@ def _place(text: str, style_key: tuple, shape):
     if best is None:
         return None
     _, size, cuts, m = best
+    if _fit(style, size) != size:
+        size = _fit(style, size)
+        m = _Metrics(style, size)
     lines = _lines_of(words, cuts)
     seg = _segments(words, style_key, size)
     widest = max(seg[a][b] for a, b in zip(cuts, cuts[1:]))

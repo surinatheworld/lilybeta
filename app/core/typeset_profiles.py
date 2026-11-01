@@ -23,6 +23,8 @@ ISSHIKI_KINDS = {"auto": "Tự nhận dạng", "normal": "Thoại thường · t
 _HAND = "SJ Chanighter Handwriting"
 ISSHIKI_FONTS = {"normal": _HAND, "thought": _HAND, "square": _HAND, "bold": "000 ObelixPro TB",
                  "free": "SJ SS Rosehip", "flustered": "SJ CCComicraft", "sfx": "MTO augie"}
+# Isshiki: chữ nhỏ hơn chút so với cỡ vừa khít bóng, lề quanh chữ rộng (như nhóm NaJung); giữ nguyên cách xuống dòng.
+FIT_SCALE = {ISSHIKI: 0.88}
 # Tự chọn font: tool nhận loại khung, người dùng chọn font / nghiêng cho từng loại (page.custom_fonts).
 CUSTOM_KINDS = {"auto": "Tự nhận dạng", "normal": "Thoại thường · tròn kín", "thought": "Suy nghĩ · mây / tia",
                 "square": "Khung vuông · ô dẫn truyện", "bold": "Chữ in đậm · hét", "free": "Chữ ngoài khung",
@@ -231,6 +233,7 @@ def profile_style(page, region, base: TextStyle) -> TextStyle:
             style.family = chosen["family"]
             style.style_name = chosen.get("style", "") if chosen.get("style", "").lower() not in ("regular", "normal", "roman") else ""
             style.italic = bool(chosen.get("italic"))
+        style.fit_scale = FIT_SCALE.get(profile, 1.0)
         if kind == "square" and style.shape == "round":
             style.shape = "even"  # khung chữ nhật: các dòng dài đều, không bo tròn
     return style
