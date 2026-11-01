@@ -251,25 +251,12 @@ def text_area(img: np.ndarray, box: tuple[int, int, int, int], area_mask: np.nda
     Dáng bóng = (cx, cy, ((y, trái, phải), …)): tâm lòng bóng (bỏ đuôi bóng) và bề ngang lòng bóng ở từng hàng,
     để dàn chữ theo đúng hình bóng (dòng giữa dài, trên/dưới ngắn). None nếu không lấy được lòng bóng.
     """
-    h, w = img.shape[:2]
     x1, y1, x2, y2 = (int(v) for v in box)
     seed = ((x1 + x2) // 2, (y1 + y2) // 2)
-    ff_mask = np.zeros((h + 2, w + 2), np.uint8)
-    flags = 4 | cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE | (255 << 8)
-    cv2.floodFill(img.copy(), ff_mask, seed, (0, 0, 0), (12, 12, 12), (12, 12, 12), flags)
-    region = _fill_holes(ff_mask[1:-1, 1:-1])
-    n = int(region.sum())
-    box_area = max(1, (x2 - x1) * (y2 - y1))
-    ys, xs = np.nonzero(region) if n else (np.array([0]), np.array([0]))
-    is_bubble = (n > 0 and xs.min() > 0 and ys.min() > 0 and xs.max() < w - 1 and ys.max() < h - 1
-                 and n <= 0.3 * w * h and n <= 80 * box_area)
-    if not is_bubble:
-        if area_mask is None:
-            return [box], None
-        region = _fill_holes(area_mask)
-        ys, xs = np.nonzero(region)
-        if len(xs) == 0:
-            return [box], None
+    region = _bubble_region(img, box, area_mask)
+    if region is None:
+        return [box], None
+    ys, xs = np.nonzero(region)
     bx1, by1, bx2, by2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
 
     pad = 3
@@ -281,6 +268,104 @@ def text_area(img: np.ndarray, box: tuple[int, int, int, int], area_mask: np.nda
             cands.append(r)
     # Khung chữ gốc có thể chòi ra ngoài lòng bóng (bóng đôi, bóng méo) nên chỉ dùng khi không còn cách khác.
     return cands or [box], _bubble_shape(region[by1:by2, bx1:bx2], (bx1, by1), seed, pad)
+
+
+def _bubble_region(img: np.ndarray, box, area_mask: np.ndarray | None = None) -> np.ndarray | None:
+    """Lòng bóng chứa `box`: loang màu từ tâm khung; không giống bóng (tràn mép ảnh, quá lớn) thì vùng lasso."""
+    h, w = img.shape[:2]
+    x1, y1, x2, y2 = (int(v) for v in box)
+    ff_mask = np.zeros((h + 2, w + 2), np.uint8)
+    flags = 4 | cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE | (255 << 8)
+    cv2.floodFill(img.copy(), ff_mask, ((x1 + x2) // 2, (y1 + y2) // 2), (0, 0, 0), (12, 12, 12), (12, 12, 12), flags)
+    region = _fill_holes(ff_mask[1:-1, 1:-1])
+    n = int(region.sum())
+    ys, xs = np.nonzero(region) if n else (np.array([0]), np.array([0]))
+    if (n > 0 and xs.min() > 0 and ys.min() > 0 and xs.max() < w - 1 and ys.max() < h - 1
+            and n <= 0.3 * w * h and n <= 80 * max(1, (x2 - x1) * (y2 - y1))):
+        return region
+    if area_mask is None:
+        return None
+    region = _fill_holes(area_mask)
+    return region if region.any() else None
+
+
+NECK = 0.75  # chỗ nối hẹp hơn 75% bề dày thuỳ nhỏ hơn: bóng đôi (hai bóng dính nhau), không phải một bóng to
+LOBE_PAD = 0.05  # lề mỗi bên của thuỳ: 5% bề ngang thuỳ
+
+
+def lobe_shape(img: np.ndarray, box, anchors, area_mask: np.ndarray | None = None):
+    """Bóng đôi / bóng chùm (nhiều bóng dính nhau qua chỗ thắt) chứa chữ của nhiều câu: tách lòng bóng tại các
+    chỗ thắt thành từng thuỳ, trả về dáng (như text_area) của thuỳ chứa `box`; None nếu không có chỗ thắt rõ.
+
+    `anchors` = khung chữ gốc của các câu khác. Bề dày bóng = khoảng cách tới mép bóng; chỗ thắt giữa hai câu là
+    chỗ mỏng nhất trên đường dày nhất nối chữ của chúng. Gọt bóng mỏng hơn chỗ thắt thì còn lại các lõi rời nhau,
+    mỗi điểm trong bóng thuộc thuỳ của lõi gần nhất."""
+    region = _bubble_region(img, box, area_mask)
+    if region is None:
+        return None
+    ys, xs = np.nonzero(region)
+    bx1, by1, bx2, by2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
+    crop = region[by1:by2, bx1:bx2].astype(np.uint8)
+    dist = cv2.distanceTransform(cv2.copyMakeBorder(crop, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0),
+                                 cv2.DIST_L2, 5)[1:-1, 1:-1]
+    poles = []  # chỗ dày nhất của bóng dưới chữ gốc mỗi câu
+    for b in [box, *anchors]:
+        cx, cy = (b[0] + b[2]) // 2 - bx1, (b[1] + b[3]) // 2 - by1
+        if not (0 <= cx < crop.shape[1] and 0 <= cy < crop.shape[0] and crop[cy, cx]):
+            if b is box:
+                return None
+            continue  # chữ gốc nằm ngoài bóng này
+        sub = dist[max(0, b[1] - by1):max(0, b[3] - by1), max(0, b[0] - bx1):max(0, b[2] - bx1)]
+        y, x = np.unravel_index(int(np.argmax(sub)), sub.shape)
+        poles.append((max(0, b[1] - by1) + y, max(0, b[0] - bx1) + x))
+    if len(poles) < 2:
+        return None
+    if len(set(poles)) < len(poles):
+        return None  # hai câu cùng một chỗ: không tách được
+
+    def neck_between(p, q) -> float:
+        """Bề dày chỗ thắt giữa hai điểm: ngưỡng lớn nhất mà phần bóng dày hơn ngưỡng vẫn nối hai điểm (0 = rời)."""
+        def joined_at(t):
+            _, lab = cv2.connectedComponents((dist >= t).astype(np.uint8), connectivity=4)
+            return lab[p] > 0 and lab[p] == lab[q]
+
+        lo, hi = 1.0, float(min(dist[p], dist[q]))
+        if not joined_at(lo):
+            return 0.0
+        while hi - lo > .5:
+            mid = (lo + hi) / 2
+            lo, hi = (mid, hi) if joined_at(mid) else (lo, mid)
+        return lo
+
+    k = len(poles)
+    necks = [[0.0] * k for _ in range(k)]
+    for i in range(k):
+        for j in range(i + 1, k):
+            necks[i][j] = necks[j][i] = neck_between(poles[i], poles[j])
+    neck = max(necks[0])
+    other = max((float(dist[poles[j]]) for j in range(1, k) if necks[0][j] == neck), default=0.0)
+    if not neck or neck >= NECK * min(float(dist[poles[0]]), other):
+        return None
+    # Lõi của mỗi câu: phần bóng dày hơn chỗ thắt của chính câu đó (thuỳ nhỏ ở đầu chuỗi bóng không bị thuỳ to nuốt).
+    cores = np.zeros(crop.shape, np.int32)
+    for i in list(range(1, k)) + [0]:
+        if max(necks[i]):
+            _, lab = cv2.connectedComponents((dist > max(necks[i]) + 1).astype(np.uint8), connectivity=4)
+            if lab[poles[i]]:
+                cores[lab == lab[poles[i]]] = i + 1
+    if cores[poles[0]] != 1:
+        return None
+    # Mỗi điểm thuộc thuỳ của lõi gần nhất.
+    _, near = cv2.distanceTransformWithLabels((cores == 0).astype(np.uint8), cv2.DIST_L2, 5,
+                                              labelType=cv2.DIST_LABEL_PIXEL)
+    owner = np.concatenate([[0], cores[cores > 0]])  # nhãn điểm 0 thứ n (theo hàng) → lõi chứa nó
+    lobe = (owner[near] == 1) & (crop > 0)
+    ly, lx = np.nonzero(lobe)
+    lx1, ly1 = lx.min(), ly.min()
+    lobe = lobe[ly1:ly.max() + 1, lx1:lx.max() + 1]
+    seed = ((box[0] + box[2]) // 2, (box[1] + box[3]) // 2)
+    # Thuỳ thường hẹp và mép gợn: chừa lề rộng hơn lòng bóng thường để chữ không chạm mép.
+    return _bubble_shape(lobe, (bx1 + lx1, by1 + ly1), seed, max(3, round(LOBE_PAD * lobe.shape[1])))
 
 
 def _bubble_shape(region: np.ndarray, origin: tuple[int, int], seed: tuple[int, int], pad: int):

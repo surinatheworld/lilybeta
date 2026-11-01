@@ -48,7 +48,9 @@ thân mật, gần gũi, xa cách, xa lạ, quen thuộc, làm quen, quen biết
 chuyến đi, du lịch, tàu điện, xe buýt, ô tô, xe đạp, sân bay, nhà ga, con đường, góc phố, ngã tư, toàn bộ, tâm tư,
 thật lòng, thành thật, chân thành, từ trước, ngồi xuống, đứng dậy, đứng lên, nằm xuống, thời kỳ, ơn nghĩa, cha con,
 mẹ con, vợ chồng, cô dâu, chú rể, hôn nhân, thông gia, họ hàng, trưởng thành, lớn lên, chịu đựng, tha thứ, xin phép,
-làm phiền, phiền phức, rắc rối, lo xa, yên tâm, an tâm, cảm động, xúc động
+làm phiền, phiền phức, rắc rối, lo xa, yên tâm, an tâm, cảm động, xúc động, khó khăn, dễ dàng, đơn giản,
+phức tạp, ít khi, có khi, lý do, lí do, tự do, nhân vật, hoạt hình, tụi mình, tụi tớ, như này, như kia, cao hơn,
+ở trên, ở dưới, phía dưới, phía trên, công bằng
 """
 
 COMPOUNDS: frozenset[tuple[str, str]] = frozenset(
@@ -59,6 +61,10 @@ COMPOUNDS: frozenset[tuple[str, str]] = frozenset(
 PUNCT = ".,!?…:;\"'()[]«»“”‘’-–—~*"
 # Tiểu từ cuối câu: đứng một mình ở dòng cuối ("ạ.") trông như rơi chữ, nên dính vào từ trước.
 PARTICLES = frozenset("ạ à ừ nhé nha nhỉ hả hở hử chứ đấy đây đó vậy thế mà đi nào thôi cơ kìa luôn chưa không".split())
+
+# Hư từ đi với từ đứng sau (giới từ, lượng từ, trợ động từ, liên từ): đứng cuối dòng thì câu bị treo ("của | tôi").
+LEADING = frozenset("""của với và cho là những các mỗi mọi một để từ ở tại trong trên dưới như bằng rằng nếu vì
+bị sẽ đã đang rất hãy đừng chớ không chẳng chả mà cái""".split())
 
 
 def bare(word: str) -> str:
@@ -80,3 +86,10 @@ def final_particle(left: str, right: str) -> bool:
 def ends_clause(word: str) -> bool:
     """Từ kết thúc một vế câu (dấu phẩy, chấm…): chỗ xuống dòng tự nhiên."""
     return word.rstrip("\"'”’)»*")[-1:] in ",.!?…:;"
+
+
+def dangling(left: str, right: str, before: str = "") -> bool:
+    """`left` là hư từ đi với `right` ("của tôi", "những người"): xuống dòng giữa hai từ thì câu bị treo.
+    `before` = từ đứng trước `left`: nếu `before left` là từ ghép ("ít khi", "tự do") thì `left` không phải hư từ."""
+    return (left.rstrip(PUNCT) == left and right.lstrip(PUNCT) == right and bare(left) in LEADING
+            and not (before and joined(before, left)))

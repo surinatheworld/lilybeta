@@ -9,11 +9,13 @@ import numpy as np
 from PySide6.QtGui import QFontDatabase, QGuiApplication
 
 from app.core.assign import apply_plan, assign_lines
+from app.core.clean import lobe_shape
 from app.core.detect import TextBox, sort_reading_order
 from app.core.page import MIN_READABLE, Page, Region
 from app.core.typeset import TextStyle, layout
 
 FONT = os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts", "arial.ttf")
+_CAP = Page.auto_cap
 
 
 def _page(image):
@@ -89,8 +91,45 @@ class ReadableSizeTests(unittest.TestCase):
         try:
             page.clean(r)
         finally:
-            del type(page).auto_cap
+            type(page).auto_cap = _CAP
         self.assertGreaterEqual(_size(r), MIN_READABLE * 40)
+
+    def test_joined_balloons_give_each_line_its_own_lobe(self):
+        img = np.full((700, 900, 3), 120, np.uint8)
+        for c in ((280, 330), (600, 330)):  # hai bóng tròn dính nhau qua một chỗ thắt hẹp
+            cv2.circle(img, c, 150, (255, 255, 255), -1)
+        cv2.rectangle(img, (400, 305), (480, 355), (255, 255, 255), -1)
+        page = _page(img)
+        a = Region((560, 260, 640, 400), text="Cậu đến muộn quá đấy, tớ đợi mãi.", cleaned=True)
+        b = Region((240, 260, 320, 400), text="Xin lỗi nhé, tàu điện bị trễ mất rồi.", cleaned=True)
+        page.regions = [a, b]
+        type(page).auto_cap = property(lambda self: 40.)
+        try:
+            for r in (a, b):
+                r.style = TextStyle(max_size=40)
+                page.clean(r)
+        finally:
+            type(page).auto_cap = _CAP
+        for r, (lo, hi) in ((a, (440, 760)), (b, (120, 440))):
+            self.assertIsNotNone(r.text_shape)
+            x1, _, x2, _ = r.text_rect
+            self.assertTrue(lo - 5 <= x1 and x2 <= hi + 5, (r.text, r.text_rect))  # chữ nằm gọn trong bóng của nó
+            self.assertGreaterEqual(_size(r), 30)
+
+    def test_a_big_middle_lobe_does_not_swallow_a_small_end_lobe(self):
+        img = np.full((600, 1100, 3), 120, np.uint8)
+        for c, r in (((120, 300), 60), ((400, 300), 150), ((800, 300), 150)):
+            cv2.circle(img, c, r, (255, 255, 255), -1)
+        cv2.rectangle(img, (170, 290), (260, 310), (255, 255, 255), -1)  # chỗ thắt mảnh A–B
+        cv2.rectangle(img, (540, 230), (660, 370), (255, 255, 255), -1)  # chỗ thắt dày hơn B–C
+        a, b, c = (95, 255, 145, 345), (370, 250, 430, 350), (770, 250, 830, 350)
+        mid = lobe_shape(img, b, [a, c])
+        self.assertIsNotNone(mid)
+        self.assertGreater(min(r[1] for r in mid[2]), 180)  # thuỳ giữa không lấn sang bóng nhỏ bên trái
+        self.assertLess(max(r[2] for r in mid[2]), 700)
+        small = lobe_shape(img, a, [b, c])
+        self.assertIsNotNone(small)
+        self.assertLess(max(r[2] for r in small[2]), 260)
 
     def test_two_lines_sharing_a_box_are_stacked_not_squeezed_into_columns(self):
         img = np.full((800, 600, 3), 120, np.uint8)
@@ -106,7 +145,7 @@ class ReadableSizeTests(unittest.TestCase):
                 r.style = TextStyle(max_size=40)
                 page.clean(r)
         finally:
-            del type(page).auto_cap
+            type(page).auto_cap = _CAP
         self.assertIsNotNone(a.text_shape)
         self.assertLess(a.text_rect[3], b.text_rect[1] + 5)  # câu đầu ở trên, câu sau ở dưới
         self.assertGreaterEqual(min(_size(a), _size(b)), 30)
@@ -122,7 +161,7 @@ class ReadableSizeTests(unittest.TestCase):
         try:
             page.clean(r)
         finally:
-            del type(page).auto_cap
+            type(page).auto_cap = _CAP
         self.assertEqual(r.style.color, "#ffffff")
 
 

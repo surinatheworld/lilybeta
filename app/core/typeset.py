@@ -25,7 +25,7 @@ from PySide6.QtGui import (
 )
 
 from .fonts import qt_family
-from .vi_words import bare, ends_clause, final_particle, joined
+from .vi_words import bare, dangling, ends_clause, final_particle, joined
 
 MIN_SIZE = 8
 MAX_SIZE = 150
@@ -34,6 +34,7 @@ ROUND_POWER = 0.75  # độ nhọn của dáng bo tròn: 0.5 = hình tròn, 1 = 
 ASPECT_WEIGHT = 0.3  # mức ưu tiên khối chữ cùng tỉ lệ với khung so với dáng dòng
 BREAK_WORD = 0.8  # phạt xuống dòng giữa từ ghép, tính như dòng lệch dáng 80%
 BREAK_PARTICLE = 0.3  # phạt nhẹ để tiểu từ kết câu ("ạ.") không đứng trơ một mình
+BREAK_FUNCTION = 0.5  # phạt hư từ đứng cuối dòng ("của | tôi", "những | người"): nhẹ hơn cắt đôi từ ghép
 BREAK_CLAUSE = 0.15  # thưởng xuống dòng sau dấu phẩy / chấm
 BUBBLE_FILL = 0.8  # mỗi dòng ≤ 80% bề ngang bóng ở độ cao của nó (lề dòng, dáng bo tròn) → chữ phủ ~70% bề ngang bóng
 BUBBLE_VPAD = 0.06  # lề trên/dưới: 6% bề cao bóng
@@ -309,6 +310,8 @@ def _break(words: tuple[str, ...], style_key: tuple, size: int, caps: tuple[floa
             after[j] = (BREAK_WORD * W) ** 2
         elif final_particle(words[j - 1], words[j]):  # "ạ." một chữ cái đứng riêng trông như rơi chữ: phạt nặng
             after[j] = ((BREAK_WORD if len(bare(words[j])) == 1 else BREAK_PARTICLE) * W) ** 2
+        elif dangling(words[j - 1], words[j], words[j - 2] if j > 1 else ""):
+            after[j] = (BREAK_FUNCTION * W) ** 2
         elif ends_clause(words[j - 1]):
             after[j] = -(BREAK_CLAUSE * W) ** 2
     inf = float("inf")
