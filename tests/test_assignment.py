@@ -94,3 +94,21 @@ class LineMatchingRuleTests(unittest.TestCase):
         self.assertTrue(_just_a_name("Souta-kun…?", words))
         self.assertFalse(_just_a_name("Giật", words))
         self.assertFalse(_just_a_name("Ôm", words))
+
+
+class OneColorBalloonTests(unittest.TestCase):
+    def test_only_text_on_pure_white_or_black_is_erased(self):
+        from app.core.clean import one_color_around
+        text = np.zeros((80, 80), bool)
+        text[30:50, 35:45] = True
+        white = np.full((80, 80), 255, np.uint8)
+        self.assertTrue(one_color_around(white, text, text))  # lòng bóng trắng
+        self.assertTrue(one_color_around(np.full((80, 80), 10, np.uint8), text, text))  # ô đen
+        ramp = np.tile(np.linspace(225, 255, 80).astype(np.uint8), (80, 1))
+        self.assertFalse(one_color_around(ramp, text, text))  # SFX trên mảng trắng chuyển màu của tranh
+        art = white.copy()
+        art[:, :40] = 170
+        self.assertFalse(one_color_around(art, text, text))  # bóng trong suốt, tranh xám lộ qua
+        outline = white.copy()
+        outline[:, 50:52] = 0
+        self.assertTrue(one_color_around(outline, text, text))  # chữ sát viền đen của bóng vẫn xoá được
