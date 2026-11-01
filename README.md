@@ -28,7 +28,7 @@ tránh lấy nhầm `icuuc.dll` từ phần mềm khác trong `PATH` gây lỗi 
 
 Cần Python 3.10 trở lên ([python.org](https://www.python.org/downloads/), nhớ tick *Add Python to PATH*).
 
-Bấm đúp **`run.bat`**. Lần đầu tool tự cài thư viện và tự tải 2 model AI về thư mục `models/`: nhận diện chữ (~95MB) và vẽ lại nền LaMa (~200MB).
+Bấm đúp **`run.bat`**. Lần đầu tool tự cài thư viện và tự tải model nhận diện chữ (~95MB) về thư mục `models/`.
 
 Hoặc chạy tay:
 ```bash
@@ -47,9 +47,9 @@ Bố cục và thao tác quen thuộc của Photoshop 2023 (giao diện tối), 
 - **Layer**: Background (raw, khoá) → Redraw (chỗ đã xoá chữ / vẽ lại / bản redraw upload) → layer ảnh bạn tạo
   thêm → mỗi bóng đã có bản dịch là một layer chữ. Lưu PSD giữ nguyên các layer này (thứ tự, ẩn/hiện, opacity, blend).
 - **Vùng chọn**: Marquee, Lasso, Magic Wand, cộng/trừ/giao, Feather, mở rộng/thu hẹp, đảo; *Content-Aware Fill*
-  vẽ lại phần trong vùng chọn bằng AI LaMa; *Tạo khung chữ* biến vùng chọn thành khung chữ.
-- **Redraw tay**: Brush, Eraser (trên Redraw: trả về raw), Clone Stamp, Spot Healing (tô lên chữ, nhả chuột là AI
-  vẽ lại); mọi nét đều bị giới hạn trong vùng chọn nếu có.
+  vẽ lại phần trong vùng chọn theo nền xung quanh (OpenCV); *Tạo khung chữ* biến vùng chọn thành khung chữ.
+- **Redraw tay**: Brush, Eraser (trên Redraw: trả về raw), Clone Stamp, Spot Healing (tô lên chữ, nhả chuột là
+  vẽ lại theo nền xung quanh); mọi nét đều bị giới hạn trong vùng chọn nếu có.
 - **Hoàn tác nhiều bước** cho mọi thao tác (gõ chữ, đổi font, nét cọ, xoá chữ, nhận diện…), bảng History như PS.
 - **Nhiều tài liệu**: Ctrl+O cho phép chọn nhiều file; mở thêm ảnh/PSD/dự án tạo tab mới, giữ nguyên các tab đang sửa.
   Mỗi tab giữ Layers, History, vùng chọn, bản dịch, vị trí xem và mức zoom riêng. Kéo để đổi thứ tự tab;
@@ -118,8 +118,7 @@ trang tranh không chữ mà bản dịch bỏ qua (vd raw 030), đánh số tra
 - Gõ/sửa/di chuyển/xoay chữ chỉ vẽ lại vùng chữ cũ và mới, gồm viền và bóng đổ. Gõ trực tiếp trên ảnh không ghép
   lại trang sau từng phím. Layers giữ nguyên các hàng và ảnh nhỏ khi chỉ đổi chữ; History tái sử dụng icon.
 - Nét cọ cập nhật trực tiếp vào bộ đệm ảnh, tránh sao chép cả trang sau mỗi điểm. Viền vùng chọn chỉ chạy khi có
-  vùng chọn. LaMa dùng tối đa 4 luồng CPU và tắt vòng chờ bận để nhường tài nguyên cho giao diện
-  ([cấu hình luồng ONNX Runtime](https://onnxruntime.ai/docs/performance/tune-performance/threading.html)).
+  vùng chọn. Model nhận diện chữ được nhả khỏi RAM sau mỗi lần nhận diện (~400MB), lần sau tự nạp lại.
 
 Benchmark cục bộ so với bản `39bde3f`, cùng trang giả lập 1600×2400, 24 lớp chữ, font Arial; trung vị 9 lần sau
 khởi động làm nóng, Qt offscreen trên cùng máy Windows:
@@ -225,10 +224,9 @@ vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. C
 6. **Xử lý** (Ctrl+Enter): xoá chữ gốc, vẽ lại nền, chèn bản dịch. Tool tự chuyển sang vùng tiếp theo.
    - Bóng thoại trắng / nền trơn: tô lại màu nền (tức thì).
    - Nền có hoạ tiết (tranh, lưới chấm, SFX đè lên tranh): vẽ lại theo lựa chọn ở mục **Vẽ lại nền**:
-     - *Tự động* (mặc định): SFX nhỏ và vùng tự khoanh vẽ lại bằng LaMa; chữ trên tranh, SFX lớn để bạn tự redraw.
-     - *Chỉ xoá chỗ đơn giản*: không vẽ lại nền khó nào, để bạn tự redraw (xem mục trên).
+     - *Chỉ xoá chỗ đơn giản* (mặc định): không vẽ lại nền khó nào – SFX, chữ trên tranh giữ nguyên, chữ dịch đặt
+       đè lên (layer tên `REDRAW · …` nếu muốn tự redraw sau).
      - *Thường (OpenCV)*: nhanh, nền tranh hơi mờ.
-     - *AI LaMa* (mặc định): chạy trên máy, miễn phí, không cần mạng (vài giây mỗi vùng, model nạp ngầm khi mở ảnh).
      - *AI Google Gemini* / *AI OpenAI (ChatGPT)*: bấm **API key…** để nhập key và chọn model, có nút *Kiểm tra key*.
        Gửi một vùng rộng quanh chữ (≥ 768px, giữ tỉ lệ khung, xin ảnh 2K) để AI vẽ lại cả mảng tranh; ảnh trả về
        được tự căn khớp với ảnh gốc rồi dán lại **cả khung chữ** (xoá luôn nét mà mask bỏ sót).
@@ -279,7 +277,7 @@ Chọn **1** vùng đã xử lý → hiện khung tím quanh chữ:
 | Ctrl+Z / Ctrl+Shift+Z | Hoàn tác / làm lại nhiều bước (bảng History: bấm để nhảy tới bước bất kỳ) |
 | Ctrl+A / Ctrl+D / Ctrl+Shift+I | Chọn tất cả / bỏ chọn / đảo vùng chọn; giữ Shift: cộng, Alt: trừ |
 | Shift+F6 | Làm mềm vùng chọn (Feather) |
-| Shift+F5 | Tô vùng chọn: Content-Aware (AI LaMa) / màu trước / màu nền / trắng / đen |
+| Shift+F5 | Tô vùng chọn: Content-Aware / màu trước / màu nền / trắng / đen |
 | Delete · Alt+Backspace · Ctrl+Backspace | Xoá trong vùng chọn (Redraw: trả về raw) · tô màu trước · tô màu nền |
 | Ctrl+Shift+N / Ctrl+J / Ctrl+E | Layer mới / nhân đôi / gộp xuống |
 | Ctrl+] / Ctrl+[ | Đưa layer lên / xuống |
@@ -301,7 +299,6 @@ Chọn **1** vùng đã xử lý → hiện khung tím quanh chữ:
 
 - `app/core/detect.py` – nhận diện vùng chữ ([comic-text-detector](https://github.com/dmMaze/comic-text-detector), chạy bằng OpenCV DNN)
 - `app/core/clean.py` – xoá chữ, vẽ lại nền (tô màu nền / nền gradient / AI)
-- `app/core/lama.py` – vẽ lại nền bằng [LaMa](https://github.com/advimman/lama) (ONNX, onnxruntime)
 - `app/core/cloud.py` – vẽ lại nền bằng API Gemini / OpenAI; `app/core/secrets.py` – cất API key
 - `app/core/typeset.py` – dàn chữ, tự co cỡ, xuống dòng bo tròn theo dáng bóng, viền chữ
 - `app/core/vi_words.py` – từ ghép tiếng Việt thông dụng (không xuống dòng ở giữa)

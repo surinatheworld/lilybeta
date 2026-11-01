@@ -166,6 +166,10 @@ class _Metrics:
         self.lh = style.leading if style.leading > 0 else auto
 
     def adv(self, s: str) -> float:
+        if SHY in s or PARA in s:
+            # Đo như khi hiển thị. Đo thẳng dấu đánh dấu thì font không có glyph, Qt nạp mọi font hệ thống để tìm
+            # font thay thế (~150MB RAM).
+            s = s.replace(PARA, "").replace(SHY + " ", "-").replace(SHY, "-")
         return self.fm.horizontalAdvance(s) * self.hs
 
 
@@ -273,6 +277,14 @@ def _layout(text: str, style_key: tuple, w: int, h: int):
 
 def _shrink_max(style: TextStyle) -> float:
     return TIGHT_SHRINK if style.tight else SHRINK_MAX
+
+
+def clear_caches() -> None:
+    """Bỏ các bộ nhớ đệm dàn chữ (lớn dần theo số câu đã dàn): gọi sau mỗi trang khi làm cả chương."""
+    _layout.cache_clear()
+    _break.cache_clear()
+    _segments.cache_clear()
+    _PLACED.clear()
 
 
 def _fit(style: TextStyle, size: int) -> int:

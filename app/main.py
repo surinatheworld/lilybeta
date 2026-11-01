@@ -35,7 +35,7 @@ def selftest() -> int:
         cv2.putText(img, "TEST", (80, 300), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 0), 8)
 
     app = QApplication(sys.argv)  # noqa: F841 - cần cho đo font
-    from .core import lama, secrets
+    from .core import secrets
     from .core.detect import TextDetector
     from .core.typeset import TextStyle, missing_chars
 
@@ -43,13 +43,6 @@ def selftest() -> int:
     step("Nhận diện chữ", lambda: f"{len(found.setdefault('b', TextDetector().detect(img)[0]))} vùng")
     step("Font hệ thống", lambda: f"Arial thiếu: '{missing_chars(TextStyle(family='Arial'), 'Ngươi đã chết rồi')}'")
 
-    def run_lama():
-        lama.get_session()
-        m = np.zeros(img.shape[:2], np.uint8)
-        m[10:60, 10:60] = 255
-        lama.inpaint(img.copy(), m)
-
-    step("AI LaMa", run_lama)
     from .core.fonts import postscript_name
     from .core.psd_export import photoshop_available
 

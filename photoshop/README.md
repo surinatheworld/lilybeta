@@ -77,7 +77,7 @@ Câu dịch không khớp bóng nào (chữ vẽ tay nhỏ tool không nhận ra
 đen) tự đổi sang màu trắng. Trang nền đen: khe đen giữa các panel cũng được dùng để xác định thứ tự đọc.
 
 Nhận dạng và ghép thoại là tự động, có thể sai với bố cục khó. Luôn xem trước, đặc biệt SFX và chữ ngoài khung.
-LaMa có thể làm mờ nét/lưới chấm quanh SFX; sửa trên layer Redraw. Chế độ chỉ nền đơn giản đánh dấu `REDRAW` ở các layer cần làm tay.
+SFX và chữ trên tranh không bị xoá: chữ dịch đặt đè lên, layer chữ đánh dấu `REDRAW` nếu muốn tự redraw sau.
 Chỉ xoá những vùng có bản dịch; các SFX chưa ghép và chi tiết bị nhận nhầm được giữ nguyên.
 
 ## Kiểm thử tích hợp ngầm

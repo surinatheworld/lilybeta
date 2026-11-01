@@ -84,9 +84,6 @@ class EditorTests(unittest.TestCase):
 
     def setUp(self):
         QSettings("Lilyzono", "Lilyzono").setValue("typeset/profile", "")
-        preloader = patch.object(MainWindow, "_preload_lama")
-        preloader.start()
-        self.addCleanup(preloader.stop)
         rng = np.random.default_rng(7)
         image = rng.integers(0, 256, (480, 640, 3), dtype=np.uint8)
         path = str(Path(self.temp.name) / "page.png")

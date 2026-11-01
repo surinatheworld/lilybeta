@@ -39,7 +39,7 @@ def easy_only(img: np.ndarray, mask: np.ndarray) -> None:
 easy_only.skip = True
 easy_only.easy_only = True
 
-SMALL_SFX_FRAC = 0.004  # SFX có khung ≤ 0,4% diện tích trang coi là nhỏ: AI trên máy vẽ lại được
+SMALL_SFX_FRAC = 0.004  # SFX có khung ≤ 0,4% diện tích trang coi là nhỏ
 
 
 def is_small_sfx(region, size: tuple[int, int]) -> bool:
@@ -47,14 +47,15 @@ def is_small_sfx(region, size: tuple[int, int]) -> bool:
     return region.kind == "sfx" and (x2 - x1) * (y2 - y1) <= SMALL_SFX_FRAC * size[0] * size[1]
 
 
-def small_only(inpainter):
-    """Chế độ "Tự động": `inpainter` chỉ vẽ lại SFX nhỏ và vùng người dùng tự khoanh; chữ đè lên tranh và
-    SFX lớn để nguyên cho người dùng tự redraw (hoặc nạp bản redraw)."""
-    def run(img: np.ndarray, mask: np.ndarray) -> None:
-        inpainter(img, mask)
-
-    run.skip = lambda page, region: region.kind == "text" or (region.kind == "sfx" and not is_small_sfx(region, page.size))
-    return run
+def opencv_inpaint(img: np.ndarray, mask: np.ndarray) -> None:
+    """Vẽ lại vùng `mask` (0/255, cỡ ảnh) trên `img` tại chỗ theo nền xung quanh (OpenCV, không cần AI)."""
+    ys, xs = np.nonzero(mask)
+    if len(xs) == 0:
+        return
+    pad = 12
+    y1, y2 = max(0, ys.min() - pad), min(img.shape[0], ys.max() + pad + 1)
+    x1, x2 = max(0, xs.min() - pad), min(img.shape[1], xs.max() + pad + 1)
+    img[y1:y2, x1:x2] = cv2.inpaint(img[y1:y2, x1:x2], mask[y1:y2, x1:x2], 5, cv2.INPAINT_TELEA)
 
 
 def fill_bubble(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int, int]) -> bool:
@@ -68,7 +69,7 @@ def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, in
 
     `area_mask` (vùng khoanh lasso, 0/255 cỡ ảnh): xoá toàn bộ trong vùng đó thay vì chỉ nét chữ.
     Nền đồng màu (bóng thoại trắng…) được tô bằng màu nền; nền chuyển màu mượt được khớp lại;
-    nền có hoạ tiết (tranh, lưới chấm) vẽ lại bằng `inpainter(img, mask)` (AI: LaMa / Gemini / OpenAI)
+    nền có hoạ tiết (tranh, lưới chấm) vẽ lại bằng `inpainter(img, mask)` (OpenCV / Gemini / OpenAI)
     nếu có, không thì inpaint của OpenCV.
     """
     need = clean_local(img, text_mask, box, area_mask, inpainter, whole_box)
@@ -126,8 +127,7 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
         # Chữ trên tranh (SFX) thường có viền trắng quanh nét: nới mask để xoá luôn phần viền.
         if area_mask is None:
             mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=2)
-            # Xoá cả khung chữ (xoá luôn nét mờ model bỏ sót như "——", "。"): AI trên mạng luôn làm vậy;
-            # LaMa làm vậy với khung chữ thoại/dẫn truyện (SFX thì chỉ theo nét để giữ tranh).
+            # Xoá cả khung chữ (xoá luôn nét mờ model bỏ sót như "——", "。"): AI trên mạng luôn làm vậy.
             if getattr(inpainter, "whole_box", False) or whole_box:
                 bx1, by1 = max(0, x1 - 4) - cx1, max(0, y1 - 4) - cy1
                 mask[by1:y2 + 4 - cy1, bx1:x2 + 4 - cx1] = 255

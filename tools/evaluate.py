@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from PySide6.QtGui import QFontDatabase, QGuiApplication  # noqa: E402
 
-from app.core import lama  # noqa: E402
+from app.core.clean import easy_only  # noqa: E402
 from app.core.assign import assign_lines  # noqa: E402
 from app.core.detect import TextBox, TextDetector, sort_reading_order  # noqa: E402
 from app.core.page import Page  # noqa: E402
@@ -90,14 +90,12 @@ def match_regions(regions, refs):
     return owner
 
 
-def evaluate(raw_dir, psd_dir, out_dir, pages=None, engine="lama", order_fix=None):
+def evaluate(raw_dir, psd_dir, out_dir, pages=None, engine="simple", order_fix=None):
     """`order_fix`: {trang: [(câu a, câu b), …]} – các cặp câu mà thứ tự đọc đúng phụ thuộc nội dung
     (quy tắc vị trí không đoán được), dùng để sửa đáp án thứ tự."""
     app = QGuiApplication.instance() or QGuiApplication([])  # noqa: F841
     families = QFontDatabase.families()
     det = TextDetector()
-    if engine == "lama":
-        lama.get_session()
     os.makedirs(out_dir, exist_ok=True)
     report, totals = [], {"ref": 0, "found": 0, "merged": 0, "auto_ok": 0, "auto_extra_used": 0, "missed": 0, "extra": 0, "wrong_line": 0,
                           "leftover": 0, "size_err": [], "pos_err": []}
@@ -107,7 +105,7 @@ def evaluate(raw_dir, psd_dir, out_dir, pages=None, engine="lama", order_fix=Non
                         if os.path.exists(os.path.join(raw_dir, name + e)))
         refs, ref_img = read_reference(os.path.join(psd_dir, name + ".psd"))
         page = Page(raw_path)
-        page.inpainter = lama.inpaint if engine == "lama" else None
+        page.inpainter = easy_only if engine == "simple" else None
         t0 = time.time()
         page.detect(det, right_to_left=True)
         # Đáp án thứ tự đọc (như file docs người dịch đưa): thứ tự panel trên ảnh raw + các cặp sửa tay.

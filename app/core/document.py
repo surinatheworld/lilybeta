@@ -467,7 +467,7 @@ class Document:
             _over(layer.rgba, color, a[..., 0])
 
     def content_aware_fill(self, layer: Layer, inpainter, mask: np.ndarray | None = None) -> None:
-        """Vẽ lại phần trong vùng chọn (hoặc `mask`) theo nền xung quanh bằng AI (LaMa)."""
+        """Vẽ lại phần trong vùng chọn (hoặc `mask`) theo nền xung quanh (`inpainter`, mặc định OpenCV)."""
         m = mask if mask is not None else self.selection
         if m is None:
             return
