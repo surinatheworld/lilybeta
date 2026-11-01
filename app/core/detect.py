@@ -294,7 +294,11 @@ def _row_order(boxes: list[TextBox], right_to_left: bool = True) -> list[TextBox
             # Their centres can miss each other's span while they still share a row.
             # Chỉ khi hai khung đứng sát nhau: hai khung xa nhau trong panel (giữa có bóng/SFX khác) là hai nhịp đọc.
             gap = max(b.x1 - r0.x2, r0.x1 - b.x2)
-            close = gap <= 1.5 * max(b.x2 - b.x1, r0.x2 - r0.x1)
+            lo, hi = min(b.x2, r0.x2), max(b.x1, r0.x1)
+            between = any(o is not b and o is not r0 and o.x1 < hi and lo < o.x2
+                          and o.y1 < max(b.y2, r0.y2) and min(b.y1, r0.y1) < o.y2 for o in boxes)
+            # Manga: khung bên phải thấp hơn khung bên trái mà giữa không có gì thì vẫn đọc khung phải trước.
+            close = gap <= 1.5 * max(b.x2 - b.x1, r0.x2 - r0.x1) or (right_to_left and not between)
             staggered_row = separate_columns and close and overlap >= .3 * min(b.y2 - b.y1, r0.y2 - r0.y1)
             if r0.y1 <= cy <= r0.y2 or b.y1 <= (r0.y1 + r0.y2) / 2 <= b.y2 or staggered_row:
                 row.append(b)

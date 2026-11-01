@@ -17,6 +17,8 @@ MERGE_PENALTY = 1.2  # mỗi câu thêm vào cùng một vùng
 SKIP_COST = 2.5  # bỏ qua một vùng chữ bình thường
 SFX_MAX_CHARS = 10  # bản dịch SFX ngắn dù chữ gốc vẽ to
 MERGE_SHORT = 1.0  # thêm cho mỗi câu ngắn (≤ 2 từ) gộp chung bóng: thường là SFX / câu chen vẽ tay riêng
+CLUSTER_GAP = 1.2  # nét chữ cách nhau hơn ~1,2 ký tự: hai cụm chữ riêng…
+CLUSTER_MIN = 0.15  # …mỗi cụm ≥ 15% lượng nét của vùng (bỏ furigana, dấu "…")
 DROP_COST = 3.0  # để riêng một câu (layer "CHƯA ĐẶT") thay vì đẩy lệch các câu sau sang bóng khác
 TINY_INK = .08  # bóng chỉ có dấu ("…", "!", "?"): nét < 8% một bóng thoại điển hình của trang
 TINY_WORDS_PENALTY = 3.0  # câu nhiều từ rơi vào bóng chỉ có dấu
@@ -34,6 +36,21 @@ def region_ink(page, r) -> float:
         return float(page.area_mask(r).sum() / 255) * 0.3
     x1, y1, x2, y2 = r.box
     return float((page.text_mask[y1:y2, x1:x2] > 0.3).sum())
+
+
+def text_clusters(page, r, glyph: float = 0.) -> int:
+    """Số cụm chữ tách rời trong vùng (ô bậc thang "よくない / 俺よくないぞ", hai khối so le): mỗi cụm thường là một
+    câu dịch riêng, nên ghép nhiều câu vào vùng như vậy là tự nhiên."""
+    if r.polygon or getattr(page, "text_mask", None) is None:
+        return 1
+    x1, y1, x2, y2 = r.box
+    mask = (page.text_mask[y1:y2, x1:x2] > 0.3).astype(np.uint8)
+    if not mask.any():
+        return 1
+    k = max(3, int(glyph * CLUSTER_GAP) if glyph else 9)
+    n, _, stats, _ = cv2.connectedComponentsWithStats(cv2.dilate(mask, np.ones((k, k), np.uint8)), connectivity=8)
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    return max(1, int((areas >= CLUSTER_MIN * areas.sum()).sum()))
 
 
 def glyph_size(page, r) -> float:
@@ -101,6 +118,7 @@ def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str
     text_ink = float(np.median([ink[i] for i, r in enumerate(regions) if r.kind != "sfx"] or ink))
     raw_text_ink = float(np.median([raw_ink[i] for i, r in enumerate(regions) if r.kind != "sfx"] or raw_ink))
     big = [r.kind == "sfx" and raw_ink[i] >= BIG_SFX * raw_text_ink for i, r in enumerate(regions)]
+    clusters = [text_clusters(page, r, sizes[i]) if r.kind != "sfx" else 1 for i, r in enumerate(regions)]
     for i, r in enumerate(regions):
         if big[i]:  # biển / chữ in cỡ một bóng thoại: chấm như chữ thường
             skip[i] = max(skip[i], skip_cost(page, r) * 2.4)  # bỏ hệ số giảm của SFX (×0.25 → ×0.6)
@@ -109,7 +127,8 @@ def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str
         got = sum(chars[a:b])
         exp = alpha * ink[i]
         fit = math.log((got + 6) / (exp + 6)) ** 2
-        cost = fit + (b - a - 1) * MERGE_PENALTY + MERGE_SHORT * sum(len(s.split()) <= 2 for s in lines[a:b]) * (b - a > 1)
+        extra = max(0, b - a - clusters[i])  # câu gộp quá số cụm chữ gốc của vùng
+        cost = fit + extra * MERGE_PENALTY + MERGE_SHORT * sum(len(s.split()) <= 2 for s in lines[a:b]) * (extra > 0)
         if _footer_strip(page, regions[i]):
             cost += .75
         if raw_ink[i] < TINY_INK * raw_text_ink and max(len(s.split()) for s in lines[a:b]) >= 2:
@@ -205,12 +224,34 @@ def _swap_pass(plan, regions, ink, alpha):
         got = sum(len(s.strip()) for s in ls)
         return math.log((got + 6) / (alpha * ink[idx[id(r)]] + 6)) ** 2
 
+    words = [w.strip(".,!?…~\"'“”‘’()") for _, ls in plan for s in ls for w in s.split()]
     for k in range(len(plan) - 1):
         (ra, la), (rb, lb) = plan[k], plan[k + 1]
         if len(la) == 1 and len(lb) == 1 and ra.kind != "sfx" and rb.kind != "sfx":
             if fit(ra, la) + fit(rb, lb) - (fit(ra, lb) + fit(rb, la)) > SWAP_GAIN:
                 plan[k], plan[k + 1] = (ra, lb), (rb, la)
+        elif len(la) == 1 and len(lb) == 1 and (ra.kind == "sfx") != (rb.kind == "sfx"):
+            # SFX nhận phải câu chỉ là tên người ("Nagi" khi gọi) mà bóng kề bên nhận câu kiểu SFX ("Giật"): thứ tự đọc
+            # SFX / bóng trong panel phụ thuộc nội dung → đổi.
+            sfx_line, talk_line = (la[0], lb[0]) if ra.kind == "sfx" else (lb[0], la[0])
+            if _just_a_name(sfx_line, words) and not _just_a_name(talk_line, words):
+                plan[k], plan[k + 1] = (ra, lb), (rb, la)
     return plan
+
+
+def _just_a_name(line: str, words: list[str]) -> bool:
+    """Câu chỉ gồm tên riêng (viết hoa, có ở câu khác trên trang, hoặc kèm -kun / -san…): lời gọi, không phải SFX."""
+    parts = [w.strip(".,!?…~\"'“”‘’()") for w in line.split()]
+    parts = [w for w in parts if w]
+    if not parts or len(parts) > 2:
+        return False
+    for w in parts:
+        base = w.split("-")[0]
+        if not base[:1].isupper():
+            return False
+        if "-" not in w and sum(x == w for x in words) < 2:
+            return False
+    return True
 
 
 def split_region(page, region, lines: list[str]):

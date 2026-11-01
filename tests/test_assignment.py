@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from app.core.assign import assign_lines, skip_cost
+from app.core.assign import _just_a_name, assign_lines, skip_cost, text_clusters
 from app.core.detect import TextBox, sort_reading_order
 from app.core.page import Page, Region
 
@@ -23,6 +23,12 @@ class ReadingOrderTests(unittest.TestCase):
         far_left = TextBox(101, 458, 176, 573, 1)
         self.assertEqual(sort_reading_order([far_left, small_right]), [small_right, far_left])
         self.assertEqual(sort_reading_order([far_left, small_right], False), [small_right, far_left])
+
+    def test_lower_right_balloon_is_read_before_a_far_left_sfx_with_nothing_between(self):
+        # SFX ở trên bên trái, bóng thoại ở dưới bên phải, giữa hai vùng là khoảng trống.
+        sfx_left = TextBox(41, 856, 121, 988, 1)
+        bubble_right = TextBox(353, 940, 427, 1047, 1)
+        self.assertEqual(sort_reading_order([sfx_left, bubble_right]), [bubble_right, sfx_left])
 
     def test_separate_rows_and_separate_panels_keep_their_order(self):
         top = TextBox(80, 70, 120, 120, 1)
@@ -70,3 +76,21 @@ class AssignmentTests(unittest.TestCase):
         self.assertEqual(page.auto_clean(small_sfx=False), 0)
         self.assertFalse(page.regions[0].cleaned)
         np.testing.assert_array_equal(page.working, page.original)
+
+
+class LineMatchingRuleTests(unittest.TestCase):
+    def test_a_stepped_box_with_two_text_clusters_counts_two_blocks(self):
+        page = SimpleNamespace(text_mask=np.zeros((300, 300), np.float32))
+        page.text_mask[20:120, 200:230] = 1  # cụm trên phải
+        page.text_mask[150:260, 60:90] = 1  # cụm dưới trái, cách xa
+        self.assertEqual(text_clusters(page, Region((50, 10, 240, 270)), 30), 2)
+        page.text_mask[150:260, 60:90] = 0
+        page.text_mask[20:120, 160:190] = 1  # hai cột sát nhau: một cụm
+        self.assertEqual(text_clusters(page, Region((50, 10, 240, 270)), 30), 1)
+
+    def test_a_name_called_out_is_not_an_sfx_translation(self):
+        words = ["Nagi", "Nagi", "Giật", "Anh", "yêu", "Nagi"]
+        self.assertTrue(_just_a_name("Nagi", words))
+        self.assertTrue(_just_a_name("Souta-kun…?", words))
+        self.assertFalse(_just_a_name("Giật", words))
+        self.assertFalse(_just_a_name("Ôm", words))
