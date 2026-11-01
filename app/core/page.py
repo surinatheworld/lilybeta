@@ -38,6 +38,7 @@ EVEN_KINDS = {"normal", "thought"}  # thoại thường / suy nghĩ: cùng cỡ 
 EVEN_SLACK = 1.1  # …bóng nào cho chữ to hơn 1,1 lần cỡ chung của trang thì hạ xuống
 EVEN_MIN_REGIONS = 3  # …khi trang có từ 3 bóng thoại
 TIGHT_MIN_WORDS = 3  # chế độ chỗ chật chỉ cho câu dài hơn 3 từ
+STAGGER = 0.3  # hai câu chung bóng là "so le" khi tâm chữ gốc lệch nhau ≥ 30% bề cao cột chữ
 SHARED_GAP = 0.4  # hai câu chung một bóng: khối chữ cách nhau ≥ 0,4 cỡ chuẩn (bản type tay: 5–20px ở trang 840px)
 SHARED_SIZE_TOL = 0.9  # …chọn cặp có dáng dòng đẹp nhất trong các cặp có cỡ chữ ≥ 90% cỡ to nhất…
 SHARED_LANKY = 0.5  # …cộng phạt khối dài / bẹt (0 = vuông)
@@ -379,6 +380,15 @@ class Page:
                 region.tight = False  # thuỳ riêng: như một bóng thường
                 return lobe  # chữ dàn theo dáng thuỳ, giữa thuỳ: đẹp hơn khung chữ nhật dù nhỏ hơn chút
             return None  # bóng đôi: dải ngang sẽ cắt qua thuỳ của câu khác, dùng khung chữ nhật
+        # Bóng liền khối hai câu dài so le: mỗi câu căn giữa phần bóng gần chữ gốc của nó, theo dáng phần đó (như
+        # người type: khối chữ là bản thu nhỏ của phần bóng, lề đều). Có câu chen ngắn ("Uầy~") thì thôi.
+        mates = [o for o in self.regions if o is not region and o.kind != "sfx" and not o.orphan and o.text.strip()
+                 and _inside(shape, o.box)]
+        if len(region.text.split()) > TIGHT_MIN_WORDS and mates and all(
+                len(o.text.split()) > TIGHT_MIN_WORDS for o in mates):
+            part = _shared_part(shape, region.box, [o.box for o in mates], SHARED_GAP * region.auto_cap)
+            if part and size(place_in_shape(region.text, style, part)) >= LOBE_SIZE * boxed:
+                return part
         band = self._shared_band(region, shape, span)
         # Hai bóng dính nhau nằm ngang thì từng khung riêng vẫn tốt hơn: chỉ dùng dải khi chữ to hơn rõ.
         return band if band and size(place_in_shape(region.text, style, band)) > 1.1 * boxed else None
@@ -523,6 +533,59 @@ class Page:
     def export(self, path: str) -> None:
         if not self.render().save(path, None, 95):  # JPEG chất lượng 95
             raise IOError(f"Không lưu được: {path}")
+
+
+def _inside(shape, box) -> bool:
+    """Tâm `box` nằm trong lòng bóng `shape`."""
+    spans = {y: (left, right) for y, left, right in shape[2]}
+    y = int((box[1] + box[3]) / 2)
+    return y in spans and spans[y][0] <= (box[0] + box[2]) / 2 <= spans[y][1]
+
+
+def _box_distance(x, y, box):
+    """Khoảng cách từ các điểm (x mảng, y) tới hình chữ nhật `box` (0 nếu nằm trong)."""
+    x1, y1, x2, y2 = box
+    dx = np.maximum(np.maximum(x1 - x, 0), x - x2)
+    dy = max(y1 - y, 0, y - y2)
+    return np.hypot(dx, dy)
+
+
+def _shared_part(shape, box, others, gap):
+    """Bóng liền khối (không có chỗ thắt) chứa chữ của nhiều câu, xếp so le như bóng mây hai câu: phần bóng gần chữ
+    gốc của câu này hơn chữ gốc của các câu khác (cách đường chia `gap`), dạng (cx, cy, hàng) như lòng bóng.
+    None nếu bóng không có câu nào khác hoặc phần còn lại quá nhỏ."""
+    rows = shape[2]
+    rivals = [o for o in others if _inside(shape, o)]
+    # Chỉ bóng hai câu so le (một cao một thấp); hai cột chữ ngang hàng thì xếp chồng trên-dưới (dải ngang).
+    tall = box[3] - box[1]
+    if not rivals or any(abs((o[1] + o[3]) - (box[1] + box[3])) / 2 < STAGGER * max(tall, o[3] - o[1]) for o in rivals):
+        return None
+    part = []
+    for y, left, right in rows:
+        xs = np.arange(left, right)
+        mine = _box_distance(xs, y, box) + gap <= np.min([_box_distance(xs, y, o) for o in rivals], axis=0)
+        if not mine.any():
+            continue
+        # đoạn liền dài nhất của hàng thuộc phần này
+        edges = np.flatnonzero(np.diff(np.concatenate(([0], mine.astype(np.int8), [0]))))
+        starts, ends = edges[::2], edges[1::2]
+        k = int(np.argmax(ends - starts))
+        part.append((y, int(left + starts[k]), int(left + ends[k])))
+    if len(part) < 10:
+        return None
+    ys = [y for y, _, _ in part]
+    if max(ys) - min(ys) + 1 != len(part):  # phần bị đứt quãng theo chiều dọc: lấy khúc liền chứa nhiều hàng nhất
+        runs, cur = [], [part[0]]
+        for row in part[1:]:
+            if row[0] == cur[-1][0] + 1:
+                cur.append(row)
+            else:
+                runs.append(cur)
+                cur = [row]
+        part = max(runs + [cur], key=len)
+    cx = float(np.median([(a + b) / 2 for _, a, b in part]))
+    cy = (part[0][0] + part[-1][0]) / 2
+    return cx, cy, tuple(part)
 
 
 def _lanky(block) -> float:

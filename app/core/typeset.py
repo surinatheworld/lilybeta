@@ -56,7 +56,7 @@ PEAK_WEIGHT = 3.0  # phạt dòng thò ra so với cả hai dòng kề…
 PEAK_SLACK = 0.2  # …quá 20% dòng dài nhất
 SYMMETRY_WEIGHT = 0.6  # phạt khối bo tròn lệch: dòng trên và dòng dưới tương ứng dài khác nhau
 SHRINK_MAX = 0.25  # được nhỏ chữ tối đa 25% so với cỡ lớn nhất vừa khung (khi nhờ đó khỏi cắt từ, khỏi thụt thò)…
-TIGHT_SHRINK = 0.08  # …chỗ chật thì chỉ 8%: chữ to, dòng ngắn (tách cả từ ghép) hơn là chữ bé dòng đều
+TIGHT_SHRINK = 0.15  # …chỗ chật thì chỉ 15%: chữ to, dòng ngắn theo dáng bóng (tách cả từ ghép) hơn là chữ bé dòng đều
 SHRINK_COST = 1.2  # …nếu điểm dáng tốt lên hơn 0,12 cho mỗi 10% nhỏ đi
 SCRIPT_SIZE = 0.583  # cỡ chỉ số trên/dưới so với cỡ chữ (mặc định Photoshop 58.3%)
 SCRIPT_POS = 0.333  # độ nâng/hạ chỉ số trên/dưới (mặc định Photoshop 33.3%)
@@ -672,7 +672,12 @@ def _quality(text: str, style: TextStyle, style_key: tuple, size: int, lines, wa
     if at != len(words):
         return 0.0
     seg = _segments(words, style_key, size)
-    return _score(style, seg, (0.0, tuple(cuts)), _Metrics(style, size).lh, want, len(words), words, aspect=False)
+    # Lệch khỏi dáng mong muốn (bo tròn: hình thoi, dòng giữa dài, trên/dưới ngắn) – như trong _break.
+    widths = [seg[a][b] for a, b in zip(cuts, cuts[1:])]
+    p = _profile(len(widths), style.shape)
+    W = max(1.0, sum(widths) / sum(p))
+    dev = math.sqrt(sum((w - q * W) ** 2 for w, q in zip(widths, p)) / len(widths)) / W
+    return _score(style, seg, (dev, tuple(cuts)), _Metrics(style, size).lh, want, len(words), words, aspect=False)
 
 
 def best_rect(text: str, style: TextStyle, rects: list[tuple[int, int, int, int]]):
