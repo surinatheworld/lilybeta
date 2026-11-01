@@ -13,7 +13,7 @@ from PySide6.QtGui import QImage, QPainter
 
 from .clean import MARGIN, clean_local, fill_bubble, is_small_sfx, lobe_shape, text_area
 from .detect import TextDetector, sort_reading_order
-from .typeset import TextStyle, best_rect, block_box, draw_text, layout, place_in_shape
+from .typeset import TextStyle, best_rect, block_box, block_quality, draw_text, layout, place_in_shape
 from .typeset_profiles import apply_profile, profile_style
 
 Box = tuple[int, int, int, int]
@@ -37,8 +37,10 @@ LOBE_SIZE = 0.85  # bóng đôi: dàn theo thuỳ khi chữ ≥ 85% cỡ đặt 
 EVEN_KINDS = {"normal", "thought"}  # thoại thường / suy nghĩ: cùng cỡ trên một trang (ô dẫn truyện, SFX, hét thì không)
 EVEN_SLACK = 1.1  # …bóng nào cho chữ to hơn 1,1 lần cỡ chung của trang thì hạ xuống
 EVEN_MIN_REGIONS = 3  # …khi trang có từ 3 bóng thoại
+TIGHT_MIN_WORDS = 3  # chế độ chỗ chật chỉ cho câu dài hơn 3 từ
 SHARED_GAP = 0.4  # hai câu chung một bóng: khối chữ cách nhau ≥ 0,4 cỡ chuẩn (bản type tay: 5–20px ở trang 840px)
-SHARED_SIZE_TOL = 0.95  # …chọn cặp khối gọn nhất trong các cặp có cỡ chữ ≥ 95% cỡ to nhất
+SHARED_SIZE_TOL = 0.9  # …chọn cặp có dáng dòng đẹp nhất trong các cặp có cỡ chữ ≥ 90% cỡ to nhất…
+SHARED_LANKY = 0.5  # …cộng phạt khối dài / bẹt (0 = vuông)
 TRIM_OPTIONS = 6  # …chạm nhau thì thử cắt bớt 6 khung cho chữ to nhất của mỗi câu
 
 
@@ -57,6 +59,7 @@ class Region:
     uid: int = field(default_factory=new_uid)  # định danh bền (layer chữ, lịch sử hoàn tác trỏ tới vùng qua uid)
     typeset_kind: str = "auto"  # automatic balloon shape, or a user-selected font category
     orphan: bool = False  # câu không ghép được vào bóng nào: khung tạm, người dùng kéo vào đúng chỗ
+    tight: bool = False  # chung bóng với câu khác mà không tách được thuỳ: ưu tiên chữ to, dòng ngắn
     # Dáng lòng bóng (cx, cy, ((y, trái, phải), …)) để dàn chữ theo đúng hình bóng; None = chỉ dùng text_rects.
     text_shape: tuple | None = None
 
@@ -75,9 +78,13 @@ class Region:
     @property
     def effective_style(self) -> TextStyle:
         """Kiểu chữ dùng để dàn chữ: cỡ tự động thì giới hạn theo cỡ chuẩn của trang (nếu chưa đặt tay)."""
-        if self.style.size == 0 and self.style.max_size == 0 and self.auto_cap:
-            return replace(self.style, max_size=self.auto_cap)
-        return self.style
+        style = self.style
+        if self.tight and len(self.text.split()) > TIGHT_MIN_WORDS:
+            # chỗ chật vì nhường chỗ cho câu kia: không thu cỡ thêm, chữ to dòng ngắn (câu 2–3 từ thì không cần)
+            style = replace(style, fit_scale=1.0, tight=True)
+        if style.size == 0 and style.max_size == 0 and self.auto_cap:
+            return replace(style, max_size=self.auto_cap)
+        return style
 
     @property
     def done(self) -> bool:
@@ -250,7 +257,7 @@ class Page:
         if not region.cleaned:
             self._clean_pixels(region)
             region.cleaned = True
-        region.text_shape = None
+        region.text_shape, region.tight = None, False
         if region.kind == "sfx":
             # Dịch SFX đặt ngay tại chỗ SFX gốc (không loang ra nền trắng của panel).
             x1, y1, x2, y2 = region.box
@@ -333,11 +340,19 @@ class Page:
                                 pairs.append((fixed, o) if flip else (o, fixed))
             if not pairs:
                 continue
-            # Cỡ chữ hai bên đều và to nhất; gần bằng nhau (≤ 5%) thì chọn cặp khối gọn (gần vuông), tránh cột dài
-            # mỗi dòng một từ.
+            # Cỡ chữ hai bên đều và to nhất; gần bằng nhau (≤ 10%) thì chọn cặp có dáng dòng đẹp (không thụt thò, không
+            # vụn mỗi dòng một chữ) và khối gọn, tránh cột dài.
             top = max(min(a[2][4], b[2][4]) for a, b in pairs)
             pairs = [p for p in pairs if min(p[0][2][4], p[1][2][4]) >= SHARED_SIZE_TOL * top]
-            a, b = min(pairs, key=lambda p: (max(_lanky(p[0][2]), _lanky(p[1][2])), -p[0][2][4] - p[1][2][4]))
+            looks = {}
+
+            def look(r, o):
+                key = (r.uid, o[0])
+                if key not in looks:
+                    looks[key] = block_quality(r.text, r.effective_style, o[0]) + SHARED_LANKY * _lanky(o[2])
+                return looks[key]
+
+            a, b = min(pairs, key=lambda p: (look(region, p[0]) + look(other, p[1]), -p[0][2][4] - p[1][2][4]))
             for r, (rect, keep, _) in ((region, a), (other, b)):
                 if not keep:
                     r.text_shape, r.text_rects = None, [rect]
@@ -345,6 +360,7 @@ class Page:
     def _shared_shape(self, region: Region, shape, span):
         """Dáng đặt chữ khi bóng chứa cả chữ của câu khác: bóng đôi thì lấy thuỳ của câu này (tách tại chỗ thắt),
         không thì dải ngang theo thứ tự đọc; None nếu khung chữ nhật cho chữ to hơn."""
+        region.tight = True
         style = region.effective_style
 
         def size(rect):
@@ -360,6 +376,7 @@ class Page:
             mine = not any(left <= (o[0] + o[2]) / 2 <= right for o in others
                            for y in [int((o[1] + o[3]) / 2)] if y in spans for left, right in [spans[y]])
             if mine and size(place_in_shape(region.text, style, lobe)) >= LOBE_SIZE * boxed:
+                region.tight = False  # thuỳ riêng: như một bóng thường
                 return lobe  # chữ dàn theo dáng thuỳ, giữa thuỳ: đẹp hơn khung chữ nhật dù nhỏ hơn chút
             return None  # bóng đôi: dải ngang sẽ cắt qua thuỳ của câu khác, dùng khung chữ nhật
         band = self._shared_band(region, shape, span)
