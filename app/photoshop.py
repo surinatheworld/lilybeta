@@ -39,7 +39,7 @@ from .core.page import Page
 from .core.paths import model_path
 from .core.psd_export import clean_layer, layer_specs
 from .core.typeset import TextStyle
-from .core.typeset_profiles import GAI_BANG, PROFILES, fonts_for, region_kind
+from .core.typeset_profiles import CUSTOM, GAI_BANG, PROFILES, kinds_for, fonts_for, region_kind
 
 PROTOCOL = 1
 
@@ -75,7 +75,7 @@ def load_request(path: Path) -> dict:
             raise ValueError("Không tìm thấy ảnh redraw SFX.")
         return request
     has_file = bool(request.get("translation_file") or request.get("translation_text"))
-    if mode == "batch":
+    if mode in ("batch", "scan"):  # scan: quét loại khung trước khi chọn font (cần bản dịch để type tiếp)
         pages = request.get("pages")
         if not isinstance(pages, list) or not pages:
             raise ValueError("Không có trang nào để làm.")
@@ -83,13 +83,24 @@ def load_request(path: Path) -> dict:
             _check_image(item.get("image"))
         if not has_file:
             raise ValueError("Làm cả chương cần bản dịch có số trang (1, 2, …) trước thoại mỗi trang.")
+        _check_fonts(request.get("custom_fonts"))
         return request
     if mode != "page":
         raise ValueError("Chế độ không hợp lệ.")
     if not has_file or "lines" in request:
         _check_lines(request.get("lines"))
     _check_image(request.get("image"))
+    _check_fonts(request.get("custom_fonts"))
     return request
+
+
+def _check_fonts(fonts) -> None:
+    """Font tự chọn: {loại khung: {"family", "style", "postscript", "italic"}} với tên là chuỗi."""
+    if fonts is None:
+        return
+    if not isinstance(fonts, dict) or any(not isinstance(v, dict) or not isinstance(v.get("family", ""), str)
+                                          or not isinstance(v.get("postscript", ""), str) for v in fonts.values()):
+        raise ValueError("Danh sách font tự chọn không hợp lệ.")
 
 
 def register_fonts(families) -> None:
@@ -106,6 +117,8 @@ def _check_setup(profile: str) -> None:
         raise ValueError("Thiếu model comictextdetector.pt.onnx. Chạy build_photoshop.bat hoặc chép model vào thư mục models.")
     if profile not in PROFILES:
         raise ValueError("Chưa hỗ trợ bộ font này.")
+    if profile == CUSTOM:
+        return  # font do người dùng chọn trong danh sách font của Photoshop: Photoshop đã có sẵn
     missing = sorted({font for font in fonts_for(profile).values() if not files_for(font)}) if sys.platform == "win32" else []
     if missing:
         raise ValueError("Cần cài font trước khi chạy: " + ", ".join(missing))
@@ -133,7 +146,8 @@ def _lines_for(pages: dict[int, list[str]], doc_name: str, single: bool) -> list
 
 
 def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", size=None, right_to_left: bool = True,
-                 detector=None, report=None, profile: str = GAI_BANG, redrawn: str | None = None) -> dict:
+                 detector=None, report=None, profile: str = GAI_BANG, redrawn: str | None = None,
+                 custom_fonts: dict | None = None) -> dict:
     """Một trang: nhận diện, ghép thoại, xoá chữ theo luật "chỉ chỗ dễ", dàn chữ; ghi ảnh Redraw/xem trước.
 
     `redrawn`: ảnh đã redraw sẵn (cùng khung): làm nền thay cho phần xoá chữ của tool; chữ vẫn nhận diện trên raw."""
@@ -142,6 +156,7 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
     if size is not None and list(page.size) != list(size):
         raise ValueError("Kích thước ảnh chụp không khớp tài liệu Photoshop.")
     page.typeset_profile = profile
+    page.custom_fonts = custom_fonts or {}
     report("Nhận diện chữ…")
     page.detect(detector or TextDetector(), right_to_left=right_to_left)
     if redrawn:
@@ -173,6 +188,9 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
         spec["family"] = r.style.family
         spec["kind"] = r.kind
         spec["typeset_kind"] = region_kind(page, r)
+        chosen = page.custom_fonts.get(spec["typeset_kind"]) if profile == CUSTOM else None
+        if chosen and chosen.get("postscript"):
+            spec["font"] = chosen["postscript"]  # đúng font người dùng chọn trong danh sách của Photoshop
     return {"size": list(page.size), "profile_name": PROFILES[profile], "redraw": str(folder / f"{prefix}redraw.png"),
             "preview": str(folder / f"{prefix}preview-ui.png"), "layers": specs, "detected": len(page.regions),
             "needs_redraw": sum(r.needs_redraw for r in translated)}
@@ -211,6 +229,51 @@ def redraw_sfx(base_path: str, redrawn_path: str, out_path: Path) -> dict:
     return {"size": [w, h], "layer": str(out_path), "changed_percent": round(float(mask.mean()) * 100, 2)}
 
 
+SAMPLES = 3  # ảnh mẫu mỗi loại khung trong bảng chọn font
+
+
+def scan_kinds(items: list[dict], folder: Path, detector, right_to_left: bool = True, report=None) -> list[dict]:
+    """Quét mọi trang: đếm khung chữ theo loại (bộ tự chọn font) và cắt vài ảnh mẫu mỗi loại cho bảng chọn font."""
+    report = report or (lambda step: None)
+    kinds = [k for k in kinds_for(CUSTOM) if k != "auto"]
+    count = {k: 0 for k in kinds}
+    pages = {k: set() for k in kinds}
+    best: dict[str, list] = {k: [] for k in kinds}  # (diện tích, trang, ảnh crop) – giữ khung to nhất mỗi loại
+    for i, item in enumerate(items):
+        report(f"Quét loại khung trang {i + 1}/{len(items)}…")
+        page = Page(item["image"])
+        page.typeset_profile = CUSTOM
+        page.detect(detector, right_to_left=right_to_left)
+        h, w = page.original.shape[:2]
+        for r in page.regions:
+            kind = region_kind(page, r)
+            count[kind] += 1
+            pages[kind].add(i)
+            x1, y1, x2, y2 = r.box
+            mx, my = int((x2 - x1) * .45) + 12, int((y2 - y1) * .3) + 12
+            crop = page.original[max(0, y1 - my):min(h, y2 + my), max(0, x1 - mx):min(w, x2 + mx)]
+            if crop.size:
+                best[kind] = sorted(best[kind] + [((x2 - x1) * (y2 - y1), i, crop.copy())], key=lambda t: -t[0])[:12]
+    out = []
+    for k in kinds:
+        # Khung to nhất, ưu tiên mỗi mẫu một trang khác nhau.
+        first = {}
+        for t in best[k]:
+            first.setdefault(t[1], t)
+        chosen = {id(t) for t in first.values()}
+        picked = (list(first.values()) + [t for t in best[k] if id(t) not in chosen])[:SAMPLES]
+        samples = []
+        for n, (_, _, crop) in enumerate(picked):
+            scale = min(96 / crop.shape[0], 150 / crop.shape[1], 1.5)
+            img = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
+            path = folder / f"scan_{k}_{n}.png"
+            cv2.imencode(".png", img)[1].tofile(path)
+            samples.append(str(path))
+        out.append({"kind": k, "label": kinds_for(CUSTOM)[k], "count": count[k], "pages": len(pages[k]),
+                    "samples": samples})
+    return out
+
+
 def process_job(path: Path, report=None) -> dict:
     report = report or (lambda step: None)
     request = load_request(path)
@@ -222,11 +285,17 @@ def process_job(path: Path, report=None) -> dict:
         report("So ảnh redraw với ảnh gốc…")
         return {**base, **redraw_sfx(request["image"], request["redrawn"], folder / "sfx_redraw.png")}
     profile = request.get("profile", GAI_BANG)
+    custom = request.get("custom_fonts") or {}
     _check_setup(profile)
     report("Nạp font và model…")
-    register_fonts(fonts_for(profile).values())
+    register_fonts([*fonts_for(profile).values(), *(c.get("family", "") for c in custom.values() if c.get("family"))])
     detector = TextDetector()
     rtl = request.get("right_to_left", True)
+    if mode == "scan":
+        # Bước 1 của "tự chọn font": báo các loại khung có trong chương; ảnh đã chụp được dùng lại khi type.
+        keep = {k: request[k] for k in ("script", "translation_file", "translation_text") if request.get(k)}
+        return {**base, **keep, "right_to_left": rtl, "pages": request["pages"],
+                "kinds": scan_kinds(request["pages"], folder, detector, rtl, report)}
     if mode == "batch":
         pages = _translations(request)
         out = []
@@ -241,7 +310,7 @@ def process_job(path: Path, report=None) -> dict:
                 continue
             try:
                 res = typeset_page(item["image"], lines, folder, f"p{i}_", item.get("size"), rtl, detector,
-                                   lambda text, step=step: report(step + text), profile)
+                                   lambda text, step=step: report(step + text), profile, custom_fonts=custom)
                 out.append({"ok": True, "doc_id": item.get("doc_id"), "doc_name": name, **res})
             except Exception as exc:  # noqa: BLE001 - trang lỗi không làm hỏng cả chương
                 out.append({"ok": False, "doc_id": item.get("doc_id"), "doc_name": name, "error": str(exc)})
@@ -251,7 +320,8 @@ def process_job(path: Path, report=None) -> dict:
         lines = _lines_for(_translations(request), request.get("doc_name", ""), True)
         if not lines:
             raise ValueError(f"Bản dịch không có trang {page_number(request.get('doc_name', ''))}.")
-    return {**base, **typeset_page(request["image"], lines, folder, "", request.get("size"), rtl, detector, report, profile)}
+    return {**base, **typeset_page(request["image"], lines, folder, "", request.get("size"), rtl, detector, report, profile,
+                                       custom_fonts=custom)}
 
 
 def _failure(job: Path, exc: Exception) -> dict:

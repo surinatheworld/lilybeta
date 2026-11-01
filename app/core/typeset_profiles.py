@@ -11,7 +11,8 @@ from .typeset import TextStyle
 
 GAI_BANG = "gai_bang"
 ISSHIKI = "isshiki"
-PROFILES = {GAI_BANG: "Typeset Gái Băng", ISSHIKI: "Typeset Isshiki"}
+CUSTOM = "custom"
+PROFILES = {GAI_BANG: "Typeset Gái Băng", ISSHIKI: "Typeset Isshiki", CUSTOM: "Tự chọn font theo loại khung"}
 KINDS = {"auto": "Tự nhận dạng", "normal": "Thoại thường · tròn kín",
          "thought": "Suy nghĩ · mây / tia", "square": "Khung ô vuông", "sfx": "SFX"}
 FONTS = {"normal": "000 WildWords2 TB", "thought": "000 AnimeAce3 [TeddyBear]",
@@ -22,7 +23,13 @@ ISSHIKI_KINDS = {"auto": "Tự nhận dạng", "normal": "Thoại thường · t
 _HAND = "SJ Chanighter Handwriting"
 ISSHIKI_FONTS = {"normal": _HAND, "thought": _HAND, "square": _HAND, "bold": "000 ObelixPro TB",
                  "free": "SJ SS Rosehip", "flustered": "SJ CCComicraft", "sfx": "MTO augie"}
-_RULES = {GAI_BANG: (KINDS, FONTS, {"thought"}), ISSHIKI: (ISSHIKI_KINDS, ISSHIKI_FONTS, {"thought", "square"})}
+# Tự chọn font: tool nhận loại khung, người dùng chọn font / nghiêng cho từng loại (page.custom_fonts).
+CUSTOM_KINDS = {"auto": "Tự nhận dạng", "normal": "Thoại thường · tròn kín", "thought": "Suy nghĩ · mây / tia",
+                "square": "Khung vuông · ô dẫn truyện", "bold": "Chữ in đậm · hét", "free": "Chữ ngoài khung",
+                "flustered": "Thoại lúng túng · nói lắp", "sfx": "SFX"}
+CUSTOM_DEFAULTS = {**FONTS, "bold": FONTS["normal"], "free": FONTS["thought"], "flustered": FONTS["normal"]}
+_RULES = {GAI_BANG: (KINDS, FONTS, {"thought"}), ISSHIKI: (ISSHIKI_KINDS, ISSHIKI_FONTS, {"thought", "square"}),
+          CUSTOM: (CUSTOM_KINDS, CUSTOM_DEFAULTS, set())}
 # Chữ raw in đậm (gothic đậm khi hét): nét dày ≥ 12% cỡ chữ và mực phủ ≥ 54% ô chữ (thoại thường 8–11%, 37–53%).
 BOLD_STROKE, BOLD_DENSITY, SOLID_DENSITY = .12, .54, .78
 # Viền bóng (độ lõm / cạnh ngắn của bóng): thắt ≥ 20% là hai bóng dính nhau; mây lõm ≥ 8%; nông hơn là viền run.
@@ -176,7 +183,8 @@ def lettering_features(image: np.ndarray, text_mask, box) -> dict:
     return {"stroke": stroke / max(1., char), "density": area / float(cells.sum()), "char": char, "dark": dark}
 
 
-def _isshiki_kind(page, box) -> str:
+def detailed_kind(page, box) -> str:
+    """Loại khung chi tiết (Isshiki, tự chọn font): thường / suy nghĩ / vuông / in đậm / ngoài khung."""
     feats = lettering_features(page.original, getattr(page, "text_mask", None), box)
     if feats["dark"]:
         return "square"  # chữ trắng trong ô đen: lời dẫn / suy nghĩ khung vuông
@@ -201,9 +209,10 @@ def region_kind(page, region) -> str:
         cache = page._balloon_cache = {}
     key = (profile, tuple(region.box))
     if key not in cache:
-        cache[key] = _isshiki_kind(page, region.box) if profile == ISSHIKI else classify_balloon(page.original, region.box)
+        cache[key] = (detailed_kind(page, region.box) if profile in (ISSHIKI, CUSTOM)
+                      else classify_balloon(page.original, region.box))
     kind = cache[key]
-    if profile == ISSHIKI and kind != "bold" and flustered(region.text):
+    if profile in (ISSHIKI, CUSTOM) and kind != "bold" and flustered(region.text):
         return "flustered"
     return kind
 
@@ -217,6 +226,11 @@ def profile_style(page, region, base: TextStyle) -> TextStyle:
         style.style_name = ""
         style.bold = False
         style.italic = is_italic(profile, kind)
+        chosen = (getattr(page, "custom_fonts", None) or {}).get(kind) if profile == CUSTOM else None
+        if chosen and chosen.get("family"):
+            style.family = chosen["family"]
+            style.style_name = chosen.get("style", "") if chosen.get("style", "").lower() not in ("regular", "normal", "roman") else ""
+            style.italic = bool(chosen.get("italic"))
         if kind == "square" and style.shape == "round":
             style.shape = "even"  # khung chữ nhật: các dòng dài đều, không bo tròn
     return style
