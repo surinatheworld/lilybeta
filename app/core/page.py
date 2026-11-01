@@ -208,13 +208,21 @@ class Page:
         """Xoá chữ phần làm được trên máy; trả về mask còn cần AI vẽ lại (None nếu xong / để lại)."""
         if self.redrawn_covers(region):
             return None
+        skip = getattr(self.inpainter, "skip", False)
+        if skip and not region.polygon and not self.in_balloon(region):
+            # Chỉ xoá chữ trong bóng thoại / ô khép kín: SFX, chữ đè lên tranh (dù nền trắng) để nguyên, đặt chữ đè lên.
+            region.needs_redraw = True
+            return None
         need = clean_local(self.working, self.text_mask, region.box, self.area_mask(region), self.inpainter,
                            whole_box=region.kind == "text")
-        skip = getattr(self.inpainter, "skip", False)
         if need is not None and (skip(self, region) if callable(skip) else skip):
             region.needs_redraw = True
             return None
         return need
+
+    def in_balloon(self, region: Region) -> bool:
+        """Không phải SFX; chữ có nằm trong lòng bóng một màu hay không thì clean_local kiểm tra sát quanh nét chữ."""
+        return region.kind != "sfx"
 
     def auto_clean(self, small_sfx: bool = True, fit_bubble: bool = True) -> int:
         """Xoá ngay những chỗ chắc ăn, chưa cần câu dịch: chữ trong bóng thoại / hộp dẫn truyện sáng khép kín,
@@ -226,7 +234,7 @@ class Page:
                 continue
             if r.kind == "sfx" and not small_sfx:
                 continue  # detector false positives can be hearts, hair or other drawing details
-            if self.redrawn_covers(r) or fill_bubble(self.working, self.text_mask, r.box):
+            if self.redrawn_covers(r) or (self.in_balloon(r) and fill_bubble(self.working, self.text_mask, r.box)):
                 pass
             elif small_sfx and is_small_sfx(r, self.size):
                 need = clean_local(self.working, self.text_mask, r.box, None, self.inpainter)
