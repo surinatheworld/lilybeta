@@ -24,6 +24,16 @@ Gặp lỗi trên máy khác: chạy `Lilyzono.exe --selftest` (có thể thêm 
 Nếu bản exe cũ báo lỗi DLL khi khởi động, đóng gói lại bằng `build_exe.bat`: bước build ưu tiên DLL của Windows,
 tránh lấy nhầm `icuuc.dll` từ phần mềm khác trong `PATH` gây lỗi import QtGui.
 
+## Card đồ hoạ và đọc chữ Nhật
+
+- Có card đồ hoạ (DirectX 12, vd RTX 4060) thì nhận diện chữ chạy trên card qua ONNX Runtime DirectML: ~0,1 giây/trang
+  thay vì 1,5–3 giây trên CPU, RAM ít hơn. Không có card thì tự dùng CPU (OpenCV). `LILYZONO_CPU=1` để ép chạy CPU.
+- Script `.xlsx` có cột Japanese: tool đọc chữ Nhật trong từng bóng (manga-ocr) rồi khớp với câu gốc trong script,
+  nên câu vào đúng bóng dù thứ tự đọc khung khó. Câu không tìm thấy chỗ thành khung "CHƯA ĐẶT"; bóng không có trong
+  script thì để trống. Cần model ở `models/manga-ocr/` (không có trong repo, ~450 MB): tải `encoder_model.onnx`,
+  `decoder_model.onnx`, `vocab.txt` từ [mayocream/manga-ocr-onnx](https://huggingface.co/mayocream/manga-ocr-onnx)
+  (Apache-2.0). Trên card ~0,4 giây/bóng, CPU ~2 giây/bóng.
+
 ## Cài đặt & chạy từ mã nguồn (Windows)
 
 Cần Python 3.10 trở lên ([python.org](https://www.python.org/downloads/), nhớ tick *Add Python to PATH*).
