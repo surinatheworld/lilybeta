@@ -169,7 +169,7 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
     report(f"Xoá chữ ở chỗ dễ ({len(translated)} khung)…")
     page.inpainter = easy_only
     for r in translated:
-        if r.kind == "sfx":  # SFX không xoá: chữ dịch đặt đè lên bản gốc (trừ khi bản redraw đã xoá)
+        if r.kind == "sfx":  # SFX không xoá: chữ dịch đặt đè lên bản gốc (có bản redraw thì dùng nguyên bản redraw)
             r.cleaned, r.needs_redraw = True, not page.redrawn_covers(r)
             page.clean(r)
     page.clean_many([r for r in translated if r.kind != "sfx"])

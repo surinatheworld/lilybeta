@@ -138,8 +138,8 @@ class Page:
     def set_redrawn(self, path: str | None) -> None:
         """Dùng ảnh đã redraw sẵn (xoá chữ bằng Photoshop, AI…) làm nền; None = bỏ, quay về ảnh raw.
 
-        Vị trí chữ vẫn nhận diện trên ảnh raw. Vùng nào bản redraw đã xoá chữ thì giữ nguyên bản redraw,
-        vùng còn chữ thì tool xoá như thường. Các vùng đã xử lý được xoá lại trên nền mới (giữ câu dịch).
+        Vị trí chữ vẫn nhận diện trên ảnh raw; nền là nguyên bản redraw, tool không xoá chữ thêm (redrawn_covers).
+        Các vùng đã xử lý được dàn lại trên nền mới (giữ câu dịch).
         """
         if path is None:
             self.redrawn = None
@@ -163,22 +163,9 @@ class Page:
             r.text_shape = None
 
     def redrawn_covers(self, region: Region) -> bool:
-        """Bản redraw nạp từ ngoài đã xoá chữ ở vùng này chưa (nét chữ trên raw đã đổi màu hẳn)."""
-        if self.redrawn is None:
-            return False
-        w, h = self.size
-        x1, y1, x2, y2 = region.box
-        x1, y1, x2, y2 = max(0, x1), max(0, y1), min(w, x2), min(h, y2)
-        strokes = self.text_mask[y1:y2, x1:x2] > 0.5
-        area = self.area_mask(region)
-        if area is not None:
-            strokes &= area[y1:y2, x1:x2] > 0
-        if strokes.sum() < 20:  # model không ra nét chữ (vùng vẽ tay): xét các điểm tối
-            strokes = cv2.cvtColor(self.original[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY) < 128
-        if strokes.sum() < 20:
-            return True
-        diff = np.abs(self.redrawn[y1:y2, x1:x2].astype(np.int16) - self.original[y1:y2, x1:x2]).max(axis=2)
-        return float((diff[strokes] > 60).mean()) > 0.5
+        """Có bản redraw thì dùng nguyên bản redraw làm nền: tool không xoá chữ, không đặt chữ đè lên chữ gốc (chỗ nào
+        nhóm redraw để lại chữ là ý của họ). Ảnh raw chỉ để biết chỗ đặt chữ và ghép câu dịch."""
+        return self.redrawn is not None
 
     def detect(self, detector: TextDetector, right_to_left: bool = True) -> None:
         boxes, mask = detector.detect(self.original)
