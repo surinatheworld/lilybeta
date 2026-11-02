@@ -56,6 +56,10 @@ _RULES = {GAI_BANG: (KINDS, FONTS, {"thought"}), ISSHIKI: (ISSHIKI_KINDS, ISSHIK
 BOLD_STROKE, BOLD_DENSITY, SOLID_DENSITY = .12, .54, .78
 # Viền bóng (độ lõm / cạnh ngắn của bóng): thắt ≥ 20% là hai bóng dính nhau; mây lõm ≥ 8%; nông hơn là viền run.
 PINCH, CLOUD_DENT = .2, .08
+# Ô vuông lời dẫn: rộng tối đa ~25 lần khung chữ; lớn hơn là cả ô tranh (chữ nằm trơn trong panel).
+SQUARE_MAX = 25
+# Bóng tia vẽ trên nền trắng: quanh chữ phải ≥ 70% điểm sáng, không thì "tia" chỉ là nét tranh (tóc, chăn, nếp áo).
+RAY_LIGHT = .7
 _STUTTER = re.compile(r"(?:^|[\s\"'“(…])(?P<stem>\w{1,3})[-–—]\s*(?P=stem)", re.IGNORECASE)  # "e- em", "a- anh"
 
 
@@ -206,7 +210,8 @@ def balloon_shape(image: np.ndarray, box, outline: bool = False) -> str:
         rectangularity = area / max(1, rect[1][0] * rect[1][1])
         approx = cv2.approxPolyDP(contour, .025 * cv2.arcLength(contour, True), True)
         if rectangularity >= .88 and 4 <= len(approx) <= 6:
-            return "square"
+            # Hình chữ nhật rộng hơn hẳn khung chữ là ô tranh chứa chữ trơn, không phải ô lời dẫn.
+            return "square" if area <= SQUARE_MAX * (bx2 - bx1) * (by2 - by1) else "free"
         hull = cv2.convexHull(contour, returnPoints=False)
         if len(hull) > 3 and len(contour) > len(hull):
             try:
@@ -225,7 +230,12 @@ def balloon_shape(image: np.ndarray, box, outline: bool = False) -> str:
                 elif dents >= 4:
                     return "thought"
         return "normal"
-    if _ray_balloon(walls, seed, extent * scale):
+    # Vòng quanh chữ (ngoài khung chữ, rộng ~1/4 khung): chữ đè trên tranh thì nét tranh không phải tia của bóng.
+    pad = max(2, int(extent * scale * .25))
+    ring = gray[max(0, by1 - pad):by2 + pad, max(0, bx1 - pad):bx2 + pad]
+    inner = (by2 - by1) * (bx2 - bx1)
+    light = (float((ring > 200).sum()) - inner) / max(1, ring.size - inner)
+    if light >= RAY_LIGHT and _ray_balloon(walls, seed, extent * scale):
         # Isshiki: nét bao quanh chữ mà lòng bóng hở là bóng thoại bị hở viền (dính bóng khác / khung tranh).
         return "normal" if outline else "thought"
     return "normal" if bounded else "free"
@@ -319,6 +329,12 @@ def profile_style(page, region, base: TextStyle) -> TextStyle:
             style.style_name = chosen.get("style", "") if chosen.get("style", "").lower() not in ("regular", "normal", "roman") else ""
             style.italic = bool(chosen.get("italic"))
         style.fit_scale = 1.0 if kind in FULL_KINDS else FIT_SCALE.get(profile, 1.0)
+        style.hyphenate = profile == REN_AI  # tiếng Anh: từ dài được ngắt giữa âm tiết khi bóng hẹp
+        if kind in ("free", "sfx") and style.stroke_width == 0:
+            from .page import BACKGROUND_STROKE
+
+            style.stroke_width, style.stroke_color = BACKGROUND_STROKE, "#ffffff"  # chữ trên nền tranh: viền trắng
+
         if kind == "square" and style.shape == "round":
             style.shape = "even"  # khung chữ nhật: các dòng dài đều, không bo tròn
     return style

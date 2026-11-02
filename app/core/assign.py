@@ -226,8 +226,8 @@ OCR_FOREIGN = 2  # vùng đọc được ≥ 2 chữ mà không câu nào trong 
 
 def _match_by_text(page, regions, lines):
     """Đọc chữ gốc trong từng vùng (manga-ocr) rồi khớp với câu gốc của script: câu khớp rõ được neo vào đúng vùng
-    dù thứ tự đọc khung sai; câu không đọc ra (dấu "!", "…") ghép như cũ vào các vùng còn lại. None nếu không làm được
-    (bản dịch không có câu gốc, chưa có model)."""
+    dù thứ tự đọc khung sai; câu không khớp vùng nào thì bỏ qua. None nếu không làm được (bản dịch không có câu gốc,
+    chưa có model)."""
     from . import ocr
 
     if not all(source_text(s) for s in lines):
@@ -262,6 +262,28 @@ def _match_by_text(page, regions, lines):
         sure = n >= OCR_SHORT or (row[best] == 1 and size[best] <= 2 * n + 1)
         if row[best] >= OCR_MATCH and row[best] - second >= OCR_MARGIN and sure:
             anchor(j, best)
+    # Câu khớp ngang nhau hai vùng ("ショッピング…" có trong cả "今日はショッピングモール…" lẫn "ショッピング… 貴重な防具…"):
+    # so với phần chữ của vùng chưa có câu nào giải thích (bỏ chữ của các câu đã neo vào vùng đó).
+    for j in range(len(lines)):
+        if j in where or len(ocr.normalize(source_text(lines[j]))) < OCR_SHORT:
+            continue
+        left = [ocr.coverage(source_text(lines[j]), _residual(texts[i], [source_text(lines[k]) for _, k in anchored.get(i, [])]))
+                for i in range(len(regions))]
+        order = sorted(range(len(regions)), key=lambda i: -left[i])
+        second = left[order[1]] if len(order) > 1 else 0.0
+        if left[order[0]] >= OCR_MATCH and left[order[0]] - second >= OCR_MARGIN:
+            anchor(j, order[0])
+    # Câu chỉ có dấu ("！", "…？"): vùng đọc ra đúng dấu đó và không có chữ nào khác (bóng "!" nhỏ).
+    for j in range(len(lines)):
+        mark = _marks(source_text(lines[j]))
+        if j in where or ocr.normalize(source_text(lines[j])) or not mark:
+            continue
+        hits = [i for i in range(len(regions)) if i not in anchored and not ocr.normalize(texts[i])
+                and _marks(texts[i]) and set(_marks(texts[i])) <= set(mark)]
+        if len(hits) > 1:  # bóng "!" và SFX "!!" cạnh nhau: lấy vùng có đúng dấu như câu gốc
+            hits = [i for i in hits if _marks(texts[i]) == mark]
+        if len(hits) == 1:
+            anchor(j, hits[0])
     # Vùng còn lại cho các câu chưa neo: bỏ vùng đọc ra chữ hẳn hoi mà không câu nào khớp (bóng không có trong script).
     # (chỉ so với câu chưa có chỗ: "わーっ!!" đã neo bóng khác thì không làm SFX "ペカーッ" thành vùng của câu nào)
     # Vùng ≥ 3 chữ phải khớp ≥ 50% (một chữ trùng như "っ" trong "しゃばっ" / "あれっ" không tính), vùng 2 chữ ≥ 30%.
@@ -275,31 +297,42 @@ def _match_by_text(page, regions, lines):
         hits = sorted(((cov[j][i], i) for i in free if i not in anchored), reverse=True)
         if hits and hits[0][0] >= OCR_WEAK and (len(hits) < 2 or hits[1][0] == 0):
             anchor(j, hits[0][1])
-    rest = [j for j in range(len(lines)) if j not in where]
-    free = [i for i in free if i not in anchored]
-    plan = {i: [lines[j] for _, j in sorted(pairs)] for i, pairs in anchored.items()}
-    extra = []
-    if rest and free:
-        sub = assign_lines(page, [regions[i] for i in free], [lines[j] for j in rest], read_text=False)
-        index = {id(regions[i]): i for i in free}
-        for r, ls in sub:
-            if id(r) in index:
-                plan.setdefault(index[id(r)], []).extend(ls)
-                for line in ls:
-                    where[lines.index(line)] = index[id(r)]
-    # Câu không có vùng nào (chữ gốc nhỏ quá model không thấy, "よっす"): khung "CHƯA ĐẶT" cạnh vùng của câu trước nó.
-    stack: dict[int, int] = {}
+    # Câu lặp lại ("じゃーな！" hai lần, khớp ngang nhau hai bóng): theo thứ tự, câu thứ k vào vùng khớp thứ k còn trống.
     for j in range(len(lines)):
         if j in where:
             continue
-        near = next((where[k] for k in range(j - 1, -1, -1) if k in where), 0)
-        k = stack[near] = stack.get(near, -1) + 1
-        extra.append((near, _orphan(page, regions[near], k), [lines[j]]))
-    out = [(regions[i], plan[i]) for i in sorted(plan)]
-    for near, r, ls in extra:  # đặt ngay sau vùng mà khung bám vào
-        at = next((k + 1 for k, (reg, _) in enumerate(out) if reg is regions[near]), len(out))
-        out.insert(at, (r, ls))
-    return out
+        n = len(ocr.normalize(source_text(lines[j])))
+        hits = [i for i in range(len(regions)) if i not in anchored and cov[j][i] >= OCR_MATCH
+                and (n >= OCR_SHORT or (cov[j][i] == 1 and size[i] <= 2 * n + 1))]
+        if hits:
+            anchor(j, hits[0])
+    # Chỉ theo script: câu khớp chữ gốc thì gắn vào vùng đó; câu không khớp vùng nào và vùng không khớp câu nào thì bỏ
+    # qua (không đoán theo thứ tự, không tạo khung "CHƯA ĐẶT").
+    plan = {i: [lines[j] for _, j in sorted(pairs)] for i, pairs in anchored.items()}
+    page._by_script = True  # Page._rejoin_cramped: không gộp lại các câu đã tách theo cụm chữ gốc
+    return [(regions[i], plan[i]) for i in sorted(plan)]
+
+
+def _residual(read: str, sources: list[str]) -> str:
+    """Chữ đọc được của vùng sau khi bỏ phần khớp với các câu đã neo vào vùng (cụm ≥ 2 chữ)."""
+    from difflib import SequenceMatcher
+    from .ocr import normalize
+
+    rest = normalize(read)
+    for source in sources:
+        keep = [True] * len(rest)
+        for blk in SequenceMatcher(None, normalize(source), rest, autojunk=False).get_matching_blocks():
+            if blk.size >= 2:
+                keep[blk.b:blk.b + blk.size] = [False] * blk.size
+        rest = "".join(ch for ch, k in zip(rest, keep) if k)
+    return rest
+
+
+def _marks(text: str) -> str:
+    """Các dấu "!" / "?" / "…" trong câu (NFKC: "！" = "!", "…" = "...", "‥" = "..")."""
+    import unicodedata
+
+    return "".join(ch for ch in unicodedata.normalize("NFKC", text or "") if ch in "!?.")
 
 
 def _position(source: str, read: str) -> int:
@@ -387,7 +420,50 @@ def split_region(page, region, lines: list[str]):
     Thử hướng theo dáng khung trước; không chia được thì thử hướng kia (bóng đôi nằm ngang chứa chữ dọc)."""
     x1, y1, x2, y2 = region.box
     tall = (y2 - y1) >= (x2 - x1)
-    return _split_region(page, region, lines, tall) or _split_region(page, region, lines, not tall)
+    return (_split_region(page, region, lines, tall) or _split_region(page, region, lines, not tall)
+            or _split_clusters(page, region, lines))
+
+
+def _split_clusters(page, region, lines: list[str]):
+    """Các khối chữ so le chạm nhau trong một bóng ("おうよ！" cao bên phải, "で俺イチオシの / アプリどうよ？" thấp bên
+    trái): cột chồng lên nhau theo chiều ngang nên không chia được theo dải. Gom từng nét chữ thành len(lines) cụm theo
+    vị trí, xếp cụm theo thứ tự đọc, mỗi câu một cụm nếu lượng chữ mỗi cụm hợp độ dài câu."""
+    from dataclasses import replace
+
+    from .detect import TextBox, sort_reading_order
+
+    k = len(lines)
+    x1, y1, x2, y2 = region.box
+    mask = (page.text_mask[y1:y2, x1:x2] > 0.3).astype(np.uint8)
+    if k < 2 or not mask.any():
+        return None
+    n, labels, stats, cents = cv2.connectedComponentsWithStats(cv2.dilate(mask, np.ones((3, 3), np.uint8)),
+                                                              connectivity=8)
+    comps = [i for i in range(1, n) if stats[i, cv2.CC_STAT_AREA] >= 4]
+    if len(comps) < k:
+        return None
+    pts = np.float32([cents[i] for i in comps])
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, .5)
+    _, label, _ = cv2.kmeans(pts, k, None, criteria, 10, cv2.KMEANS_PP_CENTERS)
+    groups = []
+    for g in range(k):
+        members = [comps[i] for i in range(len(comps)) if label[i, 0] == g]
+        if not members:
+            return None
+        bx1 = min(stats[i, cv2.CC_STAT_LEFT] for i in members)
+        by1 = min(stats[i, cv2.CC_STAT_TOP] for i in members)
+        bx2 = max(stats[i, cv2.CC_STAT_LEFT] + stats[i, cv2.CC_STAT_WIDTH] for i in members)
+        by2 = max(stats[i, cv2.CC_STAT_TOP] + stats[i, cv2.CC_STAT_HEIGHT] for i in members)
+        ink = float(sum(stats[i, cv2.CC_STAT_AREA] for i in members))
+        groups.append((TextBox(int(x1 + bx1), int(y1 + by1), int(x1 + bx2), int(y1 + by2), 1.0), ink))
+    order = sort_reading_order([b for b, _ in groups], getattr(page, "right_to_left", True))
+    groups = [next(g for g in groups if g[0] is b) for b in order]
+    total, chars = sum(i for _, i in groups), [_length(s) for s in lines]
+    err = sum(abs(i / total - c / sum(chars)) for (_, i), c in zip(groups, chars))
+    if min(i for _, i in groups) / total < .08 or err > .5:
+        return None
+    return [replace(region, box=(b.x1, b.y1, b.x2, b.y2), text=line, text_rects=[], text_shape=None, manual_rect=None)
+            for (b, _), line in zip(groups, lines)]
 
 
 def _split_region(page, region, lines: list[str], vertical: bool):
@@ -422,29 +498,44 @@ def _split_region(page, region, lines: list[str], vertical: bool):
         return None
     ink = [float(prof[a:b].sum()) for a, b in bands]
     chars = [_length(s) for s in lines]
-    best, best_err = None, 1e9
     import itertools
 
-    for cut in itertools.combinations(range(1, len(bands)), k - 1):
-        edges = (0,) + cut + (len(bands),)
-        parts = [sum(ink[a:b]) for a, b in zip(edges, edges[1:])]
-        err = sum(abs(pi / sum(ink) - c / sum(chars)) for pi, c in zip(parts, chars))
-        if min(parts) / sum(ink) >= 0.12 and err < best_err:
-            best, best_err = edges, err
-    if best is None or best_err > 0.5:
-        return None
-    out = []
-    for (a, b), line in zip(zip(best, best[1:]), lines):
+    def box_of(a, b):
         group = bands[a:b]
         lo, hi = min(g[0] for g in group), max(g[1] for g in group)
         sub = strokes[:, lo:hi] if vertical else strokes[lo:hi, :]
         ys, xs = np.nonzero(sub)
         if vertical:
-            box = (x1 + lo, y1 + int(ys.min()), x1 + hi, y1 + int(ys.max()) + 1)
-        else:
-            box = (x1 + int(xs.min()), y1 + lo, x1 + int(xs.max()) + 1, y1 + hi)
-        out.append(replace(region, box=box, text=line, text_rects=[], text_shape=None, manual_rect=None))
-    return out
+            return (x1 + lo, y1 + int(ys.min()), x1 + hi, y1 + int(ys.max()) + 1)
+        return (x1 + int(xs.min()), y1 + lo, x1 + int(xs.max()) + 1, y1 + hi)
+
+    cuts = [(0,) + cut + (len(bands),) for cut in itertools.combinations(range(1, len(bands)), k - 1)]
+    best = None
+    # Script có câu gốc: đọc chữ từng phần, chọn cách chia mà mỗi phần khớp câu gốc của nó nhất (cột chữ to / nhỏ
+    # khác nhau thì lượng mực không theo số chữ: "リョータ様の / オススメなら" nhỏ, "きっと間違い / なしですね♪" to).
+    from . import ocr
+
+    reader = ocr.reader() if all(source_text(s) for s in lines) else None
+    if reader is not None:
+        scored = []
+        for edges in cuts:
+            got = sum(ocr.coverage(source_text(s), reader.read(page.original, box_of(a, b)))
+                      for (a, b), s in zip(zip(edges, edges[1:]), lines))
+            scored.append((got, edges))
+        got, edges = max(scored)
+        if got >= OCR_MATCH * k:
+            best = edges
+    if best is None:
+        best_err = 1e9
+        for edges in cuts:
+            parts = [sum(ink[a:b]) for a, b in zip(edges, edges[1:])]
+            err = sum(abs(pi / sum(ink) - c / sum(chars)) for pi, c in zip(parts, chars))
+            if min(parts) / sum(ink) >= 0.12 and err < best_err:
+                best, best_err = edges, err
+        if best is None or best_err > 0.5:
+            return None
+    return [replace(region, box=box_of(a, b), text=line, text_rects=[], text_shape=None, manual_rect=None)
+            for (a, b), line in zip(zip(best, best[1:]), lines)]
 
 
 def apply_plan(page, plan, style=None) -> int:

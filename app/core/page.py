@@ -31,16 +31,19 @@ def reserve_uids(upto: int) -> None:
     _region_ids = itertools.count(max(next(_region_ids), upto + 1))
 
 
+TALK_READABLE = .65  # thoại (cả trong bóng) không nhỏ hơn 65% cỡ chuẩn: nhỏ hơn thì nới khung quanh chữ gốc
 MIN_READABLE = .5  # chữ ngoài bóng / SFX không nhỏ hơn nửa cỡ chuẩn của trang
 REJOIN = .55  # hai câu chung bóng mà một phần chữ < 55% cỡ chuẩn: thử gộp lại thành một khối
 OVERLAY_READABLE = .8  # chữ dịch đè lên chữ gốc (không xoá được): nới khung tới khi ≥ 80% cỡ chuẩn
-OVERLAY_STROKE = .12  # …và viền trắng ~3px (12% cỡ chuẩn) để đọc được trên nét chữ gốc / tranh
+BACKGROUND_STROKE = 5  # chữ đặt trên nền tranh (ngoài bóng, SFX, đè chữ gốc): viền trắng 5px
 DARK_BACKGROUND = 90  # độ sáng trung vị dưới mức này: nền tối, chữ trắng
 LOBE_SIZE = 0.85  # bóng đôi: dàn theo thuỳ khi chữ ≥ 85% cỡ đặt được trong khung chữ nhật
 EVEN_KINDS = {"normal", "thought"}  # thoại thường / suy nghĩ: cùng cỡ trên một trang (ô dẫn truyện, SFX, hét thì không)
 EVEN_SLACK = 1.1  # …bóng nào cho chữ to hơn 1,1 lần cỡ chung của trang thì hạ xuống
 EVEN_GROW = 1.15  # …câu ngắn ở bóng đã hạ cỡ: to thêm tối đa 15% (≈1,25 lần cỡ chung), không phải 1,5 lần
 EVEN_MIN_REGIONS = 3  # …khi trang có từ 3 bóng thoại
+EVEN_FLOOR = 0.85  # hai câu chung một bóng: cỡ chung không dưới 85% cỡ chuẩn của trang
+PUNCT_GROW = 1.4  # câu chỉ có dấu ("!"): không theo cỡ chung, to tới 1,4 lần cỡ chuẩn
 BOX_KINDS = {"square"}  # ô dẫn truyện: cùng cỡ với nhau trên một trang…
 BOX_OUTLIER = 0.7  # …theo ô chật nhất, bỏ qua ô chật bất thường (cỡ < 70% trung vị)
 TIGHT_MIN_WORDS = 3  # chế độ chỗ chật chỉ cho câu dài hơn 3 từ
@@ -82,7 +85,8 @@ class Region:
         if self.manual_rect:
             return self.manual_rect
         if self.text_shape and self.text.strip():
-            rect = place_in_shape(self.text, self.effective_style, self.text_shape)
+            x1, y1, x2, y2 = self.box  # đặt theo chỗ chữ Nhật gốc (trong giới hạn lòng bóng)
+            rect = place_in_shape(self.text, self.effective_style, self.text_shape, ((x1 + x2) / 2, (y1 + y2) / 2))
             if rect:
                 return rect
         return best_rect(self.text, self.effective_style, self.text_rects) if self.text_rects else self.box
@@ -90,15 +94,21 @@ class Region:
     @property
     def effective_style(self) -> TextStyle:
         """Kiểu chữ dùng để dàn chữ: cỡ tự động thì giới hạn theo cỡ chuẩn của trang (nếu chưa đặt tay)."""
-        style = self.style
+        # Khoảng cách dòng luôn Auto (120% cỡ chữ, như Photoshop); thoại khử răng cưa Strong, SFX giữ kiểu riêng.
+        style = replace(self.style, leading=0.0, line_spacing=1.0)
+        if self.kind != "sfx":
+            style = replace(style, antialias="strong")
         if self.tight and len(self.text.split()) > TIGHT_MIN_WORDS:
             # chỗ chật vì nhường chỗ cho câu kia: không thu cỡ thêm, chữ to dòng ngắn (câu 2–3 từ thì không cần)
             style = replace(style, fit_scale=1.0, tight=True)
         if self.even:  # đã hạ về cỡ chung của trang: câu ngắn chỉ được to hơn chút (bản type tay: "Nagi" 1,25 lần)
             style = replace(style, short_grow=EVEN_GROW)
         if self.needs_redraw and style.stroke_width == 0 and self.auto_cap:
-            style = replace(style, stroke_width=round(OVERLAY_STROKE * self.auto_cap, 1), stroke_color="#ffffff")
+            style = replace(style, stroke_width=BACKGROUND_STROKE, stroke_color="#ffffff")
         if style.size == 0 and style.max_size == 0 and self.auto_cap:
+            # Câu chỉ có dấu ("!", "…?"): to như dấu gốc, tới PUNCT_GROW lần cỡ chuẩn.
+            if not any(ch.isalnum() for ch in self.text):  # câu chỉ có dấu: to như dấu gốc, không phóng thêm
+                return replace(style, max_size=self.auto_cap * PUNCT_GROW, short_grow=1.0)
             return replace(style, max_size=self.auto_cap)
         return style
 
@@ -373,6 +383,10 @@ class Page:
         không thì dải ngang theo thứ tự đọc; None nếu khung chữ nhật cho chữ to hơn."""
         region.tight = True
         style = region.effective_style
+        if getattr(self, "_by_script", False) and region.group:
+            part = self._script_part(region, shape)
+            if part:
+                return part
 
         def size(rect):
             return layout(region.text, style, rect[2] - rect[0], rect[3] - rect[1])[0].size if rect else 0
@@ -410,6 +424,50 @@ class Page:
         # Hai bóng dính nhau nằm ngang thì từng khung riêng vẫn tốt hơn: chỉ dùng dải khi chữ to hơn rõ.
         return band if band and size(place_in_shape(region.text, style, band)) > 1.1 * boxed else None
 
+    def _script_part(self, region: Region, shape):
+        """Các câu của script tách từ cùng một bóng ("おうよ！" cao bên phải / "で俺イチオシの…" thấp bên trái): chia lòng
+        bóng tại giữa các cụm chữ gốc – theo chiều dọc nếu các cụm xếp trên/dưới, theo chiều ngang nếu xếp cạnh nhau –
+        mỗi câu lấy phần bóng của cụm chữ của nó. None nếu phần đó quá hẹp."""
+        mates = sorted((o for o in self.regions if o.group == region.group and o.text.strip()),
+                       key=lambda o: o.box[1] + o.box[3])
+        if len(mates) < 2:
+            return None
+        cx, cy, rows = shape
+        ys = [(o.box[1], o.box[3]) for o in mates]
+        xs = [(o.box[0], o.box[2]) for o in mates]
+        # Cụm chồng nhau theo chiều nào ít hơn thì cắt theo chiều đó.
+        over_y = sum(max(0, min(a[1], b[1]) - max(a[0], b[0])) / max(1, min(a[1] - a[0], b[1] - b[0]))
+                     for a, b in zip(ys, ys[1:]))
+        xs_sorted = sorted(xs)
+        over_x = sum(max(0, min(a[1], b[1]) - max(a[0], b[0])) / max(1, min(a[1] - a[0], b[1] - b[0]))
+                     for a, b in zip(xs_sorted, xs_sorted[1:]))
+
+        def cut(spans, mine):
+            spans = sorted(spans)
+            k = spans.index(mine)
+            lo = -math.inf if k == 0 else (spans[k - 1][1] + mine[0]) / 2 if spans[k - 1][1] <= mine[0] \
+                else (sum(spans[k - 1]) + sum(mine)) / 4
+            hi = math.inf if k == len(spans) - 1 else (mine[1] + spans[k + 1][0]) / 2 if mine[1] <= spans[k + 1][0] \
+                else (sum(mine) + sum(spans[k + 1])) / 4
+            return lo, hi
+
+        if over_y <= over_x:
+            lo, hi = cut(ys, (region.box[1], region.box[3]))
+            part = tuple(r for r in rows if lo <= r[0] < hi)
+        else:
+            # Cột chữ Nhật đứng cạnh nhau ("ショッピング…" | "貴重な防具や…"): chữ ngang thì xếp trên–dưới theo thứ tự
+            # đọc, mỗi câu một dải cao theo độ dài câu (cắt dọc thành cột hẹp thì chữ bé tí).
+            order = [o for o in self.regions if o.group == region.group and o.text.strip()]
+            weights = [len(o.text.strip()) + 15 for o in order]  # câu ngắn vẫn có dải đủ cao (đỉnh bóng thường hẹp)
+            k = order.index(region)
+            start, end = sum(weights[:k]) / sum(weights), sum(weights[:k + 1]) / sum(weights)
+            gap = .03 * len(rows)
+            part = rows[int(start * len(rows) + (gap if k else 0)):int(end * len(rows) - (gap if k < len(order) - 1 else 0))]
+        if len(part) < 8:
+            return None
+        # Tâm ngang = trung vị tâm các hàng (bóng phình một bên ở vài hàng không kéo lệch tâm của cả phần).
+        return (float(np.median([(r[1] + r[2]) / 2 for r in part])), (part[0][0] + part[-1][0]) / 2, part)
+
     def _shared_band(self, region: Region, shape, span):
         """Phần của `region` khi bóng chứa chữ của vùng khác: mọi vùng trong bóng đều có câu dịch (chữ gốc sẽ
         bị xoá) thì chia bóng thành các dải ngang theo thứ tự đọc, cao theo độ dài câu; không thì None."""
@@ -439,10 +497,18 @@ class Page:
         def size(rect):
             return layout(region.text, style, rect[2] - rect[0], rect[3] - rect[1])[0].size
 
-        floor = (OVERLAY_READABLE if region.needs_redraw else MIN_READABLE) * cap
+        # Thoại mà không lấy được lòng bóng (viền chấm mờ, bóng hở) cũng phải đủ to như chữ đè: nới khung quanh chữ gốc.
+        loose = region.kind != "sfx" and not region.text_shape and not getattr(region, "manual_rect", None)
+        floor = (OVERLAY_READABLE if region.needs_redraw or loose else MIN_READABLE) * cap
+        if region.kind != "sfx":  # thoại trong bóng nhỏ / bóng trong suốt: không bé hơn 2/3 cỡ chuẩn
+            floor = max(floor, TALK_READABLE * cap)
+        if not any(ch.isalnum() for ch in region.text):
+            floor = cap  # câu chỉ có dấu ("!", "…?"): dấu bé trông như sót, cho to bằng cỡ chuẩn
         x1, y1, x2, y2 = region.text_rect
         if size((x1, y1, x2, y2)) >= floor:
             return
+        if region.text_shape and region.group and getattr(self, "_by_script", False):
+            return  # câu tách theo cụm chữ gốc trong bóng: giữ đúng phần bóng của nó
         if region.text_shape:
             # Lòng bóng lấy được quá nhỏ (bóng trong suốt bị nét tóc / nét vẽ cắt ngang): bỏ dáng bóng, nới khung
             # quanh chữ gốc như chữ ngoài bóng – thà chữ đè nét vẽ mờ còn hơn chữ bé không đọc được.
@@ -509,6 +575,8 @@ class Page:
         trang 7: 13px khi cỡ chuẩn 45px): gộp lại thành một khối chữ trong cả bóng nếu nhờ đó chữ to hơn."""
         from .typeset import SOFT_BREAK
 
+        if getattr(self, "_by_script", False):
+            return  # câu đã khớp từng cụm chữ Nhật theo script: giữ tách đúng chỗ chữ gốc, không gộp lại
         groups: dict[int, list[Region]] = {}
         for r in self.regions:
             if r.group and r.cleaned and r.text.strip() and not r.manual_rect:
@@ -540,7 +608,7 @@ class Page:
         groups: dict[str, list[Region]] = {}
         for r in self.regions:
             if (r.cleaned and r.text.strip() and not r.orphan and not r.manual_rect and r.style.size == 0
-                    and r.style.max_size == 0):
+                    and r.style.max_size == 0 and any(ch.isalnum() for ch in r.text)):
                 kind = region_kind(self, r)
                 if kind in EVEN_KINDS:
                     groups.setdefault("talk", []).append(r)
@@ -571,7 +639,7 @@ class Page:
             if len(parts) < 2:
                 continue
             fits = [self._fit_size(r) for r in parts]
-            cap = min(fits) * EVEN_SLACK
+            cap = max(min(fits) * EVEN_SLACK, EVEN_FLOOR * self.auto_cap)  # phần chật không kéo cả bóng bé theo
             for r, fit in zip(parts, fits):
                 if fit > cap:
                     r.auto_cap, r.even = min(r.auto_cap, cap), True
