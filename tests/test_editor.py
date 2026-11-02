@@ -10,7 +10,6 @@ import time
 import unittest
 import weakref
 from unittest.mock import patch
-os.environ.setdefault("LILYZONO_UNLIMITED", "1")  # không trừ token khi kiểm thử (test_quota xét riêng)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 

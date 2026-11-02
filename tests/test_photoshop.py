@@ -6,7 +6,6 @@ import unittest
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-os.environ.setdefault("LILYZONO_UNLIMITED", "1")  # không trừ token khi kiểm thử (test_quota xét riêng)
 
 import cv2
 import numpy as np

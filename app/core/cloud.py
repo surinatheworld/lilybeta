@@ -14,7 +14,6 @@ import uuid
 import cv2
 import numpy as np
 
-from . import quota
 from .inpaint_util import blend_back, resize_to
 
 GEMINI_DEFAULT_MODEL = "gemini-nano-banana-2.1"
@@ -239,7 +238,6 @@ def make_inpainter(provider: str, api_key: str, model: str):
         box, ratio = ctx(mask)
         if box is None:
             return
-        quota.charge(quota.AI_COST)
         x1, y1, x2, y2 = box
         crop = img[y1:y2, x1:x2].copy()
         crop_mask = mask[y1:y2, x1:x2]

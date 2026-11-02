@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core import cloud, quota, secrets
+from ..core import cloud, secrets
 from ..core.detect import TextDetector
 from ..core.assign import apply_plan, assign_lines
 from ..core import project
@@ -359,9 +359,6 @@ class MainWindow(QMainWindow):
         for w in (self.lbl_pos, self.lbl_size, self.lbl_zoom):
             w.setMinimumWidth(90)
             self.statusBar().addPermanentWidget(w)
-        self.token_label = QLabel()  # key đang dùng, token còn lại; bấm Trợ giúp → Key và token để nạp
-        self.statusBar().addPermanentWidget(self.token_label)
-        self._update_tokens()
         self._load_style_settings()
         self._update_ai_label()
         self._sync_typeset_controls()
@@ -480,7 +477,6 @@ class MainWindow(QMainWindow):
 
         m = mb.addMenu("Trợ &giúp")
         A(m, "Phím tắt", self.show_shortcuts, "F1")
-        A(m, "Key và token…", self.show_key_dialog)
 
     def _build_toolbox(self):
         tb = QToolBar("Công cụ")
@@ -1183,8 +1179,6 @@ class MainWindow(QMainWindow):
         except cloud.CloudError as e:
             QMessageBox.warning(self, "AI vẽ nền", str(e))
             return
-        if not self._pay(quota.REGION_COST * sum(not x.cleaned for x in (r if isinstance(r, list) else [r]))):
-            return
         name = self.engine_box.currentText().split(" – ")[0]
         wait = ""
         what = f"{len(r)} vùng" if isinstance(r, list) else f"vùng #{self.selected + 1}"
@@ -1215,29 +1209,6 @@ class MainWindow(QMainWindow):
 
         self.clean_worker.finished.connect(finished)
         self.clean_worker.start()
-
-    def _pay(self, n: int, charge: bool = True) -> bool:
-        """Trừ (hoặc chỉ kiểm, `charge=False`) `n` token; thiếu thì mời nhập key, trả về False."""
-        while True:
-            try:
-                (quota.charge if charge else quota.check)(n)
-                self._update_tokens()
-                return True
-            except quota.TokenError as e:
-                if not self.show_key_dialog(str(e)):
-                    return False
-
-    def show_key_dialog(self, reason: str = "") -> bool:
-        """Xem key / token còn lại, nhập key mới. Trả về True nếu đã kích hoạt key mới."""
-        from .key_dialog import KeyDialog
-
-        ok = KeyDialog(self, reason).exec() == KeyDialog.Accepted
-        self._update_tokens()
-        return ok
-
-    def _update_tokens(self):
-        if getattr(self, "token_label", None) is not None:
-            self.token_label.setText(quota.describe())
 
     def _bubble_toggled(self, on: bool):
         r = self.region
@@ -2641,8 +2612,6 @@ class MainWindow(QMainWindow):
         style, fit, rtl = self.current_style(), self.chk_bubble.isChecked(), self.direction.currentIndex() == 0
         auto = self._auto_clean_args()
         ch = self.chapter
-        if not self._pay(quota.PAGE_COST, charge=False):
-            return
         profile = self.page.typeset_profile
 
         def job(report):
@@ -2666,8 +2635,6 @@ class MainWindow(QMainWindow):
                     ch.auto_fill(path, style)
                 apply_profile(page)
                 regs = [r for r in page.regions if r.text.strip() and not r.cleaned]
-                if regs:
-                    quota.charge(quota.PAGE_COST)  # hết token giữa chừng: dừng, các trang đã làm vẫn giữ
                 page.clean_many(regs, fit)
                 doc.end()
             if detected:
