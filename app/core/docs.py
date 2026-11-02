@@ -76,14 +76,19 @@ def load_lines(path: str) -> list[str]:
     return out
 
 
-TYPE_TAG = "⟦{}|{}⟧"  # ⟦loại|số ký tự chữ gốc⟧ đầu câu, từ cột Type / Japanese của script (bỏ đi khi type)
-TAG = re.compile(r"^⟦(\w*)(?:\|(\d+))?⟧")
+TYPE_TAG = "⟦{}|{}⟧"  # ⟦loại|câu gốc⟧ đầu câu, từ cột Type / Japanese của script (bỏ đi khi type)
+TAG = re.compile(r"^⟦(\w*)(?:\|([^⟧]*))?⟧")
+
+
+def source_text(line: str) -> str:
+    """Câu gốc (tiếng Nhật, bỏ dấu cách) ghi trong nhãn của script, "" nếu không có."""
+    m = TAG.match(line)
+    return m.group(2) or "" if m else ""
 
 
 def source_length(line: str) -> int | None:
-    """Số ký tự câu gốc (tiếng Nhật) ghi trong nhãn của script, None nếu không có."""
-    m = TAG.match(line)
-    return int(m.group(2)) if m and m.group(2) else None
+    """Số ký tự câu gốc ghi trong nhãn của script, None nếu không có."""
+    return len(source_text(line)) or None
 # Tên loại trong cột Type (bỏ tiền tố "Snow_", bỏ dấu cách / gạch) → loại khung của bộ font.
 TYPE_KINDS = {"dialogue": "normal", "speech": "normal", "thought": "thought", "bolderthought": "bold_thought",
               "boldthought": "bold_thought", "narration": "square", "box": "square", "shoutangry": "bold", "shout": "bold",
@@ -142,8 +147,8 @@ def _xlsx_pages(path: str) -> dict[int, list[str]]:
             continue
         if text:
             kind = type_kind(r.get(type_col, "")) if type_col else ""
-            source = len("".join((r.get(source_col, "") if source_col else "").split()))
-            tag = TYPE_TAG.format(kind, source or "") if kind or source else ""
+            source = "".join((r.get(source_col, "") if source_col else "").split()).replace("⟧", "").replace("|", "")
+            tag = TYPE_TAG.format(kind, source) if kind or source else ""
             pages.setdefault(page, []).append(tag.replace("|⟧", "⟧") + text)
     return pages
 

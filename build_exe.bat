@@ -10,7 +10,7 @@ if not exist .venv (
 rem Uu tien DLL he thong, tranh dong goi nham icuuc.dll/CRT tu ung dung khac trong PATH.
 set "PATH=%SystemRoot%\System32;%SystemRoot%;%PATH%"
 .venv\Scripts\python -m PyInstaller --noconfirm --clean --windowed ^
-  --exclude-module onnxruntime ^
+  --collect-binaries onnxruntime ^
   --name Lilyzono ^
   --icon assets\icon.ico ^
   --collect-submodules keyring.backends ^
@@ -22,6 +22,8 @@ set "PATH=%SystemRoot%\System32;%SystemRoot%;%PATH%"
 rem Bieu tuong va model nhan dien chu dat canh Lilyzono.exe (model co san thi chep sang, khoi phai tai lai).
 xcopy /y /i /q assets dist\Lilyzono\assets >nul
 if exist models\comictextdetector.pt.onnx xcopy /y /i /q models\comictextdetector.pt.onnx dist\Lilyzono\models\ >nul
+rem Doc chu Nhat de khop script (manga-ocr, ~450MB): chi chep khi da co trong models\manga-ocr
+if exist models\manga-ocr\encoder_model.onnx xcopy /y /i /q models\manga-ocr dist\Lilyzono\models\manga-ocr\ >nul
 
 echo.
 echo Xong: dist\Lilyzono\Lilyzono.exe

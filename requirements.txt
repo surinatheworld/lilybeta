@@ -6,3 +6,4 @@ keyring>=24
 fonttools>=4.40
 psd-tools>=1.9
 pywin32>=306; sys_platform == "win32"
+onnxruntime-directml>=1.20; sys_platform == "win32"  # nhận diện chữ / đọc chữ trên card đồ hoạ (không có card: CPU)
