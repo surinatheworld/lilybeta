@@ -186,9 +186,10 @@ Redraw tranh tự động chưa đẹp bằng tay, nên có hai cách chỉ đ�
   `REDRAW - …` để bạn tự redraw ngay dưới lớp chữ.
 - **Upload bản redraw**: đã có ảnh xoá chữ/redraw sẵn (làm trong Photoshop, nhờ người khác, AI…) → bấm **Upload bản redraw**.
   Chế độ chương: chọn thư mục, ảnh tự ghép với trang theo số trong tên file (`001.png` ↔ `001.jpg`; cùng số ảnh thì
-  ghép theo thứ tự). Bản redraw phải cùng khung với raw (khác cỡ thì tự co). Chữ vẫn được nhận diện trên raw, bản dịch
-  type lên bản redraw; chỗ bản redraw còn sót chữ Nhật thì tool tự xoá như thường. PSD: Background = raw,
-  lớp "Redraw" = bản redraw, rồi các lớp chữ.
+  ghép theo thứ tự). Bản redraw phải cùng khung với raw (khác cỡ thì tự co). Có bản redraw thì tool dùng nguyên bản
+  redraw, không xoá chữ thêm và không đặt chữ đè lên chữ gốc; raw chỉ để nhận diện chỗ đặt chữ và ghép câu dịch.
+  PSD: Background = raw, lớp "Redraw" = bản redraw, rồi các lớp chữ. Trong Photoshop, PSD có sẵn layer Redraw trên
+  ảnh raw cũng được xử lý như vậy.
 
 Đo trên chương 18.1 (10 trang, 48 câu, so với PSD typeset tay): tự điền đúng 48/48 câu, xoá hết chữ Nhật trong các
 vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. Công cụ đo: `tools/evaluate.py`.

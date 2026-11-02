@@ -2691,7 +2691,7 @@ class MainWindow(QMainWindow):
         self._retype(pages, msg)
 
     def _retype(self, pages: list[Page], msg: str):
-        """Đặt lại chữ cho các vùng đã có câu dịch sau khi đổi nền (chỗ bản redraw còn chữ thì xoá như thường)."""
+        """Đặt lại chữ cho các vùng đã có câu dịch sau khi đổi nền (có bản redraw thì không xoá chữ thêm)."""
         try:
             inpainter = self._make_inpainter()
         except cloud.CloudError as e:
