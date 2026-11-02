@@ -229,7 +229,8 @@ def sort_reading_order(boxes: list[TextBox], right_to_left: bool = True, img: np
     if img is not None and len(boxes) > 1:
         gray = img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         # Khe giữa panel: trắng, hoặc đen ở trang nền đen (hồi tưởng, mở đầu chương).
-        order = _xy_cut((gray >= 235) | (gray <= 25), boxes, (0, 0, gray.shape[1], gray.shape[0]), right_to_left, 0)
+        order = _xy_cut((gray >= 235) | (gray <= 25), boxes, (0, 0, gray.shape[1], gray.shape[0]), right_to_left, 0,
+                        gray < FRAME_DARK)
         return _balloons_together(order, gray)
     return _row_order(boxes, right_to_left)
 
@@ -293,7 +294,7 @@ def _gutters(white: np.ndarray, axis: int, lo: int, hi: int) -> list[int]:
     return [c for c in cuts if lo < c < hi]
 
 
-def _xy_cut(white, boxes, area, rtl, depth):
+def _xy_cut(white, boxes, area, rtl, depth, dark=None):
     x1, y1, x2, y2 = area
     if len(boxes) <= 1 or depth > 10:
         return _row_order(boxes, rtl)
@@ -321,14 +322,56 @@ def _xy_cut(white, boxes, area, rtl, depth):
             parts.reverse()
         out = []
         for part_area, part in parts:
-            out += _xy_cut(white, part, part_area, rtl, depth + 1)
+            out += _xy_cut(white, part, part_area, rtl, depth + 1, dark)
         return out
     split = _slanted_cut(sub, boxes, area)
     if split:
         first, second, axis = split  # phía trên / trái trước
         parts = [second, first] if axis == 0 and rtl else [first, second]  # khe chéo dọc: manga đọc panel phải trước
-        return [b for part, part_area in parts for b in _xy_cut(white, part, part_area, rtl, depth + 1)]
+        return [b for part, part_area in parts for b in _xy_cut(white, part, part_area, rtl, depth + 1, dark)]
+    cut = _frame_line(dark, boxes) if dark is not None else None
+    if cut is not None:
+        left = [b for b in boxes if (b.x1 + b.x2) / 2 < cut]
+        right = [b for b in boxes if (b.x1 + b.x2) / 2 >= cut]
+        x1, y1, x2, y2 = area
+        parts = [(right, (cut, y1, x2, y2)), (left, (x1, y1, cut, y2))]
+        if not rtl:
+            parts.reverse()
+        return [b for part, part_area in parts for b in _xy_cut(white, part, part_area, rtl, depth + 1, dark)]
     return _row_order(boxes, rtl)
+
+
+FRAME_DARK = 100  # nét viền khung tranh: tối hơn mức này
+FRAME_SPAN = 0.85  # viền khung dọc chạy suốt ≥ 85% chiều cao các khung chữ
+FRAME_SIDE = 8  # …là nét mảnh: cách 8px về ít nhất một bên là vùng sáng (khe / lòng panel)
+
+
+def _frame_line(dark: np.ndarray, boxes: list[TextBox]):
+    """Viền dọc của một khung tranh khi khe giữa hai khung bị bóng thoại / tranh đè lên (không cắt trắng được):
+    một cột tối thẳng chạy suốt chiều cao các khung chữ, không đi qua khung chữ nào, có khung chữ ở cả hai bên
+    (Ren AI chap 2 trang 5: bóng mây "将司い～" lấn sang khe, panel phải vẫn có viền đen rõ). Trả về x hoặc None."""
+    if len(boxes) < 2:
+        return None
+    top, bottom = min(b.y1 for b in boxes), max(b.y2 for b in boxes)
+    lo, hi = min(b.x1 for b in boxes), max(b.x2 for b in boxes)
+    if bottom - top < 40 or hi - lo < 10:
+        return None
+    # cột tối của ±1px quanh mỗi x (viền khung dày 2–4px, ảnh scan hơi nghiêng)
+    cols = dark[top:bottom, lo:hi]
+    cols = cols[:, :-2] | cols[:, 1:-1] | cols[:, 2:] if cols.shape[1] > 2 else cols
+    frac = cols.mean(axis=0)
+    best = None
+    for i in np.flatnonzero(frac >= FRAME_SPAN):
+        x = lo + 1 + int(i)
+        if any(b.x1 - 2 < x < b.x2 + 2 for b in boxes):
+            continue
+        side = [frac[j] for j in (i - FRAME_SIDE, i + FRAME_SIDE) if 0 <= j < len(frac)]
+        if not side or min(side) >= .5:
+            continue  # cả mảng tối (trang nền đen, tranh tối): không phải nét viền mảnh
+        n_left = sum((b.x1 + b.x2) / 2 < x for b in boxes)
+        if 0 < n_left < len(boxes) and (best is None or frac[i] > best[0]):
+            best = (frac[i], x)
+    return None if best is None else best[1]
 
 
 SLANT_MAX = 0.35  # khe chéo giữa hai panel: lệch tối đa 35% chiều dài khe

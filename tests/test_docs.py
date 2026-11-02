@@ -31,3 +31,39 @@ class TranslationNotesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExcelScriptTests(unittest.TestCase):
+    """Kiểm tra script XLSX có cột Page, Type, Japanese và English."""
+
+    @staticmethod
+    def write_xlsx(path, rows):
+        import zipfile
+        from xml.sax.saxutils import escape
+
+        def cell(ref, value):
+            return f'<c r="{ref}" t="inlineStr"><is><t>{escape(str(value))}</t></is></c>'
+        body = "".join(f'<row r="{i + 1}">' + "".join(cell(f"{chr(65 + j)}{i + 1}", v) for j, v in enumerate(row))
+                       + "</row>" for i, row in enumerate(rows))
+        sheet = ('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+                 + body + "</sheetData></worksheet>")
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("xl/worksheets/sheet1.xml", sheet)
+
+    def test_pages_types_and_source_lengths(self):
+        from app.core.docs import source_length
+        from app.core.typeset_profiles import split_mark
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "Script.xlsx")
+            self.write_xlsx(path, [["Number", "Page", "Speaker", "Type", "Japanese", "English"],
+                                   [1, "5.0", "A", "Snow_CuteHappy", "青い箱をここに置いてください！", "Put the blue box here, please!"],
+                                   [2, "5.0", "B", "Snow_OutsideText", "赤い小箱は 机の上です。", "The little red box is on the desk."],
+                                   [3, "6.0", "News", "Snow_Narration", "次の朝", "The next morning."]])
+            pages = load_pages(path)
+        self.assertEqual(sorted(pages), [5, 6])
+        first = pages[5][0]
+        self.assertEqual(split_mark(first), ("!cute", "Put the blue box here, please!"))
+        self.assertEqual(source_length(first), 15)
+        self.assertEqual(split_mark(pages[5][1])[0], "!free")
+        self.assertEqual(source_length(pages[5][1]), 11)  # bỏ dấu cách trong câu gốc
+        self.assertEqual(split_mark(pages[6][0]), ("!square", "The next morning."))

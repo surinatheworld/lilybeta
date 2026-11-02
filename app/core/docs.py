@@ -1,4 +1,4 @@
-"""Đọc file bản dịch (.docx / .txt) thành danh sách câu.
+"""Đọc file bản dịch (.docx / .txt / .xlsx) thành danh sách câu.
 
 Định dạng theo trang: một dòng chỉ có số (có thể kèm "Trang"/"Page") là tên trang, các dòng sau
 là câu dịch của trang đó theo thứ tự đọc:
@@ -8,6 +8,9 @@ là câu dịch của trang đó theo thứ tự đọc:
     Câu dịch 2
     2
     …
+
+Bảng script .xlsx (nhóm dịch tiếng Anh): mỗi dòng một câu, các cột Page / Type / English (hoặc Translation).
+Cột Type (vd "Snow_CuteHappy") ghi loại thoại: câu được gắn nhãn TYPE_TAG để chọn đúng font khi type.
 """
 from __future__ import annotations
 
@@ -56,6 +59,8 @@ def page_number(filename: str) -> int | None:
 
 def load_lines(path: str) -> list[str]:
     ext = os.path.splitext(path)[1].lower()
+    if ext == ".xlsx":
+        return [line for page, lines in _xlsx_pages(path).items() for line in [str(page), *lines]]
     if ext == ".docx":
         raw = _docx_lines(path)
     else:
@@ -69,6 +74,78 @@ def load_lines(path: str) -> list[str]:
             if line:
                 out.append(line)
     return out
+
+
+TYPE_TAG = "⟦{}|{}⟧"  # ⟦loại|số ký tự chữ gốc⟧ đầu câu, từ cột Type / Japanese của script (bỏ đi khi type)
+TAG = re.compile(r"^⟦(\w*)(?:\|(\d+))?⟧")
+
+
+def source_length(line: str) -> int | None:
+    """Số ký tự câu gốc (tiếng Nhật) ghi trong nhãn của script, None nếu không có."""
+    m = TAG.match(line)
+    return int(m.group(2)) if m and m.group(2) else None
+# Tên loại trong cột Type (bỏ tiền tố "Snow_", bỏ dấu cách / gạch) → loại khung của bộ font.
+TYPE_KINDS = {"dialogue": "normal", "speech": "normal", "thought": "thought", "bolderthought": "bold_thought",
+              "boldthought": "bold_thought", "narration": "square", "box": "square", "shoutangry": "bold", "shout": "bold",
+              "angry": "bold", "writing": "writing", "writting": "writing", "outsidetext": "free", "outside": "free",
+              "nervouscrying": "flustered", "nervous": "flustered", "crying": "flustered", "cutehappy": "cute",
+              "cute": "cute", "happy": "cute", "chaptertitle": "title", "title": "title", "phonetext": "phone",
+              "phone": "phone", "sfx": "sfx"}
+
+
+def type_kind(name: str) -> str:
+    key = re.sub(r"[^a-z]", "", (name or "").split("_")[-1].lower())
+    return TYPE_KINDS.get(key, "")
+
+
+def _xlsx_pages(path: str) -> dict[int, list[str]]:
+    """Script .xlsx: {trang: [câu đã gắn nhãn loại]} theo thứ tự dòng (đọc thẳng XML, không cần thư viện Excel)."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    m = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    with zipfile.ZipFile(path) as z:
+        shared = []
+        if "xl/sharedStrings.xml" in z.namelist():
+            shared = ["".join(t.text or "" for t in si.iter(m + "t"))
+                      for si in ET.fromstring(z.read("xl/sharedStrings.xml")).iter(m + "si")]
+        sheet = sorted(n for n in z.namelist() if n.startswith("xl/worksheets/sheet"))[0]
+        rows = []
+        for r in ET.fromstring(z.read(sheet)).iter(m + "row"):
+            cells = {}
+            for c in r.iter(m + "c"):
+                v = c.find(m + "v")
+                if c.get("t") == "s" and v is not None:
+                    text = shared[int(v.text)]
+                elif c.get("t") == "inlineStr":
+                    text = "".join(t.text or "" for t in c.iter(m + "t"))
+                else:
+                    text = v.text if v is not None else ""
+                cells[re.sub(r"\d", "", c.get("r", ""))] = (text or "").strip()
+            rows.append(cells)
+    if not rows:
+        return {}
+    header = {v.lower(): k for k, v in rows[0].items() if v}
+    col = lambda *names: next((header[n] for n in names if n in header), None)  # noqa: E731
+    page_col = col("page", "trang")
+    text_col = col("english", "translation", "vietnamese", "tiếng việt", "bản dịch", "dịch")
+    type_col = col("type", "loại")
+    source_col = col("japanese", "raw", "jp", "original", "tiếng nhật")
+    if page_col is None or text_col is None:
+        raise ValueError("Script .xlsx cần cột Page và English (hoặc Translation).")
+    pages: dict[int, list[str]] = {}
+    for r in rows[1:]:
+        text = clean_line(r.get(text_col, ""))
+        try:
+            page = int(float(r.get(page_col, "")))
+        except ValueError:
+            continue
+        if text:
+            kind = type_kind(r.get(type_col, "")) if type_col else ""
+            source = len("".join((r.get(source_col, "") if source_col else "").split()))
+            tag = TYPE_TAG.format(kind, source or "") if kind or source else ""
+            pages.setdefault(page, []).append(tag.replace("|⟧", "⟧") + text)
+    return pages
 
 
 def _docx_lines(path: str) -> list[str]:

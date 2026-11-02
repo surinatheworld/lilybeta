@@ -149,6 +149,14 @@ var LilyzonoPS = (function () {
         }
     }
 
+    // Có layer nào khác ngoài ảnh raw (và nhóm Lilyzono đã tạo)? Có thì đó là bản redraw (layer Redraw của nhóm).
+    function hasRedraw(doc) {
+        for (var i = 0; i < doc.layers.length - 1; i++) {
+            if (doc.layers[i].visible && doc.layers[i].name.indexOf("Lilyzono") !== 0) return true;
+        }
+        return false;
+    }
+
     function pixelSize(doc) {
         // UnitValue.as("px") uses 72 ppi when the ruler is in inches/cm.
         // Ask Photoshop for pixel-valued dimensions before converting them.
@@ -386,13 +394,14 @@ var LilyzonoPS = (function () {
         var input = win.add("edittext", undefined, "", {multiline:true, scrolling:true});
         input.preferredSize = [560, 230];
         var row = win.add("group");
-        var load = row.add("button", undefined, "Mở bản dịch (.txt / .docx)…");
+        var load = row.add("button", undefined, "Mở bản dịch (.txt / .docx / .xlsx)…");
         var fileLabel = row.add("statictext", undefined, "", {truncate:"middle"}); fileLabel.preferredSize = [330, 20];
         load.onClick = function () {
-            var file = File.openDialog("Chọn bản dịch", "Bản dịch:*.txt;*.docx");
+            var file = File.openDialog("Chọn bản dịch", "Bản dịch:*.txt;*.docx;*.xlsx");
             if (!file) return;
             // Không dùng regex /i (lỗi treo của ExtendScript với tên tiếng Việt). Word: bộ xử lý đọc.
-            if (file.name.substr(file.name.length - 5).toLowerCase() === ".docx") {
+            var ext = file.name.substr(file.name.length - 5).toLowerCase();
+            if (ext === ".docx" || ext === ".xlsx") {  // Word / script Excel: bộ xử lý đọc
                 translationFile = file.fsName; input.text = ""; fileLabel.text = file.name + " (đọc khi xử lý)";
             } else {
                 try { input.text = read(file); translationFile = null; fileLabel.text = file.name; }
@@ -556,6 +565,37 @@ var LilyzonoPS = (function () {
         executeAction(c("setd"), d, DialogModes.NO);
     }
 
+    // Ký tự font chính không có (♡ ♪ —, Photoshop không tự mượn font khác mà hiện ô vuông): đổi riêng các đoạn
+    // [từ, tới) đó sang font ký hiệu, phần còn lại giữ nguyên kiểu chữ của layer đang chọn.
+    function fallbackRuns(runs, font) {
+        var c = charIDToTypeID, s = stringIDToTypeID, ref = new ActionReference();
+        ref.putEnumerated(c("Lyr "), c("Ordn"), c("Trgt"));
+        var textKey = executeActionGet(ref).getObjectValue(s("textKey"));
+        var style = textKey.getList(s("textStyleRange")).getObjectValue(0).getObjectValue(s("textStyle"));
+        var total = textKey.getString(s("textKey")).length, list = new ActionList(), pos = 0, i;
+        function add(from, to, symbol) {
+            if (to <= from) return;
+            var range = new ActionDescriptor(), st = new ActionDescriptor();
+            st.fromStream(style.toStream());
+            if (symbol) {
+                if (st.hasKey(s("fontName"))) st.erase(s("fontName"));
+                if (st.hasKey(s("fontStyleName"))) st.erase(s("fontStyleName"));
+                st.putString(s("fontPostScriptName"), font);
+            }
+            range.putInteger(s("from"), from); range.putInteger(s("to"), to);
+            range.putObject(s("textStyle"), s("textStyle"), st);
+            list.putObject(s("textStyleRange"), range);
+        }
+        for (i = 0; i < runs.length; i++) { add(pos, runs[i][0], false); add(runs[i][0], runs[i][1], true); pos = runs[i][1]; }
+        add(pos, total, false);
+        textKey.putList(s("textStyleRange"), list);
+        var set = new ActionDescriptor(), target = new ActionReference();
+        target.putEnumerated(c("TxLr"), c("Ordn"), c("Trgt"));
+        set.putReference(c("null"), target);
+        set.putObject(c("T   "), c("TxLr"), textKey);
+        executeAction(c("setd"), set, DialogModes.NO);
+    }
+
     function apply() {
         var doc = context.doc, data = context.data;
         var oldRuler = app.preferences.rulerUnits, oldType = app.preferences.typeUnits, oldDialogs = app.displayDialogs;
@@ -592,6 +632,9 @@ var LilyzonoPS = (function () {
                 text.position = [new UnitValue(layer.left - slack / 2, "px"), new UnitValue(layer.first_baseline - layer.ascent, "px")];
                 text.hyphenation = false;
                 art.name = (layer.orphan ? "CHƯA ĐẶT · " : "") + (layer.redraw ? "REDRAW · " : "") + (i + 1) + ". " + layer.contents.replace(/[\r\u0003]/g, " ");
+                if (layer.fallback && layer.fallback.length && layer.fallback_font) {
+                    doc.activeLayer = art; fallbackRuns(layer.fallback, layer.fallback_font);
+                }
                 if (layer.stroke > 0) { doc.activeLayer = art; addStroke(layer.stroke, layer.stroke_color || "ffffff"); }
             }
             doc.activeLayer = group;
@@ -612,19 +655,28 @@ var LilyzonoPS = (function () {
             // Ảnh đã chụp ở bước quét loại khung: dùng lại, không chụp lại.
         } else if (request.mode === "batch" || request.mode === "scan") {
             // Cả chương: chụp mọi ảnh đang mở (Photoshop bận ~1 giây mỗi trang), rồi giao hết cho bộ xử lý.
-            var current = app.activeDocument, pages = [], i, d, f;
+            var current = app.activeDocument, pages = [], i, d, f, page;
             for (i = 0; i < app.documents.length; i++) {
                 d = app.documents[i];
                 f = new File(folder.fsName + "/page" + i + ".png");
                 app.activeDocument = d;
                 snapshot(d, f);
-                pages.push({image:f.fsName, size:pixelSize(d), doc_name:d.name, doc_id:docId(d)});
+                page = {image:f.fsName, size:pixelSize(d), doc_name:d.name, doc_id:docId(d)};
+                if (hasRedraw(d)) {  // trang đã redraw sẵn: nhận diện chữ trên ảnh raw (layer dưới cùng)
+                    page.redrawn = f.fsName; page.image = folder.fsName + "/raw" + i + ".png";
+                    snapshotBackground(d, new File(page.image));
+                }
+                pages.push(page);
             }
             app.activeDocument = current;
             request.pages = pages;
         } else {
             var input = new File(folder.fsName + "/input.png");
-            if (request.mode === "sfx") snapshotBackground(doc, input); else snapshot(doc, input);
+            if (request.mode === "sfx") snapshotBackground(doc, input);
+            else if (hasRedraw(doc)) {  // PSD có layer Redraw: chữ nhận diện trên raw, type lên bản đã redraw
+                var redrawn = new File(folder.fsName + "/redrawn.png");
+                snapshot(doc, redrawn); snapshotBackground(doc, input); request.redrawn = redrawn.fsName;
+            } else snapshot(doc, input);
             request.image = input.fsName; request.size = pixelSize(doc);
         }
         request.doc_name = doc.name;

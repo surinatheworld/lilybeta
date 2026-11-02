@@ -180,7 +180,8 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
     scale = min(420 / page.size[0], 560 / page.size[1], 1)
     thumb = cv2.resize(preview, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     cv2.imencode(".png", thumb)[1].tofile(folder / f"{prefix}preview-ui.png")
-    cv2.imencode(".png", clean_layer(page))[1].tofile(folder / f"{prefix}redraw.png")
+    # Tài liệu đã có layer Redraw (bản redraw chụp từ chính tài liệu): layer Redraw của Lilyzono chỉ chứa phần tool vẽ thêm.
+    cv2.imencode(".png", clean_layer(page, page.redrawn))[1].tofile(folder / f"{prefix}redraw.png")
     project.save(str(folder / f"{prefix}editable.lzp"), [page])
     specs = layer_specs(page)
     clear_caches()  # làm cả chương: RAM không tăng dần theo số trang
@@ -311,7 +312,8 @@ def process_job(path: Path, report=None) -> dict:
                 continue
             try:
                 res = typeset_page(item["image"], lines, folder, f"p{i}_", item.get("size"), rtl, detector,
-                                   lambda text, step=step: report(step + text), profile, custom_fonts=custom)
+                                   lambda text, step=step: report(step + text), profile, item.get("redrawn"),
+                                   custom_fonts=custom)
                 out.append({"ok": True, "doc_id": item.get("doc_id"), "doc_name": name, **res})
             except Exception as exc:  # noqa: BLE001 - trang lỗi không làm hỏng cả chương
                 out.append({"ok": False, "doc_id": item.get("doc_id"), "doc_name": name, "error": str(exc)})
@@ -322,7 +324,7 @@ def process_job(path: Path, report=None) -> dict:
         if not lines:
             raise ValueError(f"Bản dịch không có trang {page_number(request.get('doc_name', ''))}.")
     return {**base, **typeset_page(request["image"], lines, folder, "", request.get("size"), rtl, detector, report, profile,
-                                       custom_fonts=custom)}
+                                       request.get("redrawn"), custom_fonts=custom)}
 
 
 def _failure(job: Path, exc: Exception) -> dict:
