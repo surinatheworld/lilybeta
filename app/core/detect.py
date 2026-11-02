@@ -43,11 +43,42 @@ def ensure_model(path: str = MODEL_PATH) -> str:
     return path
 
 
+def gpu_session(path: str):
+    """Phiên ONNX Runtime chạy trên card đồ hoạ (DirectML, mọi card DirectX 12) nếu có; None nếu không có / lỗi.
+    LILYZONO_CPU=1: luôn dùng CPU."""
+    if os.environ.get("LILYZONO_CPU") == "1":
+        return None
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return None
+    if "DmlExecutionProvider" not in ort.get_available_providers():
+        return None
+    ort.set_default_logger_severity(3)  # không in cảnh báo "một số node chạy trên CPU" (bình thường với DirectML)
+    so = ort.SessionOptions()
+    so.enable_mem_pattern = False  # DirectML không dùng được
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC  # tối ưu đủ dùng, nạp ~0,7s thay vì ~4s
+    try:
+        return ort.InferenceSession(path, so, providers=["DmlExecutionProvider"])
+    except Exception:  # noqa: BLE001 - driver cũ / card không hỗ trợ: dùng CPU
+        return None
+
+
 class TextDetector:
     def __init__(self, model_path: str = MODEL_PATH):
         ensure_model(model_path)
         self.model_path = model_path
         self._net = None
+        self._gpu = None
+        self._gpu_tried = False
+
+    @property
+    def gpu(self):
+        """RTX 4060 (DirectML): ~0,1s/ảnh thay vì 1,5–3s trên CPU, RAM ít hơn ~100MB."""
+        if not self._gpu_tried:
+            self._gpu_tried = True
+            self._gpu = gpu_session(self.model_path)
+        return self._gpu
 
     @property
     def net(self):
@@ -60,6 +91,7 @@ class TextDetector:
     def release(self) -> None:
         """Bỏ model khỏi RAM (~400MB); lần nhận diện sau tự nạp lại (~1 giây)."""
         self._net = None
+        self._gpu, self._gpu_tried = None, False
 
     def detect(self, img_bgr: np.ndarray) -> tuple[list[TextBox], np.ndarray]:
         """Trả về (danh sách khung chữ, mask nét chữ float32 0..1 cùng cỡ ảnh)."""
@@ -82,8 +114,11 @@ class TextDetector:
         canvas = np.full((INPUT_SIZE, INPUT_SIZE, 3), 114, np.uint8)
         canvas[:nh, :nw] = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
         blob = cv2.dnn.blobFromImage(canvas, 1 / 255.0, (INPUT_SIZE, INPUT_SIZE), swapRB=True)
-        self.net.setInput(blob)
-        blk, seg, _ = self.net.forward(["blk", "seg", "det"])
+        if self.gpu is not None:
+            blk, seg, _ = self.gpu.run(["blk", "seg", "det"], {self.gpu.get_inputs()[0].name: blob})
+        else:
+            self.net.setInput(blob)
+            blk, seg, _ = self.net.forward(["blk", "seg", "det"])
 
         pred = blk[0]  # (N, 5 + số lớp): cx, cy, w, h, obj, cls...
         scores = pred[:, 4] * pred[:, 5:].max(axis=1)

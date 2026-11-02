@@ -32,6 +32,7 @@ def reserve_uids(upto: int) -> None:
 
 
 MIN_READABLE = .5  # chữ ngoài bóng / SFX không nhỏ hơn nửa cỡ chuẩn của trang
+REJOIN = .55  # hai câu chung bóng mà một phần chữ < 55% cỡ chuẩn: thử gộp lại thành một khối
 OVERLAY_READABLE = .8  # chữ dịch đè lên chữ gốc (không xoá được): nới khung tới khi ≥ 80% cỡ chuẩn
 OVERLAY_STROKE = .12  # …và viền trắng ~3px (12% cỡ chuẩn) để đọc được trên nét chữ gốc / tranh
 DARK_BACKGROUND = 90  # độ sáng trung vị dưới mức này: nền tối, chữ trắng
@@ -500,7 +501,35 @@ class Page:
         for r in regions:
             if r.cleaned:
                 self.clean(r, fit_bubble)  # đã xoá rồi: chỉ tính lại khung đặt chữ
+        self._rejoin_cramped(fit_bubble)
         self.even_sizes()
+
+    def _rejoin_cramped(self, fit_bubble: bool = True) -> None:
+        """Hai câu chung một bóng đã tách thành hai phần mà có phần chật bất thường (chữ < REJOIN cỡ chuẩn, Ren AI chap 2
+        trang 7: 13px khi cỡ chuẩn 45px): gộp lại thành một khối chữ trong cả bóng nếu nhờ đó chữ to hơn."""
+        from .typeset import SOFT_BREAK
+
+        groups: dict[int, list[Region]] = {}
+        for r in self.regions:
+            if r.group and r.cleaned and r.text.strip() and not r.manual_rect:
+                groups.setdefault(r.group, []).append(r)
+        for parts in groups.values():
+            if len(parts) < 2:
+                continue
+            cap = self.auto_cap
+            small = min(self._fit_size(r) for r in parts)
+            if small >= REJOIN * cap:
+                continue
+            x1, y1 = min(r.box[0] for r in parts), min(r.box[1] for r in parts)
+            x2, y2 = max(r.box[2] for r in parts), max(r.box[3] for r in parts)
+            whole = Region((x1, y1, x2, y2), text=SOFT_BREAK.join(r.text for r in parts), style=parts[0].style,
+                           kind=parts[0].kind, cleaned=True, marked=parts[0].marked)
+            at = self.regions.index(parts[0])
+            others = [r for r in self.regions if r not in parts]
+            self.regions[:] = others[:at] + [whole] + others[at:]
+            self.clean(whole, fit_bubble)
+            if self._fit_size(whole) <= small:  # gộp cũng không hơn: giữ hai phần
+                self.regions[:] = others[:at] + parts + others[at:]
 
     def even_sizes(self) -> None:
         """Như người type (bản type tay, nhóm NaJung): thoại thường trên một trang cùng một cỡ chữ – bóng to thì để

@@ -9,3 +9,4 @@ dist/
 *.spec
 selftest.log
 selftest.psd
+models/manga-ocr/

@@ -173,6 +173,8 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
             r.cleaned, r.needs_redraw = True, not page.redrawn_covers(r)
             page.clean(r)
     page.clean_many([r for r in translated if r.kind != "sfx"])
+    # Hai câu chung bóng có thể đã gộp lại thành một vùng: lấy lại đúng danh sách như layer_specs.
+    translated = [r for r in page.regions if r.cleaned and r.text.strip()]
     report("Dựng bản xem trước…")
     page.doc = Document(page)
     page.doc.export(str(folder / f"{prefix}preview.png"))

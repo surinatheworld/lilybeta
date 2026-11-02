@@ -133,3 +133,36 @@ class OneColorBalloonTests(unittest.TestCase):
         outline = white.copy()
         outline[:, 50:52] = 0
         self.assertTrue(one_color_around(outline, text, text))  # chữ sát viền đen của bóng vẫn xoá được
+
+
+class ScriptTextMatchingTests(unittest.TestCase):
+    """Script có cột tiếng Nhật: đọc chữ trong vùng (manga-ocr) rồi neo câu vào đúng vùng, dù thứ tự đọc khung sai."""
+
+    def test_lines_follow_the_text_read_in_each_region(self):
+        from unittest.mock import patch
+        from app.core import ocr
+        from app.core.docs import TYPE_TAG
+
+        page = SimpleNamespace(size=(800, 600), original=np.full((600, 800, 3), 255, np.uint8),
+                               text_mask=np.zeros((600, 800), np.float32))
+        regions = [Region((600, 50, 660, 200)), Region((100, 50, 160, 200)), Region((350, 300, 420, 450))]
+        read = {(600, 50, 660, 200): "輝かしい装飾品…！", (100, 50, 160, 200): "あれは全て料理屋ですか！？",
+                (350, 300, 420, 450): "とっても美味しいです♪"}  # bóng cuối không có trong script
+        lines = [TYPE_TAG.format("normal", "あれは全て料理屋ですか！？") + "Are all those restaurants!?",
+                 TYPE_TAG.format("bold", "輝かしい装飾品…！") + "Glorious ornaments...!",
+                 TYPE_TAG.format("free", "よっす") + "Yo."]  # chữ gốc nhỏ quá, model không thấy vùng
+        fake = SimpleNamespace(read=lambda img, box: read[tuple(box)])
+        with patch.object(ocr, "reader", lambda: fake):
+            plan = assign_lines(page, regions, lines)
+        placed = {tuple(r.box): [l.split("⟧")[1] for l in ls] for r, ls in plan if not r.orphan}
+        self.assertEqual(placed, {(100, 50, 160, 200): ["Are all those restaurants!?"],
+                                  (600, 50, 660, 200): ["Glorious ornaments...!"]})
+        orphans = [ls for r, ls in plan if r.orphan]
+        self.assertEqual(len(orphans), 1)  # "Yo." thành khung CHƯA ĐẶT, không nhét vào bóng không có trong script
+        self.assertTrue(orphans[0][0].endswith("Yo."))
+
+    def test_reading_is_compared_loosely(self):
+        from app.core.ocr import coverage
+        self.assertEqual(coverage("すみません…お待たせしてしまって…", "すみません...お待たせしてしまって..."), 1.0)
+        self.assertGreaterEqual(coverage("おぉ…！", "おお"), 1.0)  # kana nhỏ = kana lớn, bỏ dấu câu
+        self.assertLess(coverage("あれっ", "しゃばっ"), 0.5)

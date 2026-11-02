@@ -12,7 +12,7 @@ import math
 import cv2
 import numpy as np
 
-from .docs import TAG, source_length
+from .docs import TAG, source_length, source_text
 
 MAX_LINES_PER_REGION = 3
 MERGE_PENALTY = 1.2  # mỗi câu thêm vào cùng một vùng
@@ -111,11 +111,17 @@ def _space_penalty(lines: list[str]) -> float:
     return 0.0 if words <= 1 else (0.5 if words == 2 else 1.0)
 
 
-def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str]]]:
-    """Trả về [(vùng, [các câu])] theo thứ tự đọc; vùng bị bỏ qua không có trong danh sách."""
+def assign_lines(page, regions, lines: list[str], read_text: bool = True) -> list[tuple[object, list[str]]]:
+    """Trả về [(vùng, [các câu])] theo thứ tự đọc; vùng bị bỏ qua không có trong danh sách.
+
+    Script có câu gốc (tiếng Nhật) và có model đọc chữ: khớp theo nội dung trước (`_match_by_text`)."""
     n, m = len(regions), len(lines)
     if n == 0 or m == 0:
         return []
+    if read_text:
+        plan = _match_by_text(page, regions, lines)
+        if plan is not None:
+            return plan
     raw_ink = [max(1.0, region_ink(page, r)) for r in regions]
     skip = [skip_cost(page, r) for r in regions]
     # Độ dài câu gốc ~ số ký tự = lượng nét / diện tích một ký tự: chữ hét to nhiều nét mà ít chữ,
@@ -209,6 +215,101 @@ def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str
         k = stack[max(0, anchor)] = stack.get(max(0, anchor), -1) + 1  # xếp theo bóng mà khung bám vào
         out.insert(_after(out, regions, anchor), (_orphan(page, regions[max(0, anchor)], k), [line]))
     return out
+
+
+OCR_MATCH = 0.5  # câu gốc có ≥ 50% ký tự trong chữ đọc được của vùng: câu đó thuộc vùng này…
+OCR_MARGIN = 0.2  # …và hơn hẳn vùng khớp thứ hai (câu ngắn lặp lại như "じゃーな！" thì không chắc)
+OCR_SHORT = 3  # câu gốc < 3 chữ: chỉ neo khi vùng gần như chỉ chứa câu đó
+OCR_WEAK = 0.3  # neo yếu: khớp ≥ 30% mà là vùng trống duy nhất có chữ khớp
+OCR_FOREIGN = 2  # vùng đọc được ≥ 2 chữ mà không câu nào trong script khớp: chữ không dịch (bỏ qua, không nhét câu)
+
+
+def _match_by_text(page, regions, lines):
+    """Đọc chữ gốc trong từng vùng (manga-ocr) rồi khớp với câu gốc của script: câu khớp rõ được neo vào đúng vùng
+    dù thứ tự đọc khung sai; câu không đọc ra (dấu "!", "…") ghép như cũ vào các vùng còn lại. None nếu không làm được
+    (bản dịch không có câu gốc, chưa có model)."""
+    from . import ocr
+
+    if not all(source_text(s) for s in lines):
+        return None
+    reader = ocr.reader()
+    if reader is None:
+        return None
+    cache = getattr(page, "_ocr_cache", None)
+    if cache is None:
+        cache = page._ocr_cache = {}
+    texts = []
+    for r in regions:
+        key = tuple(r.box)
+        if key not in cache:
+            cache[key] = reader.read(page.original, r.box) if not r.polygon else ""
+        texts.append(cache[key])
+    cov = [[ocr.coverage(source_text(s), t) for t in texts] for s in lines]
+    size = [len(ocr.normalize(t)) for t in texts]
+    anchored: dict[int, list[tuple[int, int]]] = {}  # vùng → [(vị trí trong chữ đọc được, câu)]
+    where: dict[int, int] = {}  # câu → vùng
+
+    def anchor(j, i):
+        anchored.setdefault(i, []).append((_position(source_text(lines[j]), texts[i]), j))
+        where[j] = i
+
+    for j, row in enumerate(cov):
+        order = sorted(range(len(regions)), key=lambda i: -row[i])
+        best = order[0]
+        second = row[order[1]] if len(order) > 1 else 0.0
+        n = len(ocr.normalize(source_text(lines[j])))
+        # Câu rất ngắn ("おぉ…！") trùng một chữ với câu dài khác ("お祭り"): chỉ neo khi vùng gần như chỉ có câu đó.
+        sure = n >= OCR_SHORT or (row[best] == 1 and size[best] <= 2 * n + 1)
+        if row[best] >= OCR_MATCH and row[best] - second >= OCR_MARGIN and sure:
+            anchor(j, best)
+    # Vùng còn lại cho các câu chưa neo: bỏ vùng đọc ra chữ hẳn hoi mà không câu nào khớp (bóng không có trong script).
+    # (chỉ so với câu chưa có chỗ: "わーっ!!" đã neo bóng khác thì không làm SFX "ペカーッ" thành vùng của câu nào)
+    # Vùng ≥ 3 chữ phải khớp ≥ 50% (một chữ trùng như "っ" trong "しゃばっ" / "あれっ" không tính), vùng 2 chữ ≥ 30%.
+    free = [i for i in range(len(regions)) if i not in anchored
+            and not (size[i] >= OCR_FOREIGN and max([cov[j][i] for j in range(len(lines)) if j not in where] or [0])
+                     < (OCR_MATCH if size[i] > OCR_FOREIGN else OCR_WEAK))]
+    # Neo yếu: trong các vùng còn trống, chỉ một vùng có chữ khớp một phần ("はいっ！" ↔ OCR "いい") thì là vùng đó.
+    for j in range(len(lines)):
+        if j in where:
+            continue
+        hits = sorted(((cov[j][i], i) for i in free if i not in anchored), reverse=True)
+        if hits and hits[0][0] >= OCR_WEAK and (len(hits) < 2 or hits[1][0] == 0):
+            anchor(j, hits[0][1])
+    rest = [j for j in range(len(lines)) if j not in where]
+    free = [i for i in free if i not in anchored]
+    plan = {i: [lines[j] for _, j in sorted(pairs)] for i, pairs in anchored.items()}
+    extra = []
+    if rest and free:
+        sub = assign_lines(page, [regions[i] for i in free], [lines[j] for j in rest], read_text=False)
+        index = {id(regions[i]): i for i in free}
+        for r, ls in sub:
+            if id(r) in index:
+                plan.setdefault(index[id(r)], []).extend(ls)
+                for line in ls:
+                    where[lines.index(line)] = index[id(r)]
+    # Câu không có vùng nào (chữ gốc nhỏ quá model không thấy, "よっす"): khung "CHƯA ĐẶT" cạnh vùng của câu trước nó.
+    stack: dict[int, int] = {}
+    for j in range(len(lines)):
+        if j in where:
+            continue
+        near = next((where[k] for k in range(j - 1, -1, -1) if k in where), 0)
+        k = stack[near] = stack.get(near, -1) + 1
+        extra.append((near, _orphan(page, regions[near], k), [lines[j]]))
+    out = [(regions[i], plan[i]) for i in sorted(plan)]
+    for near, r, ls in extra:  # đặt ngay sau vùng mà khung bám vào
+        at = next((k + 1 for k, (reg, _) in enumerate(out) if reg is regions[near]), len(out))
+        out.insert(at, (r, ls))
+    return out
+
+
+def _position(source: str, read: str) -> int:
+    """Vị trí câu gốc trong chữ đọc được của vùng (hai câu chung một bóng: câu nào đứng trước)."""
+    from difflib import SequenceMatcher
+    from .ocr import normalize
+
+    a, b = normalize(source), normalize(read)
+    blocks = [blk for blk in SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks() if blk.size]
+    return blocks[0].b if blocks else len(b)
 
 
 def _after(plan, regions, anchor: int) -> int:
