@@ -20,9 +20,6 @@ layer chữ, kerning Optical; sửa tay trong Photoshop như thường.
 
 ## Chạy
 
-Cần key Lilyzono (xin từ người cấp tool): lần đầu bấm chạy, bộ xử lý hỏi key – dán vào là xong. Mỗi trang type
-trừ 10 token; hết token bộ xử lý lại hỏi key mới (key nạp thêm).
-
 1. Mở ảnh trong Photoshop.
 2. **File → Scripts → Browse…**, chọn `Lilyzono.jsx` trong thư mục này.
 3. Dán bản dịch, **mỗi câu một dòng theo thứ tự đọc**, không thêm số thứ tự; hoặc **Mở bản dịch (.txt / .docx)**

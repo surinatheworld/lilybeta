@@ -24,30 +24,6 @@ Gặp lỗi trên máy khác: chạy `Lilyzono.exe --selftest` (có thể thêm 
 Nếu bản exe cũ báo lỗi DLL khi khởi động, đóng gói lại bằng `build_exe.bat`: bước build ưu tiên DLL của Windows,
 tránh lấy nhầm `icuuc.dll` từ phần mềm khác trong `PATH` gây lỗi import QtGui.
 
-## Key và token
-
-Mỗi người dùng cần một **key** do chủ tool cấp; tool trừ token mỗi lần làm việc, hết token thì dừng (như các dịch vụ AI):
-
-| Việc | Token |
-|---|---|
-| Tự ghép thoại + xoá chữ + type một trang (app hoặc Photoshop) | 10 |
-| Xử lý tay một khung chữ | 1 |
-| Một lần gọi AI vẽ lại nền (Gemini / OpenAI) | 5 |
-
-- Người dùng: **Trợ giúp → Key và token…** để dán key, xem token còn lại (cũng hiện ở góc phải thanh trạng thái).
-  Bản Photoshop: lần đầu chạy (hoặc khi hết token) bộ xử lý tự hỏi key.
-- Chủ tool cấp key bằng `tools/make_key.py` (chạy từ mã nguồn):
-  ```bash
-  .venv\Scripts\python tools\make_key.py issue "Tên người dùng" 1000 --days 30
-  .venv\Scripts\python tools\make_key.py issue "Tên người dùng" 3000 --user u-ab12cd
-  .venv\Scripts\python tools\make_key.py list
-  ```
-  Nạp thêm = cấp key mới **cùng mã người dùng** (`--user`) với **tổng** token mới. `--unlimited` = không giới hạn.
-  Key được ký bằng khoá bí mật ở `%USERPROFILE%\.lilyzono\owner_secret.key` – sao lưu thư mục này, không chia sẻ,
-  không đưa lên git (mất khoá thì không cấp được key cho các bản đã phát hành).
-- Kiểm soát offline: key không giả được, số token đã dùng lưu ở `%APPDATA%\Lilyzono` và registry, có mã chống sửa
-  tay. Người rành máy vẫn có thể xoá dấu vết để lách; chạy từ mã nguồn thì tự sửa code được – chỉ phát bản `.exe`.
-
 ## Cài đặt & chạy từ mã nguồn (Windows)
 
 Cần Python 3.10 trở lên ([python.org](https://www.python.org/downloads/), nhớ tick *Add Python to PATH*).
@@ -324,7 +300,6 @@ Chọn **1** vùng đã xử lý → hiện khung tím quanh chữ:
 - `app/core/detect.py` – nhận diện vùng chữ ([comic-text-detector](https://github.com/dmMaze/comic-text-detector), chạy bằng OpenCV DNN)
 - `app/core/clean.py` – xoá chữ, vẽ lại nền (tô màu nền / nền gradient / AI)
 - `app/core/cloud.py` – vẽ lại nền bằng API Gemini / OpenAI; `app/core/secrets.py` – cất API key
-- `app/core/quota.py` – key người dùng (chữ ký Ed25519) và hạn mức token; `tools/make_key.py` – cấp key
 - `app/core/typeset.py` – dàn chữ, tự co cỡ, xuống dòng bo tròn theo dáng bóng, viền chữ
 - `app/core/vi_words.py` – từ ghép tiếng Việt thông dụng (không xuống dòng ở giữa)
 - `app/core/docs.py` – đọc bản dịch `.docx` / `.txt`

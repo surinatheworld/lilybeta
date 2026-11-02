@@ -28,7 +28,7 @@ import tempfile
 import cv2
 import numpy as np
 
-from .core import project, quota
+from .core import project
 from .core.assign import apply_plan, assign_lines
 from .core.clean import easy_only
 from .core.docs import clean_line, load_pages, page_number
@@ -152,7 +152,6 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
 
     `redrawn`: ảnh đã redraw sẵn (cùng khung): làm nền thay cho phần xoá chữ của tool; chữ vẫn nhận diện trên raw."""
     report = report or (lambda step: None)
-    quota.check(quota.PAGE_COST)  # thiếu token thì dừng trước khi làm; xong trang mới trừ
     page = Page(image)
     if size is not None and list(page.size) != list(size):
         raise ValueError("Kích thước ảnh chụp không khớp tài liệu Photoshop.")
@@ -185,7 +184,6 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
     project.save(str(folder / f"{prefix}editable.lzp"), [page])
     specs = layer_specs(page)
     clear_caches()  # làm cả chương: RAM không tăng dần theo số trang
-    quota.charge(quota.PAGE_COST)
     for r, spec in zip(translated, specs):
         spec["source_box"] = list(r.box)
         spec["family"] = r.style.family
@@ -368,40 +366,6 @@ def notify_photoshop(script: str, folder: Path) -> None:
         done.set()
 
 
-def _ask_key() -> bool:
-    """Chưa có key / hết token: hỏi key ngay ở bộ xử lý (người chỉ cài bản Photoshop không có app để nhập key)."""
-    from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QDialog, QInputDialog, QMessageBox
-
-    def on_top(box):
-        # Cửa sổ riêng, luôn nổi trên Photoshop: gắn vào cửa sổ tiến độ đang ẩn thì Windows thu nhỏ nó thành ô
-        # ở góc màn hình (không có nút trên thanh tác vụ), người dùng không thấy.
-        box.setWindowFlag(Qt.WindowStaysOnTopHint)
-        box.show()
-        box.raise_()
-        box.activateWindow()
-        return box.exec()
-
-    while True:
-        try:
-            quota.check(quota.PAGE_COST)
-            return True
-        except quota.TokenError as e:
-            ask = QInputDialog()
-            ask.setWindowTitle("Lilyzono · Key")
-            ask.setLabelText(f"{e}\n\nDán key Lilyzono vào đây:")
-            ask.setOption(QInputDialog.UsePlainTextEditForTextInput)
-            ask.resize(460, 260)
-            if on_top(ask) != QDialog.Accepted or not ask.textValue().strip():
-                return False
-            try:
-                lic = quota.install(ask.textValue())
-                on_top(QMessageBox(QMessageBox.Information, "Lilyzono",
-                                   f"Đã kích hoạt key của {lic.name or lic.user}.\n{quota.describe()}"))
-            except quota.TokenError as bad:
-                on_top(QMessageBox(QMessageBox.Warning, "Lilyzono", str(bad)))
-
-
 def run_with_progress(job: Path, request: dict) -> int:
     """Chế độ dùng thật: cửa sổ tiến độ (Huỷ được bất cứ lúc nào), xử lý ở luồng riêng, xong thì gọi lại Photoshop."""
     from PySide6.QtCore import Qt, QTimer
@@ -428,9 +392,6 @@ def run_with_progress(job: Path, request: dict) -> int:
         lay.addWidget(w)
     win.resize(420, 140)
     state = {"step": "Khởi động…", "result": None}
-    if request.get("mode") in ("page", "batch") and not _ask_key():
-        write_json(job.parent / "result.json", {"protocol": PROTOCOL, "ok": False, "error": "Chưa có key / hết token."})
-        return 1
 
     def work():
         try:
