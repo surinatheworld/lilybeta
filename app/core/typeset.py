@@ -5,7 +5,7 @@ Các thông số chữ theo kiểu bảng Character / Paragraph của Photoshop.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, astuple, dataclass
+from dataclasses import asdict, astuple, dataclass, replace
 import math
 import re
 from functools import lru_cache
@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QPen,
     QTransform,
 )
+import numpy as np
 
 from .fonts import qt_family
 from .vi_words import bare, dangling, ends_clause, final_particle, joined, rhyming
@@ -30,8 +31,14 @@ from .vi_words import bare, dangling, ends_clause, final_particle, joined, rhymi
 MIN_SIZE = 8
 MAX_SIZE = 150
 SHAPES = {"round": "Bo tròn", "even": "Đều dòng", "": "Lấp đầy dòng"}
-ROUND_POWER = 0.75  # độ nhọn của dáng bo tròn: 0.5 = hình tròn, 1 = nhọn hơn (9 từ → 1·2·3·2·1)
-ASPECT_WEIGHT = 0.3  # mức ưu tiên khối chữ cùng tỉ lệ với khung so với dáng dòng
+# Dáng bo tròn: bề ngang từng dòng (% dòng dài nhất) của khối 2–6 dòng, trung bình ~900 khối typeset tay (22 chương).
+# Người typeset giữ thân khối gần phẳng, chỉ dòng đầu hơi ngắn và dòng cuối ngắn hẳn – không vót thành hình thoi.
+ROUND_SHAPE = {2: (92, 78), 3: (85, 92, 76), 4: (82, 89, 88, 68), 5: (79, 90, 89, 84, 62), 6: (80, 86, 87, 85, 85, 67)}
+ROUND_MIX = 0.75  # dáng mong muốn = 75% dáng tay + 25% dáng thoi: khối thoi ("Vậy thì / em xin phép / lên giường /
+# trước.") vẫn được, không ép phẳng tới mức phải cắt đôi từ ghép ("em xin / phép lên")
+ROUND_POWER = 0.75  # độ nhọn của dáng thoi: 0.5 = hình tròn, 1 = nhọn hơn (9 từ → 1·2·3·2·1)
+ASPECT_WEIGHT = 0.6  # mức ưu tiên khối chữ cùng tỉ lệ với khung so với dáng dòng
+BLOCK_FLAT = math.log(1.3)  # khối chữ tay dẹt hơn lòng bóng / khung ~1,3 lần (trong bóng: rộng ~2/3, cao ~1/3 bóng)
 BREAK_WORD = 0.8  # phạt xuống dòng giữa từ ghép, tính như dòng lệch dáng 80%
 BREAK_PARTICLE = 0.3  # phạt nhẹ để tiểu từ kết câu ("ạ.") không đứng trơ một mình
 BREAK_FUNCTION = 0.5  # phạt hư từ đứng cuối dòng ("của | tôi", "những | người"): nhẹ hơn cắt đôi từ ghép
@@ -45,6 +52,11 @@ SHORT_GROW = 1.5  # …nhưng không quá 1,5 lần cỡ chuẩn (bản typeset 
 BREAK_HYPHEN = 0.3  # ngắt ở dấu gạch trong tên ("Tanaka-|kun", "Yamada-|san"): được, nhưng ưu tiên chỗ cách
 TALL = math.log(1 / 1.6)  # bóng cao hơn 1,6 lần bề ngang: mỗi dòng một từ cũng được ("THẬT / SAO / CƠ!?")
 SHY = "\u00ad"  # đánh dấu chỗ ngắt được trong từ có gạch nối: nối lại thành "-"
+SYL = "\u200c"  # chỗ ngắt giữa âm tiết của từ tiếng Anh dài: giữa dòng nối liền, cuối dòng thành "-"
+JOIN = "​"  # sau dấu "…" mở đầu từ ("...Because"): giữa dòng nối liền, cuối dòng xuống dòng không gạch
+HYPHEN_MIN = 7  # từ tiếng Anh từ 7 chữ trở lên mới được ngắt giữa âm tiết
+HYPHEN_BELOW = 0.85  # …và chỉ khi không ngắt thì chữ dưới 85% cỡ chuẩn
+BREAK_SYLLABLE = 1.0  # phạt ngắt giữa âm tiết: nặng hơn cắt từ ghép, chỉ khi không ngắt thì chữ phải nhỏ hẳn
 SOFT_BREAK = "\u2028"  # giữa hai câu dịch gộp chung một bóng (khác "\n" = xuống dòng tay): nên, không bắt buộc, xuống dòng
 PARA = "\u2029"  # đánh dấu từ cuối mỗi câu dịch như vậy khi ngắt dòng
 BREAK_PARA = 0.25  # thưởng xuống dòng giữa hai câu dịch gộp chung bóng (hơn dấu phẩy một chút)
@@ -54,13 +66,16 @@ JAG_WEIGHT = 1.0  # phạt dòng lởm chởm (dài ngắn đảo chiều nhiề
 JAG_SLACK = 0.1  # …phần lệch quá 10% dòng dài nhất
 PEAK_WEIGHT = 3.0  # phạt dòng thò ra so với cả hai dòng kề…
 PEAK_SLACK = 0.2  # …quá 20% dòng dài nhất
-SYMMETRY_WEIGHT = 0.6  # phạt khối bo tròn lệch: dòng trên và dòng dưới tương ứng dài khác nhau
+LONE_TOP, LONE_TOP_WEIGHT = 0.5, 1.0  # dòng đầu ngắn hơn nửa dòng dài nhất: phạt
+SYMMETRY_WEIGHT = 0.3  # phạt khối bo tròn lệch: dòng trên và dòng dưới tương ứng dài khác nhau
 SHRINK_MAX = 0.25  # được nhỏ chữ tối đa 25% so với cỡ lớn nhất vừa khung (khi nhờ đó khỏi cắt từ, khỏi thụt thò)…
 TIGHT_SHRINK = 0.08  # …chỗ chật thì chỉ 8%: chữ to, dòng ngắn theo dáng bóng (tách cả từ ghép) hơn là chữ bé dòng đều
 SHRINK_COST = 1.2  # …nếu điểm dáng tốt lên hơn 0,12 cho mỗi 10% nhỏ đi
 SHRINK_FLOOR = 0.8  # …và không nhỏ hơn 80% cỡ chuẩn của trang (đã chật sẵn dưới mức đó thì không thu thêm)
 SPLIT_SHRINK = 0.3  # cỡ lớn nhất phải cắt đôi từ ghép: được nhỏ tới 30% để giữ nguyên từ
 SCRIPT_SIZE = 0.583  # cỡ chỉ số trên/dưới so với cỡ chữ (mặc định Photoshop 58.3%)
+ANCHOR_MARGIN = 0.3  # đặt theo chỗ chữ gốc: nét chữ vẫn cách mép lòng bóng ≥ 0,3 cỡ chữ
+INK_STEP = 2  # bề ngang mỗi dải dọc khi đo nét chữ để căn giữa trong bóng (px)
 SCRIPT_POS = 0.333  # độ nâng/hạ chỉ số trên/dưới (mặc định Photoshop 33.3%)
 
 
@@ -169,10 +184,10 @@ class _Metrics:
         self.lh = style.leading if style.leading > 0 else auto
 
     def adv(self, s: str) -> float:
-        if SHY in s or PARA in s:
+        if SHY in s or PARA in s or SYL in s or JOIN in s:
             # Đo như khi hiển thị. Đo thẳng dấu đánh dấu thì font không có glyph, Qt nạp mọi font hệ thống để tìm
             # font thay thế (~150MB RAM).
-            s = s.replace(PARA, "").replace(SHY + " ", "-").replace(SHY, "-")
+            s = s.replace(PARA, "").replace(JOIN + " ", "").replace(JOIN, "").replace(SYL + " ", "").replace(SYL, "-").replace(SHY + " ", "-").replace(SHY, "-")
         return self.fm.horizontalAdvance(s) * self.hs
 
 
@@ -226,8 +241,21 @@ def layout(text: str, style: TextStyle, w: float, h: float):
     placed = _PLACED.get((text, key, int(w), int(h)))
     if placed:  # khung do place_in_shape dàn theo dáng bóng
         return _Metrics(style, placed[0]), list(placed[1])
-    _, size, lines = _layout(text, key, int(w), int(h))
+    _, size, lines = _last_resort(style, lambda st: _layout(text, astuple(st), int(w), int(h)), lambda r: r[1])
     return _Metrics(style, size), list(lines)
+
+
+def _last_resort(style: TextStyle, solve, size_of):
+    """Ngắt giữa âm tiết (style.hyphenate) chỉ là cách cuối, như người type: dàn không ngắt trước; chữ vẫn ≥
+    HYPHEN_BELOW cỡ chuẩn thì giữ, không thì dàn lại có ngắt và lấy nếu chữ to hơn."""
+    if not style.hyphenate:
+        return solve(style)
+    plain = solve(replace(style, hyphenate=False))
+    cap = style.size if style.size > 0 else style.max_size
+    if plain is not None and (not cap or size_of(plain) >= HYPHEN_BELOW * cap):
+        return plain
+    cut = solve(style)
+    return cut if cut is not None and (plain is None or size_of(cut) > size_of(plain)) else plain
 
 
 @lru_cache(maxsize=20000)
@@ -239,14 +267,14 @@ def _layout(text: str, style_key: tuple, w: int, h: int):
     first_w = max(1.0, iw - style.indent_first)
 
     # Từ có gạch nối ("Tanaka-kun") được xuống dòng ngay sau dấu gạch ("Tanaka- / kun") khi thiếu chỗ.
-    flow = "\n".join(" ".join(_words(para.replace(SOFT_BREAK, " "))) for para in text.split("\n"))
+    flow = "\n".join(" ".join(_words(para.replace(SOFT_BREAK, " "), style.hyphenate)) for para in text.split("\n"))
 
     def fit(size: int):
         m = _Metrics(style, size)
         lines = [(_join([ln]), a, b) for ln, a, b in wrap(flow, m, iw, first_w, style.hyphenate)]
         widest = max((m.adv(ln) for ln, _, _ in lines), default=0)
         # Không cắt đôi một từ (vd "Chu|yện"): từ dài nhất phải vừa một dòng.
-        longest_word = max((m.adv(_join([wd])) for wd in _words(text)), default=0)
+        longest_word = max((m.adv(_join([wd])) for wd in _words(text, style.hyphenate)), default=0)
         ok = _block_height(lines, m, style) <= ih and widest <= iw + 0.5 and longest_word <= first_w + 0.5
         return ok, size, tuple(lines)
 
@@ -309,6 +337,7 @@ def clear_caches() -> None:
     _break.cache_clear()
     _segments.cache_clear()
     _PLACED.clear()
+    _place.cache_clear()
 
 
 def _fit(style: TextStyle, size: int) -> int:
@@ -319,11 +348,13 @@ def _fit(style: TextStyle, size: int) -> int:
 
 
 def _profile(n: int, shape: str) -> list[float]:
-    """Bề ngang mong muốn của từng dòng so với dòng dài nhất: bo tròn thì dòng giữa dài, càng ra mép càng ngắn."""
-    if shape != "round" or n < 3:
+    """Bề ngang mong muốn của từng dòng so với dòng dài nhất: bo tròn thì thân khối dài, dòng đầu và cuối ngắn hơn."""
+    if shape != "round" or n < 2:
         return [1.0] * n
+    p = ROUND_SHAPE.get(n) or (80,) + (86,) * (n - 2) + (67,)
     r = n / 2
-    return [(1 - ((i + .5 - r) / r) ** 2) ** ROUND_POWER for i in range(n)]
+    diamond = [(1 - ((i + .5 - r) / r) ** 2) ** ROUND_POWER if n >= 3 else 1.0 for i in range(n)]
+    return [ROUND_MIX * v / max(p) + (1 - ROUND_MIX) * d for v, d in zip(p, diamond)]
 
 
 def raw_text(editor) -> str:
@@ -336,17 +367,72 @@ def split_lines(text: str) -> list[str]:
     return re.split("[\n" + SOFT_BREAK + "]", text)
 
 
-def _words(text: str) -> tuple[str, ...]:
+_VOWELS = set("aeiouyAEIOUY")
+_ONSETS = {"bl", "br", "ch", "cl", "cr", "dr", "fl", "fr", "gl", "gr", "pl", "pr", "ph", "sc", "sh", "sk", "sl", "sm",
+           "sn", "sp", "st", "sw", "th", "tr", "tw", "wh", "wr"}
+_DIGRAPHS = {"ch", "ck", "gh", "ng", "ph", "qu", "sh", "th", "wh"}
+_SUFFIXES = ("ing", "tion", "sion", "ment", "ness", "able", "ible", "less", "ful", "ous", "ive", "ly")
+
+
+def syllable_breaks(word: str) -> list[int]:
+    """Chỗ ngắt được trong một từ tiếng Anh dài (≥ HYPHEN_MIN chữ, chỉ chữ cái Latin không dấu): trước hậu tố
+    ("match|ing", "especial|ly") và giữa hai phụ âm khi phần sau mở đầu được một âm tiết ("recom|mend",
+    "girl|friend"). Mỗi bên còn ≥ 3 chữ. Từ tiếng Việt (có dấu) và từ ngắn: không ngắt."""
+    core = re.match(r"[A-Za-z]+", word)
+    if not core or len(core.group()) < HYPHEN_MIN:
+        return []
+    w = core.group()
+    low = w.lower()
+    if w[0].isupper() and not w.isupper() and not any(low.endswith(s) or low.endswith(s + "s") for s in _SUFFIXES):
+        return []  # tên riêng ("Masashi", "Ryouta"): không ngắt; chữ đầu câu có đuôi tiếng Anh ("Shopping") thì được
+    out, suffix = set(), set()
+    for suf in _SUFFIXES:
+        for end in (suf, suf + "s"):  # cả số nhiều ("orna|ments")
+            if low.endswith(end) and len(w) - len(end) >= 3:
+                suffix.add(len(w) - len(end))
+    out |= suffix
+    for i in range(3, len(w) - 2):
+        a, b = low[i - 1], low[i]
+        pair, nxt = low[i:i + 2], low[i + 1]
+        if a + b in _DIGRAPHS or (a == "t" and pair == "ch") or (b in "lr" and a + b in _ONSETS):
+            continue  # không tách hai chữ đọc thành một âm ("t|h", "c|k", "mat|ch") hay cụm "cr", "fl"…
+        if a in _VOWELS:
+            if i >= 4 and b not in _VOWELS and pair in _ONSETS and low[i + 2:i + 3] in _VOWELS:
+                out.add(i)  # "some|thing"
+            continue
+        if b in _VOWELS or not any(c in _VOWELS for c in low[:i]):
+            continue
+        if nxt in _VOWELS or pair in _ONSETS:
+            out.add(i)
+    kept: list[int] = []
+    for c in sorted(out):  # mỗi mảnh ≥ 3 chữ
+        if c - (kept[-1] if kept else 0) >= 3 and len(w) - c >= (2 if c in suffix else 3):
+            kept.append(c)
+    return kept
+
+
+def _words(text: str, hyphenate: bool = False) -> tuple[str, ...]:
     """Các từ để ngắt dòng; từ có gạch nối giữa hai chữ ("Tanaka-kun") tách thành hai phần ngắt được.
     Nhiều câu dịch gộp chung bóng (cách nhau SOFT_BREAK) thì từ cuối mỗi câu mang dấu PARA: cả bóng dàn thành một
     khối, chỗ giữa hai câu chỉ là chỗ nên xuống dòng (người dịch hay tách một lời thoại theo cột chữ Nhật:
-    "không tệ nhỉ" / "ha~" / "sư phụ này, …")."""
+    "không tệ nhỉ" / "ha~" / "sư phụ này, …"). `hyphenate`: từ tiếng Anh dài còn được ngắt giữa âm tiết (SYL, cuối
+    dòng thành "-") – phạt nặng, chỉ dùng khi bóng hẹp mà không ngắt thì chữ phải bé hẳn."""
     out = []
     for para in text.split(SOFT_BREAK):
         words = []
         for word in para.split():
+            # Nói lắp ("Th-thank", "E- em"): không ngắt dòng giữa chữ lắp và từ, chỉ ngắt ở gạch nối của tên ghép.
             parts = re.split(r"(?<=\w)-(?=\w)", word)
-            words += [p + SHY for p in parts[:-1]] + [parts[-1]]
+            if len(parts) > 1 and len(parts[0]) <= 3 and parts[1].lower().startswith(parts[0].lower()):
+                parts = ["-".join(parts[:2])] + parts[2:]
+            lead = re.match(r"^(\.{2,}|…+)(?=\w)", parts[0])  # "...Because": được xuống dòng sau "..."
+            if lead and len(parts[0]) > lead.end() + 2:
+                words.append(lead.group() + JOIN)
+                parts[0] = parts[0][lead.end():]
+            for n, p in enumerate(parts):
+                cuts = syllable_breaks(p) if hyphenate else []
+                pieces = [p[a:b] for a, b in zip([0] + cuts, cuts + [len(p)])]
+                words += [s + SYL for s in pieces[:-1]] + [pieces[-1] + (SHY if n < len(parts) - 1 else "")]
         if words and out:
             out[-1] += PARA
         out += words
@@ -355,7 +441,8 @@ def _words(text: str) -> tuple[str, ...]:
 
 def _join(words) -> str:
     """Ghép các từ thành một dòng: phần của từ có gạch nối nối lại bằng "-", cuối dòng thì giữ "-"."""
-    return " ".join(words).replace(PARA, "").replace(SHY + " ", "-").replace(SHY, "-")
+    return (" ".join(words).replace(PARA, "").replace(JOIN + " ", "").replace(JOIN, "").replace(SYL + " ", "").replace(SYL, "-").replace(SHY + " ", "-")
+            .replace(SHY, "-"))
 
 
 @lru_cache(maxsize=2048)
@@ -384,6 +471,10 @@ def _break(words: tuple[str, ...], style_key: tuple, size: int, caps: tuple[floa
     for j in range(1, k):
         if words[j - 1].endswith(PARA):  # giữa hai câu dịch gộp chung bóng
             after[j] = -(BREAK_PARA * W) ** 2
+        elif w[j - 1].endswith(JOIN):
+            after[j] = (BREAK_PARTICLE * W) ** 2
+        elif w[j - 1].endswith(SYL):
+            after[j] = (BREAK_SYLLABLE * W) ** 2
         elif w[j - 1].endswith(SHY):
             after[j] = (BREAK_HYPHEN * W) ** 2
         elif joined(w[j - 1], w[j]):
@@ -433,6 +524,8 @@ def _score(style: TextStyle, seg, res, lh: float, want: float, k: int, words=(),
         score += 2 * dent / widest
         # …và cân hai đầu: dòng trên và dòng dưới tương ứng dài gần bằng nhau (không chỉ một chữ trơ trọi ở đỉnh).
         pairs = n // 2
+        # Một chữ trơ trọi ở dòng đầu ("Cứ / như này thì / …"): dòng đầu tay ~80% dòng dài nhất.
+        score += LONE_TOP_WEIGHT * max(0.0, LONE_TOP - widths[0] / widest)
         score += SYMMETRY_WEIGHT * sum(abs(widths[i] - widths[n - 1 - i]) for i in range(pairs)) / (pairs * widest)
     # Cắt đôi từ ghép ("sư | phụ", "không | tệ"): phạt riêng từng chỗ, để thà nhỏ chữ chút còn hơn cắt từ. Câu
     # 2–3 từ trong bóng hẹp thì không còn chỗ nào khác để ngắt (bản type tay: "THẾ / NHƯNG / …").
@@ -476,7 +569,7 @@ def _shape_lines(text: str, style: TextStyle, style_key: tuple, size: int, iw: f
     cách ngắt thường: văn bản có xuống dòng tay, căn trái/phải, dàn đều, thụt dòng đầu, từ dài hơn cả dòng)."""
     if not _shapeable(text, style):
         return None
-    words = _words(text)
+    words = _words(text, style.hyphenate)
     k = len(words)
     if k < 2:
         return None
@@ -489,7 +582,7 @@ def _shape_lines(text: str, style: TextStyle, style_key: tuple, size: int, iw: f
     most = k if style.shape == "even" else max(n_lo, (2 * k + 2) // 3)  # ô vuông cao: được mỗi dòng một từ
     while n_hi < min(k, most) and (n_hi + 1) * lh <= ih + .5:
         n_hi += 1  # thêm dòng khi khung còn chỗ, nhưng trung bình mỗi dòng vẫn ≥ 1,5 từ
-    want = math.log(max(iw, 1) / max(ih, 1))
+    want = math.log(max(iw, 1) / max(ih, 1)) + BLOCK_FLAT
     best = None
     for n in range(n_lo, n_hi + 1):
         res = _break(words, style_key, size, (1e9,) * n)
@@ -508,12 +601,14 @@ def _shape_lines(text: str, style: TextStyle, style_key: tuple, size: int, iw: f
 _PLACED: dict[tuple, tuple] = {}
 
 
-def place_in_shape(text: str, style: TextStyle, shape) -> tuple[int, int, int, int] | None:
+def place_in_shape(text: str, style: TextStyle, shape, anchor=None) -> tuple[int, int, int, int] | None:
     """Dàn chữ theo đúng hình lòng bóng `shape` = (cx, cy, ((y, trái, phải), …)) (xem clean.text_area):
-    mỗi dòng được rộng bằng lòng bóng ở độ cao của nó, khối chữ đặt chính giữa lòng bóng.
+    mỗi dòng được rộng bằng lòng bóng ở độ cao của nó, khối chữ đặt chính giữa lòng bóng – hoặc theo tâm chữ gốc
+    `anchor` (x, y) nếu có, miễn còn nằm gọn trong lòng bóng.
     Trả về khung chữ (để vẽ/xuất như khung thường) hoặc None nếu không dàn được theo dáng."""
     key = astuple(style)
-    res = _place(text, key, shape)
+    at = None if anchor is None else (round(anchor[0]), round(anchor[1]))
+    res = _last_resort(style, lambda st: _place(text, astuple(st), shape, at), lambda r: r[1])
     if res is None:
         return None
     rect, size, lines = res
@@ -524,10 +619,10 @@ def place_in_shape(text: str, style: TextStyle, shape) -> tuple[int, int, int, i
 
 
 @lru_cache(maxsize=4096)
-def _place(text: str, style_key: tuple, shape):
+def _place(text: str, style_key: tuple, shape, anchor=None):
     style = TextStyle(*style_key)
     text = prepare(text, style)
-    words = _words(text)
+    words = _words(text, style.hyphenate)
     if not words or not _shapeable(text, style) or style.indent_left or style.indent_right:
         return None
     cx, cy, rows = shape
@@ -539,7 +634,7 @@ def _place(text: str, style_key: tuple, shape):
     bh = len(half)
     pad = 1.0 + style.stroke_width
     k = len(words)
-    want = math.log(max(bw, 1) / max(bh, 1))
+    want = math.log(max(bw, 1) / max(bh, 1)) + BLOCK_FLAT
     # Bề ngang: mỗi dòng chỉ chiếm ~fill lòng bóng ở độ cao của nó. Bề cao: chỉ chừa lề nhỏ (thu cả chiều
     # dọc thì bóng thấp / bóng bầu dục bị bóp đầu đuôi, chữ teo lại).
     vpad = bh * BUBBLE_VPAD
@@ -638,7 +733,7 @@ def _place(text: str, style_key: tuple, shape):
     lines = _lines_of(words, cuts)
     seg = _segments(words, style_key, size)
     widest = max(seg[a][b] for a, b in zip(cuts, cuts[1:]))
-    x, y = _balance(_ink_boxes(lines, m, style), rows, cx, cy)
+    x, y = _balance(_ink_boxes(lines, m, style), rows, cx, cy, anchor, size)
     # Khung chữ đủ rộng cho dòng dài nhất sau khi trừ lề (style.padding) và chừa thêm chút cho Photoshop đo lệch.
     w = int(math.ceil(widest / (1 - 2 * style.padding))) + 6
     h = int(math.ceil(_block_height(lines, m, style) / (1 - 2 * style.padding))) + 4
@@ -647,22 +742,40 @@ def _place(text: str, style_key: tuple, shape):
 
 
 def _ink_boxes(lines, m: _Metrics, style: TextStyle):
-    """Nét chữ thật của từng dòng (trái, phải, trên, dưới), toạ độ so với tâm khối chữ – đúng như draw_text vẽ.
-    Khác khung dòng: chữ IN HOA có khoảng trống trên đầu (chỗ cho dấu) và dưới chân (phần đuôi chữ thường)."""
+    """Nét chữ thật (trái, phải, trên, dưới) theo từng dải dọc INK_STEP px của mỗi dòng, toạ độ so với tâm khối chữ –
+    đúng như draw_text vẽ. Khác khung dòng: chữ IN HOA có khoảng trống trên đầu (chỗ cho dấu) và dưới chân; đo theo
+    nét để dấu thanh giữa dòng không bị tính như phủ tới tận hai đầu dòng (khối có dòng rộng ở trên bị đẩy lệch)."""
     top = -_block_height(lines, m, style) / 2
     scale = QTransform(m.hs, 0, 0, m.vs, 0, 0)
     out = []
     for i, (ln, _, _) in enumerate(lines):
-        r = scale.mapRect(_line_path(ln, m).boundingRect())
+        path = scale.map(_line_path(ln, m))
+        r = path.boundingRect()
+        if r.isEmpty():
+            continue
         left = -m.adv(ln) / 2
         baseline = top + i * m.lh + (m.lh - m.fm.height() * m.vs) / 2 + m.fm.ascent() * m.vs - style.baseline_shift
-        out.append((left + r.left(), left + r.right(), baseline + r.top(), baseline + r.bottom()))
+        w, h = int(math.ceil(r.width())) + 2, int(math.ceil(r.height())) + 2
+        img = QImage(w, h, QImage.Format_Grayscale8)
+        img.fill(0)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.translate(1 - r.left(), 1 - r.top())
+        p.fillPath(path, QColor(255, 255, 255))
+        p.end()
+        ink = np.frombuffer(img.constBits(), np.uint8, img.sizeInBytes()).reshape(h, img.bytesPerLine())[:, :w] > 60
+        x0, y0 = left + r.left() - 1, baseline + r.top() - 1
+        for c in range(0, w, INK_STEP):
+            rows = np.nonzero(ink[:, c:c + INK_STEP].any(1))[0]
+            if len(rows):
+                out.append((x0 + c, x0 + c + INK_STEP, y0 + rows[0], y0 + rows[-1] + 1))
     return out
 
 
-def _balance(ink, rows, cx: float, cy: float):
+def _balance(ink, rows, cx: float, cy: float, anchor=None, size: float = 0.0):
     """Căn giữa theo mắt nhìn: dời khối chữ cho khoảng hở từ nét chữ tới mép lòng bóng bằng nhau hai bên trái/phải
-    và trên/dưới (tâm hình học của bóng mây, bóng gai, bóng méo không phải chỗ mắt thấy là giữa)."""
+    và trên/dưới (tâm hình học của bóng mây, bóng gai, bóng méo không phải chỗ mắt thấy là giữa). Có `anchor` (tâm
+    chữ Nhật gốc) thì rồi dời khối chữ về đó trong giới hạn lòng bóng."""
     y0 = rows[0][0]
     span = {y: (left, right) for y, left, right in rows}
     tops: dict[int, int] = {}
@@ -699,7 +812,16 @@ def _balance(ink, rows, cx: float, cy: float):
         x, y = x + dx, y + dy
     g = gaps(x, y)
     if g is None or min(g) < min(min(start), 0):
-        return cx, cy  # cân xong mà lại chạm mép: giữ tâm cũ
+        x, y, g = cx, cy, start  # cân xong mà lại chạm mép: giữ tâm cũ
+    if anchor is not None:
+        # Đặt theo chỗ chữ Nhật gốc: dời về tâm chữ gốc, xa nhất mà nét chữ vẫn cách mép lòng bóng ≥ ANCHOR_MARGIN
+        # cỡ chữ (hoặc khoảng hở đã có, nếu bóng chật hơn thế).
+        margin = min(min(g), ANCHOR_MARGIN * size)
+        for t in (1, .75, .5, .25):
+            nx, ny = x + t * (anchor[0] - x), y + t * (anchor[1] - y)
+            moved = gaps(nx, ny)
+            if moved is not None and min(moved) >= margin - .5:
+                return nx, ny
     return x, y
 
 
@@ -708,7 +830,7 @@ def _quality(text: str, style: TextStyle, style_key: tuple, size: int, lines, wa
     hay không: để so các khung với nhau."""
     if not _shapeable(text, style) or len(lines) < 2:
         return 0.0
-    words = _words(text)
+    words = _words(text, style.hyphenate)
     cuts, at = [0], 0
     for ln, _, _ in lines:
         at += len(_words(ln))

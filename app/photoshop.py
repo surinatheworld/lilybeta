@@ -162,7 +162,7 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
     if redrawn:
         page.set_redrawn(redrawn)
     plan = assign_lines(page, page.regions, lines)
-    if not plan:
+    if not plan and not page.regions:
         raise ValueError("Không nhận diện được khung chữ. Hãy dùng ảnh rõ nét hơn.")
     apply_plan(page, plan, TextStyle())
     translated = [r for r in page.regions if r.text.strip()]

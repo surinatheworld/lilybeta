@@ -618,12 +618,12 @@ var LilyzonoPS = (function () {
                 text.font = layer.font;
                 // Preserve the document's resolution: typography is measured in pixels.
                 text.size = new UnitValue(layer.size * 72 / doc.resolution, "pt");
-                text.useAutoLeading = false;
-                text.leading = new UnitValue(layer.leading * 72 / doc.resolution, "pt");
+                text.useAutoLeading = true;  // khoảng cách dòng luôn Auto (120%)
+                text.autoLeadingAmount = 120;
                 text.fauxBold = layer.faux_bold; text.fauxItalic = layer.faux_italic;
                 text.autoKerning = AutoKernType[layer.kerning || "OPTICAL"];
                 text.justification = Justification[layer.justification];
-                text.antiAliasMethod = AntiAlias.SMOOTH;
+                text.antiAliasMethod = AntiAlias[layer.antialias] || AntiAlias.STRONG;
                 var color = new SolidColor(); color.rgb.hexValue = layer.color; text.color = color;
                 // Paragraph dimensions use type units and otherwise interpret
                 // UnitValue("px") at 72 ppi, widening the box in 300 ppi files.

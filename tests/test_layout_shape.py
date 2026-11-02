@@ -193,13 +193,15 @@ class BubbleShapeTests(unittest.TestCase):
         x1, y1, x2, y2 = place_in_shape(text, style, shape)
         self.assertGreaterEqual(layout(text, style, x2 - x1, y2 - y1)[0].size, 15)
 
-    def test_round_block_is_balanced_top_and_bottom(self):
-        _, shape = text_area(_bubble(tail=False), (180, 150, 220, 210))
+    def test_round_block_has_no_lone_word_on_top(self):
+        # Khối typeset tay giữ thân gần phẳng: dòng đầu ~80% dòng dài nhất, không vót nhọn thành "Cứ / như này thì / …".
+        # (Bóng hẹp đến mức phải thu chữ mới tránh được thì giữ chữ to: ưu tiên cỡ chữ.)
+        _, shape = text_area(_bubble(tail=False, axes=(130, 150)), (180, 150, 220, 210))
         style = TextStyle(max_size=24)
         x1, y1, x2, y2 = place_in_shape(NINE, style, shape)
         m, lines = layout(NINE, style, x2 - x1, y2 - y1)
         widths = _widths(lines, m)
-        self.assertLess(abs(widths[0] - widths[-1]), max(widths) * .35, lines)
+        self.assertGreater(widths[0], max(widths) * .6, lines)
 
     def test_shape_layout_is_bigger_than_a_rectangle_in_an_oval(self):
         page = Page.__new__(Page)

@@ -157,9 +157,8 @@ class ScriptTextMatchingTests(unittest.TestCase):
         placed = {tuple(r.box): [l.split("⟧")[1] for l in ls] for r, ls in plan if not r.orphan}
         self.assertEqual(placed, {(100, 50, 160, 200): ["Are all those restaurants!?"],
                                   (600, 50, 660, 200): ["Glorious ornaments...!"]})
-        orphans = [ls for r, ls in plan if r.orphan]
-        self.assertEqual(len(orphans), 1)  # "Yo." thành khung CHƯA ĐẶT, không nhét vào bóng không có trong script
-        self.assertTrue(orphans[0][0].endswith("Yo."))
+        # "Yo." không khớp vùng nào: bỏ qua, không nhét vào bóng không có trong script, không tạo khung CHƯA ĐẶT.
+        self.assertFalse([ls for r, ls in plan if r.orphan])
 
     def test_reading_is_compared_loosely(self):
         from app.core.ocr import coverage
