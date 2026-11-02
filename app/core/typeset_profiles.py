@@ -7,6 +7,7 @@ import re
 import cv2
 import numpy as np
 
+from .docs import TAG
 from .typeset import SOFT_BREAK, TextStyle
 
 GAI_BANG = "gai_bang"
@@ -75,10 +76,15 @@ def flustered(text: str) -> bool:
     return bool(_STUTTER.search(text or ""))
 
 
-def split_mark(text: str) -> tuple[str, str]:
-    """(loại theo dấu bao câu, câu đã bỏ dấu): “Hi!” → ("normal", "Hi!"); (Hm…) → ("thought", "Hm…"); không dấu → ("", câu)."""
+def split_mark(text: str, brackets: bool = True) -> tuple[str, str]:
+    """(loại, câu đã bỏ dấu). Nhãn cột Type của script: ⟦cute⟧Hi → ("!cute", "Hi") – "!" là loại chắc chắn.
+    Dấu bao câu (`brackets`, bộ Ren AI Flag Eng): “Hi!” → ("normal", "Hi!"); (Hm…) → ("thought", "Hm…").
+    Không có gì → ("", câu)."""
     s = text.strip()
-    if len(s) >= 2 and s[0] in MARKS:
+    tag = TAG.match(s)
+    if tag:
+        return ("!" + tag.group(1) if tag.group(1) else ""), s[tag.end():].strip()
+    if brackets and len(s) >= 2 and s[0] in MARKS:
         close, kind = MARKS[s[0]]
         inner = s[1:-1] if s.endswith(close) else s[1:]
         if inner.strip():
@@ -86,9 +92,10 @@ def split_mark(text: str) -> tuple[str, str]:
     return "", text
 
 
-def take_marks(region) -> None:
-    """Ren AI Flag Eng: bỏ dấu “ ” / ( ) / [ ] khỏi câu dịch, nhớ loại khung chúng báo (region.marked)."""
-    parts = [split_mark(p) for p in (region.text or "").split(SOFT_BREAK)]
+def take_marks(region, brackets: bool = True) -> None:
+    """Bỏ nhãn loại của script (và dấu “ ” / ( ) / [ ] nếu `brackets`) khỏi câu dịch, nhớ loại khung chúng báo
+    (region.marked)."""
+    parts = [split_mark(p, brackets) for p in (region.text or "").split(SOFT_BREAK)]
     kinds = {k for k, _ in parts}
     if kinds == {""}:
         return
@@ -110,6 +117,9 @@ def _ren_kind(page, region) -> str:
         cache[key] = (bold, shape)
     bold, shape = cache[key]
     marked = getattr(region, "marked", "")
+    if marked.startswith("!") and marked[1:] in REN_FONTS:
+        return marked[1:]  # loại ghi trong cột Type của script: theo đúng script
+    marked = marked.lstrip("!")
     if marked == "square" or (not marked and shape == "square"):
         return "square"
     if marked == "thought" or (not marked and shape == "thought"):
@@ -271,6 +281,9 @@ def region_kind(page, region) -> str:
     override = getattr(region, "typeset_kind", "auto")
     if override in fonts:
         return override
+    marked = getattr(region, "marked", "")
+    if marked.startswith("!") and marked[1:] in fonts:
+        return marked[1:]  # loại ghi trong cột Type của script: theo đúng script, kể cả vùng tool nhận là SFX
     if region.kind == "sfx":
         return "sfx"
     if getattr(region, "orphan", False):
@@ -294,8 +307,7 @@ def profile_style(page, region, base: TextStyle) -> TextStyle:
     style = base.copy()
     profile = getattr(page, "typeset_profile", "")
     if profile in PROFILES:
-        if profile == REN_AI:
-            take_marks(region)
+        take_marks(region, profile == REN_AI)
         kind = region_kind(page, region)
         style.family = fonts_for(profile)[kind]
         style.style_name = ""

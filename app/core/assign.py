@@ -12,6 +12,8 @@ import math
 import cv2
 import numpy as np
 
+from .docs import TAG, source_length
+
 MAX_LINES_PER_REGION = 3
 MERGE_PENALTY = 1.2  # mỗi câu thêm vào cùng một vùng
 SKIP_COST = 2.5  # bỏ qua một vùng chữ bình thường
@@ -23,6 +25,20 @@ DROP_COST = 3.0  # để riêng một câu (layer "CHƯA ĐẶT") thay vì đẩ
 TINY_INK = .08  # bóng chỉ có dấu ("…", "!", "?"): nét < 8% một bóng thoại điển hình của trang
 TINY_WORDS_PENALTY = 3.0  # câu nhiều từ rơi vào bóng chỉ có dấu
 BIG_SFX = .5  # SFX nhiều nét cỡ một bóng thoại (biển, chữ in trên tranh): thường được dịch, khó bỏ qua
+
+
+GLYPH_ODD = 2.5  # cỡ ký tự đo được > 2,5 lần cỡ thường của trang: đo sai
+PLAIN_KINDS = {"normal", "thought", "square"}  # loại câu (cột Type của script) ít khi là chữ rời trên tranh…
+PLAIN_IN_SFX = 1.5  # …phạt mỗi câu như vậy rơi vào vùng SFX
+
+
+def _kind(line: str) -> str:
+    """Loại câu ghi trong nhãn script ("" nếu không có)."""
+    m = TAG.match(line)
+    return m.group(1) if m else ""
+def _length(line: str) -> int:
+    """Độ dài để so với lượng chữ gốc: số ký tự câu gốc ghi trong script nếu có, không thì độ dài câu dịch."""
+    return max(1, source_length(line) or len(line.strip()))
 
 
 def _footer_strip(page, r) -> bool:
@@ -107,8 +123,14 @@ def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str
     sizes = [glyph_size(page, r) if r.kind != "sfx" else 0. for r in regions]  # SFX đã có trần độ dài riêng
     known = [g for g in sizes if g > 0]
     g0 = float(np.median(known)) if known else 1.
+    # Cỡ ký tự đo ra lớn bất thường (chữ in nghiêng trên băng rôn, chữ uốn lượn): đo sai, coi như không đo được.
+    sizes = [0. if g > GLYPH_ODD * g0 else g for g in sizes]
     ink = [v * (g0 / min(max(g, .5 * g0), 2.5 * g0)) ** 2 if g > 0 else v for v, g in zip(raw_ink, sizes)]
     chars = [max(1, len(s.strip())) for s in lines]
+    # Script có cột chữ gốc (tiếng Nhật): so lượng nét với độ dài câu gốc thay cho câu dịch – sát hơn nhiều
+    # (một bóng không có trong script thì lệch hẳn, được bỏ qua thay vì đẩy lệch cả trang).
+    if all(source_length(s) for s in lines):
+        chars = [_length(s) for s in lines]
     # Hệ số đổi lượng chữ Nhật → số ký tự tiếng Việt, ước lượng trên cả trang.
     # Decorative SFX and a large untranslated footer can otherwise shrink the
     # estimate enough to pair a two-word SFX translation with a thought balloon.
@@ -119,6 +141,7 @@ def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str
     raw_text_ink = float(np.median([raw_ink[i] for i, r in enumerate(regions) if r.kind != "sfx"] or raw_ink))
     big = [r.kind == "sfx" and raw_ink[i] >= BIG_SFX * raw_text_ink for i, r in enumerate(regions)]
     clusters = [text_clusters(page, r, sizes[i]) if r.kind != "sfx" else 1 for i, r in enumerate(regions)]
+
     for i, r in enumerate(regions):
         if big[i]:  # biển / chữ in cỡ một bóng thoại: chấm như chữ thường
             skip[i] = max(skip[i], skip_cost(page, r) * 2.4)  # bỏ hệ số giảm của SFX (×0.25 → ×0.6)
@@ -137,10 +160,13 @@ def assign_lines(page, regions, lines: list[str]) -> list[tuple[object, list[str
             # Bản dịch SFX ngắn ("Vụt", "Ôm chặt") dù chữ gốc vẽ to: độ dài kỳ vọng có trần; câu thoại hiếm khi
             # rơi vào SFX. SFX nhỏ (dấu "!!", vạch hiệu ứng) ít khi được dịch: ưu tiên SFX lớn.
             sfit = math.log((got + 6) / (min(exp, SFX_MAX_CHARS) + 6)) ** 2
+            # Script ghi loại câu: thoại / suy nghĩ / dẫn truyện thường hiếm khi là chữ rời trên tranh (chữ ngoài khung,
+            # hét, dễ thương, run rẩy thì hay gặp).
+            plain = PLAIN_IN_SFX * sum(_kind(s) in PLAIN_KINDS for s in lines[a:b])
             if big[i]:  # SFX lớn hoặc biển / chữ in trên tranh: câu ngắn kiểu SFX hay cụm từ đều hợp
-                return min(sfit * 4, fit) + 0.4
+                return min(sfit * 4, fit) + 0.4 + plain
             space = _space_penalty(lines[a:b])
-            cost = (sfit * 4 + (b - a - 1) * MERGE_PENALTY + 0.4 + space
+            cost = (sfit * 4 + (b - a - 1) * MERGE_PENALTY + 0.4 + space + plain
                     + (0.8 * max(0.0, 1 - ink[i] / text_ink) if space else 0.0))
         return cost
 
@@ -221,7 +247,7 @@ def _swap_pass(plan, regions, ink, alpha):
     idx = {id(r): i for i, r in enumerate(regions)}
 
     def fit(r, ls):
-        got = sum(len(s.strip()) for s in ls)
+        got = sum(_length(s) for s in ls)
         return math.log((got + 6) / (alpha * ink[idx[id(r)]] + 6)) ** 2
 
     words = [w.strip(".,!?…~\"'“”‘’()") for _, ls in plan for s in ls for w in s.split()]
@@ -294,7 +320,7 @@ def _split_region(page, region, lines: list[str], vertical: bool):
     if len(bands) < k:
         return None
     ink = [float(prof[a:b].sum()) for a, b in bands]
-    chars = [max(1, len(s.strip())) for s in lines]
+    chars = [_length(s) for s in lines]
     best, best_err = None, 1e9
     import itertools
 
@@ -325,7 +351,7 @@ def apply_plan(page, plan, style=None) -> int:
     Trả về số vùng có chữ."""
     from .page import new_uid
     from .typeset import SOFT_BREAK
-    from .typeset_profiles import profile_style
+    from .typeset_profiles import REN_AI, profile_style, take_marks
 
     n, prev = 0, None
     for r, ls in plan:
@@ -347,6 +373,7 @@ def apply_plan(page, plan, style=None) -> int:
             targets = [(r, ls)]
         for reg, lines in targets:
             reg.text = SOFT_BREAK.join(lines)  # một bóng nhiều câu: dàn thành một khối
+            take_marks(reg, getattr(page, "typeset_profile", "") == REN_AI)  # nhãn loại của script không type ra
             if style is not None:
                 reg.style = profile_style(page, reg, style)
             n += 1

@@ -13,17 +13,23 @@ import tempfile
 import cv2
 import numpy as np
 
-from .fonts import postscript_name
+from functools import lru_cache
+
+from .fonts import files_for, postscript_name
 from .typeset import SOFT_BREAK, text_block
+
+# Font ký hiệu có sẵn trên Windows: ký tự font chính không có (♡ ♪ — …) mượn font này, Photoshop không tự mượn.
+SYMBOL_FONTS = ("Segoe UI Symbol", "MS Gothic")
 
 JUSTIFY = {("left", ""): "LEFT", ("center", ""): "CENTER", ("right", ""): "RIGHT",
            "left": "LEFTJUSTIFIED", "center": "CENTERJUSTIFIED", "right": "RIGHTJUSTIFIED", "all": "FULLYJUSTIFIED"}
 ANTIALIAS = {"none": "NONE", "sharp": "SHARP", "crisp": "CRISP", "strong": "STRONG", "smooth": "SMOOTH"}
 
 
-def clean_layer(page) -> np.ndarray:
-    """Ảnh BGRA của layer Redraw: những điểm đã xoá/vẽ lại (khác ảnh gốc) hoặc người dùng tự vẽ, còn lại trong suốt."""
-    diff = np.abs(page.working.astype(np.int16) - page.original).max(axis=2) > 2
+def clean_layer(page, against: np.ndarray | None = None) -> np.ndarray:
+    """Ảnh BGRA của layer Redraw: những điểm đã xoá/vẽ lại (khác ảnh gốc) hoặc người dùng tự vẽ, còn lại trong suốt.
+    `against`: so với ảnh này thay cho ảnh gốc (vd bản redraw có sẵn trong tài liệu Photoshop: chỉ lấy phần tool vẽ thêm)."""
+    diff = np.abs(page.working.astype(np.int16) - (page.original if against is None else against)).max(axis=2) > 2
     diff = (cv2.dilate(diff.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0) | (page.paint_mask > 0)
     out = cv2.cvtColor(page.working, cv2.COLOR_BGR2BGRA)
     out[..., 3] = np.where(diff, 255, 0).astype(np.uint8)
@@ -60,13 +66,53 @@ def doc_layers(doc, tmp: str) -> list[dict]:
     return out
 
 
+def fallback_runs(style, contents: str) -> tuple[list[list[int]], str]:
+    """([[từ, tới), …] các ký tự font chính không có mà font ký hiệu có, tên PostScript font ký hiệu) – vd ♡ trong
+    câu dịch tiếng Anh: không font nào của bộ Ren AI Flag Eng có ♡ / ♪."""
+    have = _charset(style.family)
+    if have is None:
+        return [], ""
+    missing = {ch for ch in contents if ch.isprintable() and not ch.isspace() and ord(ch) not in have}
+    if not missing:
+        return [], ""
+    for family in SYMBOL_FONTS:
+        symbols = _charset(family)
+        usable = {ch for ch in missing if symbols and ord(ch) in symbols}
+        if not usable:
+            continue
+        runs = []
+        for i, ch in enumerate(contents):
+            if ch in usable:
+                if runs and runs[-1][1] == i:
+                    runs[-1][1] = i + 1
+                else:
+                    runs.append([i, i + 1])
+        return runs, postscript_name(family)
+    return [], ""
+
+
+@lru_cache(maxsize=64)
+def _charset(family: str) -> frozenset | None:
+    """Các ký tự font có (bảng cmap trong file font; Qt báo nhầm là có ♡ với MTO Dom). None nếu không đọc được."""
+    from fontTools.ttLib import TTFont
+
+    for path in files_for(family):
+        try:
+            return frozenset(TTFont(path, fontNumber=0, lazy=True).getBestCmap() or ())
+        except Exception:  # noqa: BLE001 - file font lạ: bỏ qua, không mượn font
+            continue
+    return None
+
+
 def text_spec(r) -> dict:
     """Thông số lớp chữ của một vùng (toạ độ px của ảnh)."""
     st = r.effective_style
     x1, y1, x2, y2 = r.text_rect
     b = text_block(r.text, st, (x1, y1, x2, y2))
     just = JUSTIFY[st.justify] if st.justify else JUSTIFY[(st.align, "")]
+    runs, symbol_font = fallback_runs(st, b["contents"])
     return {
+        "fallback": runs, "fallback_font": symbol_font,
         "contents": b["contents"], "font": postscript_name(st.family, st.style_name), "size": b["size"],
         "leading": b["leading"], "auto_leading": st.leading <= 0, "left": b["left"], "width": b["width"],
         "first_baseline": b["first_baseline"], "ascent": b["ascent"], "block_height": b["block_height"],
