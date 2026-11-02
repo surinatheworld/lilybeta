@@ -59,7 +59,23 @@ def _names(path: str):
 
 def files_for(family: str) -> list[str]:
     key = family.lower()
-    return [p for name, p in _font_files() if name.lower().startswith(key)]
+    hits = [p for name, p in _font_files() if name.lower().startswith(key)]
+    if hits:
+        return hits
+    # Tên trong registry khác tên họ font (vd file "CCSpaghettiWesternSans" có họ "000 SpaWest Sans iCiel"): dò bảng
+    # tên trong file – chỉ khi cần, đọc một lần.
+    return [p for fam, p in _family_files() if fam.lower() == key]
+
+
+_families: list[tuple[str, str]] | None = None
+
+
+def _family_files() -> list[tuple[str, str]]:
+    """(họ font, đường dẫn file) của mọi font trên máy."""
+    global _families
+    if _families is None:
+        _families = [(fam, p) for _, p in _font_files() for fam, _, _, _ in _names(p)]
+    return _families
 
 
 def postscript_name(family: str, style: str = "") -> str:

@@ -70,6 +70,7 @@ class Region:
     tight: bool = False  # chung bóng với câu khác mà không tách được thuỳ: ưu tiên chữ to, dòng ngắn
     even: bool = False  # cỡ đã hạ về cỡ chung của trang (even_sizes)
     group: int = 0  # các câu tách từ cùng một bóng mang chung số này: cùng cỡ chữ
+    marked: str = ""  # loại khung bản dịch đánh dấu (“ ” / ( ) / [ ] – bộ Ren AI Flag Eng)
     # Dáng lòng bóng (cx, cy, ((y, trái, phải), …)) để dàn chữ theo đúng hình bóng; None = chỉ dùng text_rects.
     text_shape: tuple | None = None
 

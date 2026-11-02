@@ -7,12 +7,14 @@ import re
 import cv2
 import numpy as np
 
-from .typeset import TextStyle
+from .typeset import SOFT_BREAK, TextStyle
 
 GAI_BANG = "gai_bang"
 ISSHIKI = "isshiki"
+REN_AI = "ren_ai_flag_eng"
 CUSTOM = "custom"
-PROFILES = {GAI_BANG: "Typeset Gái Băng", ISSHIKI: "Typeset Isshiki", CUSTOM: "Tự chọn font theo loại khung"}
+PROFILES = {GAI_BANG: "Typeset Gái Băng", ISSHIKI: "Typeset Isshiki", REN_AI: "Ren AI Flag Eng",
+            CUSTOM: "Tự chọn font theo loại khung"}
 KINDS = {"auto": "Tự nhận dạng", "normal": "Thoại thường · tròn kín",
          "thought": "Suy nghĩ · mây / tia", "square": "Khung ô vuông", "sfx": "SFX"}
 FONTS = {"normal": "000 WildWords2 TB", "thought": "000 AnimeAce3 [TeddyBear]",
@@ -32,8 +34,23 @@ CUSTOM_KINDS = {"auto": "Tự nhận dạng", "normal": "Thoại thường · tr
                 "square": "Khung vuông · ô dẫn truyện", "bold": "Chữ in đậm · hét", "free": "Chữ ngoài khung",
                 "flustered": "Thoại lúng túng · nói lắp", "sfx": "SFX"}
 CUSTOM_DEFAULTS = {**FONTS, "bold": FONTS["normal"], "free": FONTS["thought"], "flustered": FONTS["normal"]}
+# Ren AI Flag Eng (bảng font của nhóm, truyện Stalker Idol). Writing / Chapter title / Phone text không tự nhận được:
+# chọn tay ở "Loại thoại". SFX không có trong bảng: giữ font SFX chung.
+REN_KINDS = {"auto": "Tự nhận dạng", "normal": "Dialogue · bóng thoại", "thought": "Thought · suy nghĩ",
+             "bold_thought": "Bolder thought · suy nghĩ đậm", "square": "Narration · ô dẫn truyện",
+             "bold": "Shout / Angry · hét, giận", "writing": "Writing · chữ viết tay", "free": "Outside text · ngoài khung",
+             "flustered": "Nervous / Crying · lo, khóc", "cute": "Cute / Happy · vui, dễ thương",
+             "title": "Chapter title · tên chương", "phone": "Phone text · tin nhắn", "sfx": "SFX"}
+REN_FONTS = {"normal": "MTO  Astro City", "thought": "000 SpaWestSans iCiel", "bold_thought": "000 Astounder Squared TB",
+             "square": "MTO Dom", "bold": "000 ObelixPro TB", "writing": "000 Hand Of Sean Pro iCiel",
+             "free": "000 Blambot Casual [TeddyBear]", "flustered": "000 BillyTheFlyingRobot LC BB",
+             "cute": "[UEE] Palooka BB", "title": "000 Spellcaster [TeddyBear]", "phone": "000 Chinacat [TeddyBear]",
+             "sfx": "MTO augie"}
+# Dấu trong bản dịch của nhóm: “ ” bóng thoại, ( ) bóng suy nghĩ, [ ] ô dẫn truyện – dấu chỉ để báo loại, không type ra.
+MARKS = {"“": ("”", "normal"), '"': ('"', "normal"), "(": (")", "thought"), "[": ("]", "square")}
+CUTE = re.compile(r"[♡♥❤♪♫☆★~～]")
 _RULES = {GAI_BANG: (KINDS, FONTS, {"thought"}), ISSHIKI: (ISSHIKI_KINDS, ISSHIKI_FONTS, {"thought", "square"}),
-          CUSTOM: (CUSTOM_KINDS, CUSTOM_DEFAULTS, set())}
+          REN_AI: (REN_KINDS, REN_FONTS, set()), CUSTOM: (CUSTOM_KINDS, CUSTOM_DEFAULTS, set())}
 # Chữ raw in đậm (gothic đậm khi hét): nét dày ≥ 12% cỡ chữ và mực phủ ≥ 54% ô chữ (thoại thường 8–11%, 37–53%).
 BOLD_STROKE, BOLD_DENSITY, SOLID_DENSITY = .12, .54, .78
 # Viền bóng (độ lõm / cạnh ngắn của bóng): thắt ≥ 20% là hai bóng dính nhau; mây lõm ≥ 8%; nông hơn là viền run.
@@ -56,6 +73,56 @@ def is_italic(profile: str, kind: str) -> bool:
 def flustered(text: str) -> bool:
     """Câu nói lắp ("e- em ổn", "a- anh xin lỗi!") – thoại lúng túng."""
     return bool(_STUTTER.search(text or ""))
+
+
+def split_mark(text: str) -> tuple[str, str]:
+    """(loại theo dấu bao câu, câu đã bỏ dấu): “Hi!” → ("normal", "Hi!"); (Hm…) → ("thought", "Hm…"); không dấu → ("", câu)."""
+    s = text.strip()
+    if len(s) >= 2 and s[0] in MARKS:
+        close, kind = MARKS[s[0]]
+        inner = s[1:-1] if s.endswith(close) else s[1:]
+        if inner.strip():
+            return kind, inner.strip()
+    return "", text
+
+
+def take_marks(region) -> None:
+    """Ren AI Flag Eng: bỏ dấu “ ” / ( ) / [ ] khỏi câu dịch, nhớ loại khung chúng báo (region.marked)."""
+    parts = [split_mark(p) for p in (region.text or "").split(SOFT_BREAK)]
+    kinds = {k for k, _ in parts}
+    if kinds == {""}:
+        return
+    region.text = SOFT_BREAK.join(t for _, t in parts)
+    known = kinds - {""}
+    region.marked = known.pop() if len(known) == 1 else ""
+
+
+def _ren_kind(page, region) -> str:
+    """Ren AI Flag Eng: loại khung theo dấu trong bản dịch, nét chữ raw (in đậm) và hình bóng."""
+    cache = getattr(page, "_balloon_cache", None)
+    if cache is None:
+        cache = page._balloon_cache = {}
+    key = (REN_AI, tuple(region.box))
+    if key not in cache:
+        feats = lettering_features(page.original, getattr(page, "text_mask", None), region.box)
+        bold = feats["density"] >= SOLID_DENSITY or (feats["stroke"] >= BOLD_STROKE and feats["density"] >= BOLD_DENSITY)
+        shape = "square" if feats["dark"] else balloon_shape(page.original, region.box, outline=True)
+        cache[key] = (bold, shape)
+    bold, shape = cache[key]
+    marked = getattr(region, "marked", "")
+    if marked == "square" or (not marked and shape == "square"):
+        return "square"
+    if marked == "thought" or (not marked and shape == "thought"):
+        return "bold_thought" if bold else "thought"
+    if not marked and shape == "free" and not bold:
+        return "free"
+    if bold:
+        return "bold"
+    if flustered(region.text):
+        return "flustered"
+    if CUTE.search(region.text or ""):
+        return "cute"
+    return "normal"
 
 
 def _ray_balloon(walls, center, text_size):
@@ -208,6 +275,8 @@ def region_kind(page, region) -> str:
         return "sfx"
     if getattr(region, "orphan", False):
         return "normal"  # khung tạm trên tranh: chưa biết loại thoại
+    if profile == REN_AI:
+        return _ren_kind(page, region)
     cache = getattr(page, "_balloon_cache", None)
     if cache is None:
         cache = page._balloon_cache = {}
@@ -225,6 +294,8 @@ def profile_style(page, region, base: TextStyle) -> TextStyle:
     style = base.copy()
     profile = getattr(page, "typeset_profile", "")
     if profile in PROFILES:
+        if profile == REN_AI:
+            take_marks(region)
         kind = region_kind(page, region)
         style.family = fonts_for(profile)[kind]
         style.style_name = ""

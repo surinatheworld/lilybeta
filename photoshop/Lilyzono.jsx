@@ -232,6 +232,9 @@ var LilyzonoPS = (function () {
         {key:"gai_bang", name:"Typeset Gái Băng", fonts:"WildWords2 · AnimeAce3 nghiêng · CE Scriptorama · MTO augie"},
         {key:"isshiki", name:"Typeset Isshiki", fonts:"Chanighter Handwriting (suy nghĩ: nghiêng) · ObelixPro (in đậm) · " +
                                              "SS Rosehip (không khung) · CCComicraft (lúng túng)"},
+        {key:"ren_ai_flag_eng", name:"Ren AI Flag Eng", fonts:"MTO Astro City · Spawest (suy nghĩ) · Astounder · MTO Dom (dẫn " +
+                                             "truyện) · ObelixPro (hét) · Blambot Casual (ngoài khung) · BillyTheFlyingRobot · " +
+                                             "Palooka BB. Bản dịch: “ ” thoại, ( ) suy nghĩ, [ ] dẫn truyện."},
         {key:"custom", name:"Tự chọn font theo loại khung", fonts:"Làm cả chương: tool quét mọi ảnh, hiện các loại khung " +
                                              "có trong chương để bạn chọn font cho từng loại rồi type hàng loạt."}
     ];
@@ -405,7 +408,7 @@ var LilyzonoPS = (function () {
         var names = [], chosen = savedProfile(), i;
         for (i = 0; i < PROFILES.length; i++) names.push(PROFILES[i].name);
         var profileBox = pick.add("dropdownlist", undefined, names);
-        var fontLabel = win.add("statictext", undefined, "", {multiline:true}); fontLabel.preferredSize = [560, 34];
+        var fontLabel = win.add("statictext", undefined, "", {multiline:true}); fontLabel.preferredSize = [560, 50];
         profileBox.onChange = function () {
             if (profileBox.selection) fontLabel.text = "Font: " + PROFILES[profileBox.selection.index].fonts;
         };

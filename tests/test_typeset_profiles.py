@@ -4,7 +4,8 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from app.core.typeset_profiles import (CUSTOM, FONTS, GAI_BANG, ISSHIKI, ISSHIKI_FONTS, balloon_shape, classify_balloon, flustered,
+from app.core.typeset_profiles import (CUSTOM, FONTS, GAI_BANG, ISSHIKI, ISSHIKI_FONTS, PROFILES, REN_AI, REN_FONTS, balloon_shape,
+                                      classify_balloon, flustered, split_mark,
                                       lettering_features, profile_style, region_kind)
 from app.core.page import Region
 from app.core.typeset import TextStyle
@@ -226,6 +227,47 @@ class CustomFontTests(unittest.TestCase):
         # loại chưa chọn font: dùng font mặc định
         thought = profile_style(page, Region(IsshikiTests.box, typeset_kind="thought"), TextStyle(family="Arial"))
         self.assertEqual(thought.family, FONTS["thought"])
+
+
+class RenAiFlagEngTests(unittest.TestCase):
+    def page(self, balloon="normal", thickness=1):
+        page = IsshikiTests.page(BalloonTests.balloon(balloon), thickness)
+        page.typeset_profile = REN_AI
+        return page
+
+    def style(self, page, text="", **kw):
+        region = Region(IsshikiTests.box, text=text, **kw)
+        return region, profile_style(page, region, TextStyle(family="Arial"))
+
+    def test_font_sheet(self):
+        self.assertEqual(PROFILES[REN_AI], "Ren AI Flag Eng")
+        self.assertEqual(REN_FONTS, {
+            "normal": "MTO  Astro City", "thought": "000 SpaWestSans iCiel", "bold_thought": "000 Astounder Squared TB",
+            "square": "MTO Dom", "bold": "000 ObelixPro TB", "writing": "000 Hand Of Sean Pro iCiel",
+            "free": "000 Blambot Casual [TeddyBear]", "flustered": "000 BillyTheFlyingRobot LC BB",
+            "cute": "[UEE] Palooka BB", "title": "000 Spellcaster [TeddyBear]", "phone": "000 Chinacat [TeddyBear]",
+            "sfx": "MTO augie"})
+        page = self.page()
+        for kind, family in REN_FONTS.items():  # Writing, Chapter title, Phone text: chọn tay
+            self.assertEqual(self.style(page, "Hi", typeset_kind=kind)[1].family, family)
+
+    def test_translation_marks_pick_the_balloon_kind_and_are_not_typeset(self):
+        page = self.page()
+        cases = [("“You came!”", "You came!", "MTO  Astro City"), ('"Wait."', "Wait.", "MTO  Astro City"),
+                 ("(Why is he here...?)", "Why is he here...?", "000 SpaWestSans iCiel"),
+                 ("[The next day]", "The next day", "MTO Dom")]
+        for raw, typed, family in cases:
+            region, style = self.style(page, raw)
+            self.assertEqual((region.text, style.family), (typed, family), raw)
+        self.assertEqual(split_mark("(sigh) okay"), ("thought", "sigh) okay"))  # chỉ xét dấu ở đầu câu
+        self.assertEqual(split_mark("Hello"), ("", "Hello"))
+
+    def test_lettering_and_text_choose_shout_nervous_cute_and_bolder_thought(self):
+        self.assertEqual(self.style(self.page(thickness=5), "“STOP IT!”")[1].family, REN_FONTS["bold"])
+        self.assertEqual(self.style(self.page(thickness=5), "(I have to win!)")[1].family, REN_FONTS["bold_thought"])
+        self.assertEqual(self.style(self.page(), "“I-I didn't mean it...”")[1].family, REN_FONTS["flustered"])
+        self.assertEqual(self.style(self.page(), "“Thank you~ ♡”")[1].family, REN_FONTS["cute"])
+        self.assertEqual(self.style(self.page("square"), "Some time later")[1].family, REN_FONTS["square"])
 
 
 if __name__ == "__main__":
