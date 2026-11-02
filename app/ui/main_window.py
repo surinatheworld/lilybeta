@@ -49,7 +49,7 @@ from ..core.psd_export import PhotoshopExporter, export_without_photoshop, photo
 from ..core.page import Page, Region
 from ..core.typeset import SOFT_BREAK, TextStyle, layout, make_font, missing_chars, raw_text, split_lines
 from ..core.typeset_profiles import (CUSTOM, GAI_BANG, PROFILES, apply_profile, fonts_for, is_italic, kinds_for, profile_style,
-                                     region_kind)
+                                     region_kind, split_mark)
 from ..core import manual_ai
 from .ai_bridge import AiBridgeDialog
 from .api_dialog import PROVIDERS, ApiDialog, model_for
@@ -1926,7 +1926,7 @@ class MainWindow(QMainWindow):
     def _line_of_text(self, text: str) -> int | None:
         text = text.strip()
         for i, line in enumerate(self.lines):
-            if line == text:
+            if line == text or split_mark(line)[1] == text:  # Ren AI Flag Eng: câu đã bỏ dấu “ ” / ( ) / [ ]
                 return i
         return None
 
