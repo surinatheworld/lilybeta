@@ -302,7 +302,7 @@ def _use(n: int, record: bool) -> None:
         return
     lic = installed()
     if lic is None:
-        raise TokenError("Chưa có key Lilyzono. Nhập key ở Trợ giúp → Key và token (xin key từ người cấp tool).")
+        raise TokenError("Chưa có key Lilyzono (xin key từ người cấp tool).")
     spent, seen = usage(lic.user)
     now = _now()
     if lic.expires:

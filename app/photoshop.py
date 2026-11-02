@@ -368,24 +368,38 @@ def notify_photoshop(script: str, folder: Path) -> None:
         done.set()
 
 
-def _ask_key(parent) -> bool:
+def _ask_key() -> bool:
     """Chưa có key / hết token: hỏi key ngay ở bộ xử lý (người chỉ cài bản Photoshop không có app để nhập key)."""
-    from PySide6.QtWidgets import QInputDialog, QMessageBox
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QDialog, QInputDialog, QMessageBox
+
+    def on_top(box):
+        # Cửa sổ riêng, luôn nổi trên Photoshop: gắn vào cửa sổ tiến độ đang ẩn thì Windows thu nhỏ nó thành ô
+        # ở góc màn hình (không có nút trên thanh tác vụ), người dùng không thấy.
+        box.setWindowFlag(Qt.WindowStaysOnTopHint)
+        box.show()
+        box.raise_()
+        box.activateWindow()
+        return box.exec()
 
     while True:
         try:
             quota.check(quota.PAGE_COST)
             return True
         except quota.TokenError as e:
-            text, ok = QInputDialog.getMultiLineText(parent, "Lilyzono · Key", f"{e}\n\nDán key Lilyzono vào đây:")
-            if not ok or not text.strip():
+            ask = QInputDialog()
+            ask.setWindowTitle("Lilyzono · Key")
+            ask.setLabelText(f"{e}\n\nDán key Lilyzono vào đây:")
+            ask.setOption(QInputDialog.UsePlainTextEditForTextInput)
+            ask.resize(460, 260)
+            if on_top(ask) != QDialog.Accepted or not ask.textValue().strip():
                 return False
             try:
-                lic = quota.install(text)
-                QMessageBox.information(parent, "Lilyzono", f"Đã kích hoạt key của {lic.name or lic.user}.\n"
-                                        + quota.describe())
+                lic = quota.install(ask.textValue())
+                on_top(QMessageBox(QMessageBox.Information, "Lilyzono",
+                                   f"Đã kích hoạt key của {lic.name or lic.user}.\n{quota.describe()}"))
             except quota.TokenError as bad:
-                QMessageBox.warning(parent, "Lilyzono", str(bad))
+                on_top(QMessageBox(QMessageBox.Warning, "Lilyzono", str(bad)))
 
 
 def run_with_progress(job: Path, request: dict) -> int:
@@ -414,7 +428,7 @@ def run_with_progress(job: Path, request: dict) -> int:
         lay.addWidget(w)
     win.resize(420, 140)
     state = {"step": "Khởi động…", "result": None}
-    if request.get("mode") in ("page", "batch") and not _ask_key(win):
+    if request.get("mode") in ("page", "batch") and not _ask_key():
         write_json(job.parent / "result.json", {"protocol": PROTOCOL, "ok": False, "error": "Chưa có key / hết token."})
         return 1
 
