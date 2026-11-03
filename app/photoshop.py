@@ -74,6 +74,13 @@ def load_request(path: Path) -> dict:
         if not request.get("redrawn") or not Path(request["redrawn"]).is_file():
             raise ValueError("Không tìm thấy ảnh redraw SFX.")
         return request
+    if mode == "sfx_batch":  # nhiều ảnh redraw, mỗi ảnh một trang đang mở cùng số trang
+        items = request.get("items")
+        if not isinstance(items, list) or not items:
+            raise ValueError("Không có ảnh redraw nào khớp trang đang mở.")
+        for item in items:
+            _check_image(item.get("image"))
+        return request
     has_file = bool(request.get("translation_file") or request.get("translation_text"))
     if mode in ("batch", "scan"):  # scan: quét loại khung trước khi chọn font (cần bản dịch để type tiếp)
         pages = request.get("pages")
@@ -227,9 +234,8 @@ def redraw_sfx(base_path: str, redrawn_path: str, out_path: Path) -> dict:
     mask = keep[lab].astype(np.uint8)
     if not mask.any():
         raise ValueError("Ảnh redraw không khác ảnh gốc ở đâu cả – chọn đúng ảnh đã xoá SFX của trang này.")
-    mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=2)
-    alpha = cv2.GaussianBlur(mask.astype(np.float32) * 255, (0, 0), 1.0)
-    cv2.imencode(".png", np.dstack([red, np.clip(alpha, 0, 255).astype(np.uint8)]))[1].tofile(out_path)
+    # Có bản redraw thì type trên đúng bản redraw (nguyên ảnh, đã căn khớp trang): tool không tự xoá chữ trên raw nữa.
+    cv2.imencode(".png", red)[1].tofile(out_path)
     return {"size": [w, h], "layer": str(out_path), "changed_percent": round(float(mask.mean()) * 100, 2)}
 
 
@@ -288,6 +294,20 @@ def process_job(path: Path, report=None) -> dict:
     if mode == "sfx":
         report("So ảnh redraw với ảnh gốc…")
         return {**base, **redraw_sfx(request["image"], request["redrawn"], folder / "sfx_redraw.png")}
+    if mode == "sfx_batch":
+        out = []
+        items = request["items"]
+        for i, item in enumerate(items):
+            name = item.get("doc_name", "")
+            report(f"So ảnh redraw với ảnh gốc: trang {i + 1}/{len(items)} ({name})…")
+            page = {"doc_id": item.get("doc_id"), "doc_name": name}
+            try:
+                if not item.get("redrawn") or not Path(item["redrawn"]).is_file():
+                    raise ValueError("Không tìm thấy ảnh redraw.")
+                out.append({"ok": True, **page, **redraw_sfx(item["image"], item["redrawn"], folder / f"sfx_{i}.png")})
+            except Exception as exc:  # noqa: BLE001 - ảnh lỗi không làm hỏng cả loạt
+                out.append({"ok": False, **page, "error": str(exc)})
+        return {**base, "pages": out}
     profile = request.get("profile", GAI_BANG)
     custom = request.get("custom_fonts") or {}
     _check_setup(profile)
@@ -386,7 +406,8 @@ def run_with_progress(job: Path, request: dict) -> int:
     win.setWindowTitle("Lilyzono")
     lay = QVBoxLayout(win)
     what = {"batch": f"cả chương ({len(request.get('pages') or [])} trang)",
-            "sfx": f"ảnh redraw SFX của {request.get('doc_name', '')}"}.get(request.get("mode"), request.get("doc_name", ""))
+            "sfx": f"ảnh redraw SFX của {request.get('doc_name', '')}",
+            "sfx_batch": f"{len(request.get('items') or [])} ảnh redraw"}.get(request.get("mode"), request.get("doc_name", ""))
     title = QLabel(f"Đang xử lý <b>{what}</b> – Photoshop vẫn dùng bình thường.")
     step = QLabel("Khởi động…")
     bar = QProgressBar()
@@ -442,8 +463,16 @@ def run_with_progress(job: Path, request: dict) -> int:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Bộ xử lý cục bộ cho Lilyzono Photoshop")
-    parser.add_argument("--job", required=True, type=Path)
+    parser.add_argument("--job", type=Path)
+    parser.add_argument("--panel", action="store_true", help="mở bảng điều khiển (cửa sổ chạy cạnh Photoshop)")
+    parser.add_argument("--script", default="", help="đường dẫn Lilyzono.jsx (bảng điều khiển gọi lại Photoshop)")
     args = parser.parse_args(argv)
+    if args.panel:
+        from .panel import main as panel_main
+
+        return panel_main(args.script)
+    if args.job is None:
+        parser.error("cần --job hoặc --panel")
     try:
         request = json.loads(args.job.read_text(encoding="utf-8-sig"))
     except Exception:  # noqa: BLE001 - request hỏng: chạy ngầm để ghi lỗi vào result.json

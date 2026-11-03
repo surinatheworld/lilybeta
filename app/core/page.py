@@ -77,6 +77,8 @@ class Region:
     marked: str = ""  # loại khung bản dịch đánh dấu (“ ” / ( ) / [ ] – bộ Ren AI Flag Eng)
     # Dáng lòng bóng (cx, cy, ((y, trái, phải), …)) để dàn chữ theo đúng hình bóng; None = chỉ dùng text_rects.
     text_shape: tuple | None = None
+    # Font chỉnh tay cho riêng vùng (bảng điều khiển): {"family", "style", "postscript", "italic"}, ưu tiên hơn bộ font.
+    override: dict = field(default_factory=dict)
 
     @property
     def text_rect(self) -> Box:

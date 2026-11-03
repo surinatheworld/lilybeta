@@ -29,4 +29,7 @@ assert.equal(JSON.stringify(tool.translationLines('Trở nên đáng trân trọ
 for (const [s, n] of [['13', '13'], ['Trang 13', '13'], ['TR.13', '13'], ['page 2', '2'], ['p.5', '5'], ['#4', '4'], ['13 –', '13'], ['12345', null]]) {
   assert.equal(tool.pageHeader(s), n);
 }
+// Bảng điều khiển gọi bridge: lệnh lạ / lỗi trả về JSON {error}, không ném lỗi ra ngoài Photoshop.
+assert.equal(JSON.parse(tool.bridge('nope', '{}')).error, 'Không có lệnh nope');
+assert.ok(JSON.parse(tool.bridge('docs', '{bad')).error);
 console.log('Photoshop script: JSON, invalid data rejection, Unicode launcher and page translations passed.');
