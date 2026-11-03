@@ -161,7 +161,7 @@ class PhotoshopModesTests(unittest.TestCase):
             self.assertTrue(Path(ok[0]["redraw"]).is_file() and Path(ok[1]["redraw"]).is_file())
             self.assertNotEqual(ok[0]["redraw"], ok[1]["redraw"])
 
-    def test_sfx_redraw_keeps_only_the_changed_area_even_when_shifted_and_noisy(self):
+    def test_uploaded_redraw_becomes_the_whole_page_aligned_to_the_raw(self):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             base = _page_image()
@@ -174,9 +174,7 @@ class PhotoshopModesTests(unittest.TestCase):
             result = self._run(folder, {"mode": "sfx", "image": str(folder / "base.png"),
                                         "redrawn": str(folder / "redrawn.jpg"), "doc_name": "013.jpg"})
             layer = cv2.imdecode(np.fromfile(result["layer"], np.uint8), cv2.IMREAD_UNCHANGED)
-            self.assertEqual(layer.shape, (480, 500, 4))
-            self.assertTrue(layer[340:390, 340:440, 3].min() > 200)  # chỗ SFX: lấy ảnh redraw
-            outside = layer[..., 3].copy()
-            outside[315:416, 315:466] = 0
-            self.assertLess((outside > 0).mean(), 0.002)  # gần như không lấy gì ngoài SFX
+            # Có bản redraw thì type trên nguyên bản redraw (không chỉ phần SFX): ảnh cả trang, đã căn khớp raw.
+            self.assertEqual(layer.shape[:2], (480, 500))
+            self.assertGreater(result["changed_percent"], 0)
             self.assertTrue(layer[360, 380, :3].min() > 240)  # đúng màu đã xoá (trắng)

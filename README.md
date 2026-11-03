@@ -4,7 +4,48 @@ Thay chữ gốc (tiếng Nhật, Hàn, Trung…) trên ảnh truyện bằng b�
 
 ## Dùng trực tiếp trong Photoshop 2023 (Windows)
 
-1. Mở ảnh trong Photoshop, chọn **File → Scripts → Browse… → `photoshop/Lilyzono.jsx`**.
+Chạy **File → Scripts → Browse… → `photoshop/Lilyzono.jsx`**: mở **bảng điều khiển** (cửa sổ riêng, Photoshop vẫn dùng
+bình thường; chạy lại script chỉ đưa cửa sổ lên trước). Giữ **Shift** khi chạy script để mở hộp thoại nhanh kiểu cũ.
+
+### Bảng điều khiển: 8 bước theo ID vùng thoại
+
+| Bước | Làm gì | Kết quả trong Photoshop |
+|---|---|---|
+| 1 Mở ảnh | “Lấy ảnh đang mở” / “Mở ảnh…”, chọn **Bản Raw** hoặc **Bản Redraw** | – |
+| 2 Nhận diện & phân loại (AI) | model comic-text-detector tìm vùng chữ, gán ID (R01, R02…); model AI xem ảnh có đánh số ID → loại bóng (tròn kín, vuông kín, có tia, mây suy nghĩ, SFX, ngoài khung, không dịch), thứ tự đọc, chữ bị sót | – |
+| 3 Thiết lập bảng thoại | sửa loại bóng, kiểu chữ của preset, font riêng (danh sách font của Photoshop), cỡ chữ cho từng ID; “Loại bóng → font…” cho cả chương | – |
+| 4 Nạp Raw | bản redraw: “Chọn folder raw…” (tên ảnh có số trang; trang đôi `03-04` lấy raw 4 trái + 3 phải) | layer ẩn **Raw gốc (Lilyzono)** |
+| 5 OCR Raw | đọc chữ Nhật từng ID (model manga-ocr trên máy) | – |
+| 6 Xoá chữ | chỉ xoá chữ trong bóng kín (loại chọn trong “Loại bóng → font…”), chỉ chỗ nền một màu; bản redraw: bỏ qua | layer **Xoá chữ (Lilyzono)** |
+| 7 Ghép bản dịch (AI) | model AI đọc chữ Nhật + loại bóng + vị trí từng ID và câu dịch của trang → câu nào vào ID nào (một ID nhận được nhiều câu); câu chưa chắc tô vàng, câu không có chỗ vào “Câu chưa có vùng” | – |
+| 8 Typeset | dàn chữ theo bảng thoại | nhóm **Lilyzono · …**, mỗi câu một layer chữ tên `R03 · câu…`; nhóm lần trước đổi thành “(bản trước)” và ẩn |
+
+- Mỗi bước có nút **Chạy** riêng; **Chạy toàn bộ** chạy hết (bản redraw: bước 4 chạy trước bước 2 vì chữ Nhật trên redraw đã bị
+  xoá). Phạm vi: trang đang chọn hoặc tất cả trang. Trạng thái từng trang: ✓ xong · ! cần kiểm tra · ✗ lỗi · ↻ cần chạy lại.
+- **Chỉnh tay được giữ**: ô sửa tay (loại bóng, chữ Nhật, câu dịch, kiểu chữ, font, cỡ) in đậm và không bị bước 2 / 5 / 7 ghi đè
+  khi chạy lại; nhận diện lại giữ ID cho vùng trùng chỗ cũ. “Bỏ khoá chỉnh tay” trả vùng về cho AI. Kéo trên ảnh để thêm vùng.
+- Bản redraw có raw: vùng mà bản redraw không xoá chữ (logo, chữ ký) tự thành “Không dịch”; chữ đã xoá mà model nhận diện bỏ sót
+  (băng tên chương…) được thêm thành vùng mới.
+- Model AI lỗi (sai key, hết hạn mức, mất mạng, trả lời sai dạng): bước đó báo **Lỗi** kèm lý do ở nhật ký và danh sách trang;
+  vùng đã nhận diện vẫn được giữ để sửa tay hoặc chạy lại.
+- Dữ liệu dự án: `%LOCALAPPDATA%\Lilyzono\panel\<tên folder ảnh>` (nút “Mở thư mục dự án”).
+
+**Cấu hình model** (nút “Cấu hình AI…”):
+
+| Nhà cung cấp | Model mặc định | API key |
+|---|---|---|
+| Google Gemini | `gemini-3.5-flash` | aistudio.google.com/apikey · biến `GEMINI_API_KEY` |
+| OpenAI | `gpt-5.5` | platform.openai.com/api-keys · biến `OPENAI_API_KEY` |
+| Anthropic Claude | `claude-sonnet-5-5` | console.anthropic.com · biến `ANTHROPIC_API_KEY` |
+| Máy chủ tương thích OpenAI (Ollama, LM Studio…) | tự nhập | địa chỉ dạng `http://localhost:11434/v1`, key không bắt buộc |
+
+Model bước 2 phải đọc được ảnh; model bước 7 để trống thì dùng như bước 2. “Tải danh sách model” lấy tên model thật của
+nhà cung cấp, “Kiểm tra kết nối” gửi thử một câu hỏi nhỏ. Key lưu trong Windows Credential Manager, không ghi ra file.
+Đầu ra luôn là JSON theo schema (Gemini `responseJsonSchema`, OpenAI `json_schema` strict, Claude tool bắt buộc) theo ID vùng.
+
+### Hộp thoại nhanh (giữ Shift)
+
+1. Mở ảnh trong Photoshop, giữ Shift và chạy **`photoshop/Lilyzono.jsx`**.
 2. Dán bản dịch, chọn chế độ xoá chữ rồi **Nhận diện và xem trước**.
 3. Bấm **Tạo layer trong Photoshop**: thêm một nhóm gồm layer **Redraw** trong suốt và mỗi câu một **layer chữ thật sửa được**.
 
@@ -200,6 +241,12 @@ Redraw tranh tự động chưa đẹp bằng tay, nên có hai cách chỉ đ�
   redraw, không xoá chữ thêm và không đặt chữ đè lên chữ gốc; raw chỉ để nhận diện chỗ đặt chữ và ghép câu dịch.
   PSD: Background = raw, lớp "Redraw" = bản redraw, rồi các lớp chữ. Trong Photoshop, PSD có sẵn layer Redraw trên
   ảnh raw cũng được xử lý như vậy.
+- **Trong Photoshop**: *Upload ảnh redraw…* (chọn được nhiều ảnh) hoặc *Upload folder redraw…*: mỗi ảnh vào trang đang
+  mở cùng số trang (`012.png` ↔ `12.psd`), thành layer "Bản redraw" ngay trên raw. Từ đó type trang này là type trên
+  bản redraw: tool không tự xoá chữ trên raw nữa (lớp "Redraw" tool đã xoá trước đó được ẩn đi).
+- **Mở thẳng bản redraw**: mở các trang redraw trong Photoshop, bấm *Upload folder raw…*: mỗi ảnh raw (cùng số trang,
+  khác cỡ thì tự co) thành layer ẩn "Raw gốc (Lilyzono)". Sau đó mở bản dịch và type như thường: tool đọc chữ Nhật trên
+  raw để ghép câu, chữ đặt lên bản redraw, không xoá gì.
 
 Đo trên chương 18.1 (10 trang, 48 câu, so với PSD typeset tay): tự điền đúng 48/48 câu, xoá hết chữ Nhật trong các
 vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. Công cụ đo: `tools/evaluate.py`.

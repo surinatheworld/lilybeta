@@ -105,17 +105,19 @@ var LilyzonoPS = (function () {
         flush(); return parts.length ? parts.join(" & ") : '""';
     }
 
-    function workerCommand(folder, job) {
+    function workerCommand(folder, job) { return workerBase(folder) + " --job " + quote(job.fsName); }
+
+    function workerBase(folder) {
         // Máy có sẵn dự án (photoshop/ hoặc dist/LilyzonoPhotoshop/ trong repo): ưu tiên Python của dự án – luôn chạy
         // code mới nhất và không bị Smart App Control chặn như exe tự build. Không có dự án: dùng exe đóng gói kèm.
         var root = folder.parent, python, entry;
         for (var up = 0; up < 2 && root; up++, root = root.parent) {
             python = new File(root.fsName + "/.venv/Scripts/pythonw.exe");
             entry = new File(root.fsName + "/LilyzonoPhotoshop.py");
-            if (python.exists && entry.exists) return quote(python.fsName) + " " + quote(entry.fsName) + " --job " + quote(job.fsName);
+            if (python.exists && entry.exists) return quote(python.fsName) + " " + quote(entry.fsName);
         }
         var exe = new File(folder.fsName + "/LilyzonoPhotoshop.exe");
-        if (exe.exists) return quote(exe.fsName) + " --job " + quote(job.fsName);
+        if (exe.exists) return quote(exe.fsName);
         throw new Error("Không tìm thấy bộ xử lý. Giữ Lilyzono.jsx cạnh LilyzonoPhotoshop.exe, hoặc chạy build_photoshop.bat.");
     }
 
@@ -130,7 +132,9 @@ var LilyzonoPS = (function () {
 
     // Chỉ layer dưới cùng (ảnh raw), bỏ chữ / Redraw: để so với ảnh redraw SFX. Chép layer đó sang một tài liệu trống
     // cùng cỡ (xoá / ẩn nhóm layer trong bản sao của tài liệu không phải lúc nào Photoshop cũng cho).
-    function snapshotBackground(doc, file) {
+    function snapshotBackground(doc, file) { saveLayer(doc, rawLayerOf(doc) || doc.layers[doc.layers.length - 1], file); }
+
+    function saveLayer(doc, source, file) {
         var oldDialogs = app.displayDialogs, oldRuler = app.preferences.rulerUnits, size = pixelSize(doc), tmp = null;
         app.displayDialogs = DialogModes.NO;
         app.preferences.rulerUnits = Units.PIXELS;
@@ -138,7 +142,7 @@ var LilyzonoPS = (function () {
             tmp = app.documents.add(size[0], size[1], doc.resolution, "Lilyzono nền gốc", NewDocumentMode.RGB,
                                     DocumentFill.WHITE);
             app.activeDocument = doc;
-            doc.layers[doc.layers.length - 1].duplicate(tmp, ElementPlacement.PLACEATBEGINNING);
+            source.duplicate(tmp, ElementPlacement.PLACEATBEGINNING);
             app.activeDocument = tmp;
             tmp.layers[0].visible = true;
             tmp.saveAs(file, new PNGSaveOptions(), true, Extension.LOWERCASE);
@@ -149,8 +153,16 @@ var LilyzonoPS = (function () {
         }
     }
 
+    // Trang mở từ bản redraw: raw upload vào thành layer ẩn RAW_LAYER (để nhận diện chữ, ghép câu).
+    var RAW_LAYER = "Raw gốc (Lilyzono)";
+    function rawLayerOf(doc) {
+        for (var i = 0; i < doc.artLayers.length; i++) if (doc.artLayers[i].name === RAW_LAYER) return doc.artLayers[i];
+        return null;
+    }
+
     // Có layer nào khác ngoài ảnh raw (và nhóm Lilyzono đã tạo)? Có thì đó là bản redraw (layer Redraw của nhóm).
     function hasRedraw(doc) {
+        if (rawLayerOf(doc)) return true;  // trang mở từ bản redraw, raw upload thành layer ẩn
         for (var i = 0; i < doc.layers.length - 1; i++) {
             if (doc.layers[i].visible && doc.layers[i].name.indexOf("Lilyzono") !== 0) return true;
         }
@@ -429,7 +441,9 @@ var LilyzonoPS = (function () {
             return key;
         }
         var buttons = win.add("group"); buttons.alignment = "fill";
-        var sfx = buttons.add("button", undefined, "Upload bản redraw SFX…");
+        var sfx = buttons.add("button", undefined, "Upload ảnh redraw…");
+        var sfxFolder = buttons.add("button", undefined, "Upload folder redraw…");
+        var rawFolder = buttons.add("button", undefined, "Upload folder raw…");
         var gap = buttons.add("group"); gap.alignment = ["fill", "center"];
         buttons.add("button", undefined, "Huỷ", {name:"cancel"});
         var batch = buttons.add("button", undefined, "Làm cả chương (" + app.documents.length + " ảnh)");
@@ -439,12 +453,76 @@ var LilyzonoPS = (function () {
             else request.translation_text = input.text;
             return request;
         }
-        sfx.onClick = function () {
-            var file = File.openDialog("Ảnh đã redraw SFX của " + doc.name + " (cả trang, cùng khung)",
-                                       "Ảnh:*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff");
-            if (!file) return;
-            win.result = {protocol:1, mode:"sfx", redrawn:file.fsName};
+        // Ảnh redraw: một ảnh cho trang đang mở, hoặc nhiều ảnh / cả folder – mỗi ảnh vào trang đang mở cùng số trang.
+        function uploadRedraw(files) {
+            if (!files || !files.length) return;
+            if (files.length === 1 && app.documents.length === 1) {
+                win.result = {protocol:1, mode:"sfx", redrawn:files[0].fsName};
+                win.close(1);
+                return;
+            }
+            var items = [], unmatched = [], used = {}, i, j, d, n;
+            for (i = 0; i < files.length; i++) {
+                n = pageNumberOf(files[i].name), d = null;
+                for (j = 0; j < app.documents.length && n !== null; j++) {
+                    if (pageNumberOf(app.documents[j].name) === n && !used[j]) { d = app.documents[j]; used[j] = true; break; }
+                }
+                if (!d && files.length === 1) d = doc;  // một ảnh không có số trang khớp: vào trang đang mở
+                if (d) items.push({redrawn:files[i].fsName, doc_name:d.name, doc_id:docId(d)});
+                else unmatched.push(decodeURI(files[i].name));
+            }
+            if (!items.length) { alert("Không ảnh nào khớp số trang với ảnh đang mở trong Photoshop (vd 012.png ↔ 12.psd)."); return; }
+            if (unmatched.length && !confirm("Không có trang đang mở cho: " + unmatched.join(", ") + ". Bỏ qua các ảnh này?")) return;
+            win.result = {protocol:1, mode:"sfx_batch", items:items};
             win.close(1);
+        }
+        sfx.onClick = function () {
+            var picked = File.openDialog("Ảnh đã redraw (cả trang, cùng khung) – chọn được nhiều ảnh",
+                                         "Ảnh:*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff", true);
+            uploadRedraw(picked instanceof Array ? picked : (picked ? [picked] : []));
+        };
+        // Trang đang mở là bản redraw: upload raw (cùng số trang) để tool đọc chữ gốc, ghép câu; chữ type lên bản redraw.
+        function pickImages(title) {
+            var folder = Folder.selectDialog(title);
+            if (!folder) return null;
+            var all = folder.getFiles(function (f) { return f instanceof File && IMAGE_EXT.test(f.name); });
+            if (!all.length) { alert("Folder không có ảnh PNG / JPG / WEBP / BMP / TIF nào."); return null; }
+            return all;
+        }
+        rawFolder.onClick = function () {
+            var all = pickImages("Folder ảnh raw (tên ảnh có số trang, khớp các trang redraw đang mở)");
+            if (!all) return;
+            // Trang thường lấy raw cùng số; trang đôi ("03-04.jpg") lấy raw 3 và 4, ghép phải sang trái (trang 3 bên phải).
+            var byNumber = {}, taken = {}, items = [], unmatched = [], missing = [], i, k, n, d, range, raws;
+            for (i = 0; i < all.length; i++) {
+                n = pageNumberOf(all[i].name);
+                if (n !== null && !byNumber[n]) byNumber[n] = all[i];
+            }
+            for (i = 0; i < app.documents.length; i++) {
+                d = app.documents[i]; range = pageRangeOf(d.name);
+                if (!range) continue;
+                raws = [];
+                for (k = range[1]; k >= range[0]; k--) if (byNumber[k]) raws.push(byNumber[k].fsName);
+                if (raws.length !== range[1] - range[0] + 1) {
+                    if (raws.length) missing.push(d.name);
+                    continue;
+                }
+                for (k = range[0]; k <= range[1]; k++) taken[k] = true;
+                items.push({raws:raws, doc_name:d.name, doc_id:docId(d)});
+            }
+            for (n in byNumber) if (byNumber.hasOwnProperty(n) && !taken[n]) unmatched.push(decodeURI(byNumber[n].name));
+            if (missing.length) unmatched.push("(thiếu raw cho trang đôi: " + missing.join(", ") + ")");
+            if (!items.length) { alert("Không ảnh raw nào khớp số trang với ảnh đang mở (vd 012.jpg ↔ 12.png)."); return; }
+            if (unmatched.length && !confirm("Không có trang đang mở cho: " + unmatched.join(", ") + ". Bỏ qua các ảnh này?")) return;
+            win.result = {protocol:1, mode:"raw_upload", items:items};
+            win.close(1);
+        };
+        sfxFolder.onClick = function () {
+            var folder = Folder.selectDialog("Folder ảnh đã redraw (tên ảnh có số trang)");
+            if (!folder) return;
+            var all = folder.getFiles(function (f) { return f instanceof File && IMAGE_EXT.test(f.name); });
+            if (!all.length) { alert("Folder không có ảnh PNG / JPG / WEBP / BMP / TIF nào."); return; }
+            uploadRedraw(all);
         };
         batch.onClick = function () {
             if (!translationFile && !trim(input.text)) { alert("Mở / dán bản dịch cả chương (có số trang) trước."); return; }
@@ -603,12 +681,15 @@ var LilyzonoPS = (function () {
         try {
             app.preferences.rulerUnits = Units.PIXELS; app.preferences.typeUnits = TypeUnits.PIXELS;
             app.displayDialogs = DialogModes.NO;
+            if (context.replace) retireGroup(doc, groupName(data));
             var group = doc.layerSets.add(); group.name = groupName(data);
-            opened = app.open(new File(data.redraw));
-            var redraw = opened.activeLayer.duplicate(doc, ElementPlacement.PLACEATBEGINNING);
-            opened.close(SaveOptions.DONOTSAVECHANGES); opened = null;
-            app.activeDocument = doc;
-            redraw.move(group, ElementPlacement.INSIDE); redraw.name = "Redraw";
+            if (data.redraw) {  // bảng điều khiển: phần xoá chữ đã là layer riêng (bước 6), nhóm chỉ có chữ
+                opened = app.open(new File(data.redraw));
+                var redraw = opened.activeLayer.duplicate(doc, ElementPlacement.PLACEATBEGINNING);
+                opened.close(SaveOptions.DONOTSAVECHANGES); opened = null;
+                app.activeDocument = doc;
+                redraw.move(group, ElementPlacement.INSIDE); redraw.name = "Redraw";
+            }
             for (var i = 0; i < data.layers.length; i++) {
                 var layer = data.layers[i], art = group.artLayers.add();
                 art.kind = LayerKind.TEXT;
@@ -631,7 +712,8 @@ var LilyzonoPS = (function () {
                 text.height = new UnitValue((layer.block_height + layer.size * 2) * 72 / doc.resolution, "pt");
                 text.position = [new UnitValue(layer.left - slack / 2, "px"), new UnitValue(layer.first_baseline - layer.ascent, "px")];
                 text.hyphenation = false;
-                art.name = (layer.orphan ? "CHƯA ĐẶT · " : "") + (layer.redraw ? "REDRAW · " : "") + (i + 1) + ". " + layer.contents.replace(/[\r\u0003]/g, " ");
+                art.name = (layer.orphan ? "CHƯA ĐẶT · " : "") + (layer.redraw ? "REDRAW · " : "") +
+                           (layer.name || (i + 1) + ". " + layer.contents.replace(/[\r\u0003]/g, " "));
                 if (layer.fallback && layer.fallback.length && layer.fallback_font) {
                     doc.activeLayer = art; fallbackRuns(layer.fallback, layer.fallback_font);
                 }
@@ -647,11 +729,41 @@ var LilyzonoPS = (function () {
 
     function docId(doc) { try { return doc.id; } catch (error) { return null; } }
 
+    var REDRAW_LAYER = "Bản redraw";
+    var IMAGE_EXT = /\.(png|jpe?g|webp|bmp|tiff?)$/i;
+
+    // Số trang từ tên file: 012.png → 12, page_3.psd → 3 (cụm số cuối cùng); null nếu không có số.
+    function pageNumberOf(name) {
+        var nums = decodeURI(String(name)).replace(/\.[^.]*$/, "").match(/\d+/g);
+        return nums ? parseInt(nums[nums.length - 1], 10) : null;
+    }
+
+    // Các trang trong tên file: "05.jpg" → [5, 5]; trang đôi "03-04.jpg" → [3, 4]; null nếu không có số.
+    function pageRangeOf(name) {
+        var base = decodeURI(String(name)).replace(/\.[^.]*$/, ""), m = base.match(/(\d+)\s*[-–_~]\s*(\d+)\s*$/);
+        if (m && parseInt(m[2], 10) > parseInt(m[1], 10) && parseInt(m[2], 10) - parseInt(m[1], 10) < 4) {
+            return [parseInt(m[1], 10), parseInt(m[2], 10)];
+        }
+        var n = pageNumberOf(name);
+        return n === null ? null : [n, n];
+    }
+
     function prepare(doc, request, scriptFolder, interactive) {
         var folder = new Folder(Folder.temp.fsName + "/LilyzonoPS-" + new Date().getTime() + "-" + Math.floor(Math.random() * 100000));
         if (!folder.create()) throw new Error("Không tạo được thư mục xử lý tạm.");
         workerCommand(scriptFolder, new File(folder.fsName + "/request.json"));
-        if ((request.mode === "batch" || request.mode === "scan") && request.pages) {
+        if (request.mode === "sfx_batch") {
+            // Nhiều ảnh redraw: chụp ảnh gốc (layer dưới cùng) của từng trang khớp số.
+            var keep = app.activeDocument, k, target;
+            for (k = 0; k < request.items.length; k++) {
+                target = findDocument(request.items[k].doc_id, request.items[k].doc_name);
+                app.activeDocument = target;
+                request.items[k].image = folder.fsName + "/base" + k + ".png";
+                request.items[k].size = pixelSize(target);
+                snapshotBackground(target, new File(request.items[k].image));
+            }
+            app.activeDocument = keep;
+        } else if ((request.mode === "batch" || request.mode === "scan") && request.pages) {
             // Ảnh đã chụp ở bước quét loại khung: dùng lại, không chụp lại.
         } else if (request.mode === "batch" || request.mode === "scan") {
             // Cả chương: chụp mọi ảnh đang mở (Photoshop bận ~1 giây mỗi trang), rồi giao hết cho bộ xử lý.
@@ -686,14 +798,24 @@ var LilyzonoPS = (function () {
         return runWorker(scriptFolder, folder, request, interactive);
     }
 
-    function applyToDocument(doc, data) {
+    // Chạy lại typeset: nhóm cũ cùng tên đổi thành "(bản trước)" và ẩn đi (giữ một bản để so / lấy lại chỗ đã sửa tay).
+    function retireGroup(doc, name) {
+        var i, g;
+        for (i = doc.layerSets.length - 1; i >= 0; i--) if (doc.layerSets[i].name === name + " (bản trước)") doc.layerSets[i].remove();
+        for (i = doc.layerSets.length - 1; i >= 0; i--) {
+            g = doc.layerSets[i];
+            if (g.name === name) { g.name = name + " (bản trước)"; g.visible = false; }
+        }
+    }
+
+    function applyToDocument(doc, data, replace) {
         var size = pixelSize(doc);
         if (data.size[0] !== size[0] || data.size[1] !== size[1]) throw new Error("Kích thước trang đã thay đổi.");
         for (var i = 0; i < data.layers.length; i++) {
             try { app.fonts.getByName(data.layers[i].font); }
             catch (error) { throw new Error("Photoshop chưa nhận font " + data.layers[i].family + ". Cài font rồi mở lại Photoshop."); }
         }
-        context = {doc:doc, data:data};
+        context = {doc:doc, data:data, replace:!!replace};
         app.activeDocument = doc;
         var before = doc.activeHistoryState;
         try { doc.suspendHistory(groupName(data), "LilyzonoPS.apply()"); }
@@ -701,22 +823,27 @@ var LilyzonoPS = (function () {
         finally { context = null; }
     }
 
-    // Layer "Redraw SFX": nằm ngay trên layer Redraw của nhóm Lilyzono (dưới mọi layer chữ).
+    // Bản redraw người dùng upload: layer "Bản redraw" nguyên ảnh, ngay trên layer raw (dưới cùng), ngoài nhóm Lilyzono.
+    // Có layer này thì khi type, tool đọc chữ trên raw và đặt chữ lên bản redraw, không tự xoá chữ trên raw nữa
+    // (hasRedraw). Layer "Redraw" tool đã xoá chữ trước đó (trong nhóm Lilyzono) được ẩn đi, không xoá.
     function applySfx() {
-        var doc = context.doc, data = context.data, opened = null, oldDialogs = app.displayDialogs;
+        var doc = context.doc, data = context.data, opened = null, oldDialogs = app.displayDialogs, i, j, g;
         try {
             app.displayDialogs = DialogModes.NO;
+            for (i = doc.artLayers.length - 1; i >= 0; i--) {
+                if (doc.artLayers[i].name === REDRAW_LAYER && doc.artLayers[i] !== doc.layers[doc.layers.length - 1]) doc.artLayers[i].remove();
+            }
             opened = app.open(new File(data.layer));
             var layer = opened.activeLayer.duplicate(doc, ElementPlacement.PLACEATBEGINNING);
             opened.close(SaveOptions.DONOTSAVECHANGES); opened = null;
             app.activeDocument = doc;
-            layer.name = "Redraw SFX";
-            var group = null, redraw = null, i;
-            for (i = 0; i < doc.layerSets.length; i++) if (doc.layerSets[i].name.indexOf("Lilyzono") === 0) { group = doc.layerSets[i]; break; }
-            if (group) { try { redraw = group.artLayers.getByName("Redraw"); } catch (error) { redraw = null; } }
-            if (redraw) layer.move(redraw, ElementPlacement.PLACEBEFORE);
-            else if (group) layer.move(group, ElementPlacement.PLACEATEND);
-            else layer.move(doc.layers[doc.layers.length - 1], ElementPlacement.PLACEBEFORE);
+            layer.name = REDRAW_LAYER;
+            layer.move(doc.layers[doc.layers.length - 1], ElementPlacement.PLACEBEFORE);
+            for (i = 0; i < doc.layerSets.length; i++) {
+                g = doc.layerSets[i];
+                if (g.name.indexOf("Lilyzono") !== 0) continue;
+                for (j = 0; j < g.artLayers.length; j++) if (g.artLayers[j].name === "Redraw") g.artLayers[j].visible = false;
+            }
             doc.activeLayer = layer;
         } finally {
             if (opened) opened.close(SaveOptions.DONOTSAVECHANGES);
@@ -724,15 +851,34 @@ var LilyzonoPS = (function () {
         }
     }
 
-    function finishSfx(data) {
+    function addSfxLayer(data) {
         var doc = findDocument(data.doc_id, data.doc_name), size = pixelSize(doc);
         if (data.size[0] !== size[0] || data.size[1] !== size[1]) throw new Error("Kích thước trang đã thay đổi.");
         app.activeDocument = doc;
         context = {doc:doc, data:data};
-        try { doc.suspendHistory("Lilyzono · Redraw SFX", "LilyzonoPS.applySfx()"); }
+        try { doc.suspendHistory("Lilyzono · Bản redraw", "LilyzonoPS.applySfx()"); }
         finally { context = null; }
+        return doc;
+    }
+
+    function finishSfx(data) {
+        var doc = addSfxLayer(data);
         try { app.refresh(); } catch (error) {}
-        alert("Đã thêm layer Redraw SFX vào " + doc.name + " (" + data.changed_percent + "% trang khác ảnh gốc).");
+        alert("Đã thêm bản redraw vào " + doc.name + " (" + data.changed_percent + "% trang khác ảnh gốc). Bấm type: chữ sẽ đặt trên bản redraw, tool không tự xoá chữ.");
+        return "ok";
+    }
+
+    function finishSfxBatch(data) {
+        var done = [], errors = [], i, p;
+        for (i = 0; i < data.pages.length; i++) {
+            p = data.pages[i];
+            if (!p.ok) { errors.push(p.doc_name + ": " + p.error); continue; }
+            try { addSfxLayer(p); done.push(p.doc_name); }
+            catch (error) { errors.push(p.doc_name + ": " + error.message); }
+        }
+        try { app.refresh(); } catch (error) {}
+        alert("Đã thêm bản redraw cho " + done.length + "/" + data.pages.length + " trang." +
+              (errors.length ? "\nLỗi:\n" + errors.join("\n") : ""));
         return "ok";
     }
 
@@ -793,6 +939,7 @@ var LilyzonoPS = (function () {
         if (data.mode === "batch") return finishBatch(data);
         if (data.mode === "scan") return finishScan(data);
         if (data.mode === "sfx") return finishSfx(data);
+        if (data.mode === "sfx_batch") return finishSfxBatch(data);
         var doc = findDocument(data.doc_id, data.doc_name);
         app.activeDocument = doc;
         if (!preview(data)) return "cancel";
@@ -803,15 +950,178 @@ var LilyzonoPS = (function () {
         return "ok";
     }
 
+    // Gắn ảnh raw vào trang redraw: layer ẩn RAW_LAYER trên cùng, co về đúng cỡ trang. Thay layer raw cũ nếu có.
+    function attachRaw() {
+        var doc = context.doc, item = context.data, oldDialogs = app.displayDialogs, old, tmp = null, opened = null;
+        var oldRuler = app.preferences.rulerUnits, size = pixelSize(doc);
+        var raws = item.raws || [item.raw], k = raws.length, x = 0, i, w, h, part, layer;
+        try {
+            app.displayDialogs = DialogModes.NO;
+            app.preferences.rulerUnits = Units.PIXELS;
+            while ((old = rawLayerOf(doc))) old.remove();
+            // Ghép các raw (trang đôi: k ảnh, trái sang phải) thành một ảnh đúng cỡ trang.
+            tmp = app.documents.add(size[0], size[1], doc.resolution, "Lilyzono raw", NewDocumentMode.RGB, DocumentFill.WHITE);
+            for (i = 0; i < k; i++) {
+                part = i === k - 1 ? size[0] - x : Math.round(size[0] / k);
+                opened = app.open(new File(raws[i]));
+                if (opened.layers.length > 1) opened.flatten();
+                if (opened.mode !== DocumentMode.RGB) opened.changeMode(ChangeMode.RGB);
+                w = Math.round(opened.width.value); h = Math.round(opened.height.value);
+                if (Math.abs(Math.log((w / h) / (part / size[1]))) > 0.03) {
+                    throw new Error("ảnh raw " + decodeURI(opened.name) + " " + w + "×" + h + " khác tỉ lệ trang " +
+                                    (k > 1 ? "(mỗi nửa " + part + "×" + size[1] + ")" : size[0] + "×" + size[1]));
+                }
+                if (w !== part || h !== size[1]) opened.resizeImage(new UnitValue(part, "px"), new UnitValue(size[1], "px"),
+                                                                    doc.resolution, ResampleMethod.BICUBIC);
+                layer = opened.layers[0].duplicate(tmp, ElementPlacement.PLACEATBEGINNING);
+                opened.close(SaveOptions.DONOTSAVECHANGES); opened = null;
+                app.activeDocument = tmp;
+                layer.translate(new UnitValue(x - layer.bounds[0].value, "px"), new UnitValue(-layer.bounds[1].value, "px"));
+                x += part;
+            }
+            app.activeDocument = tmp;
+            tmp.flatten();
+            layer = tmp.layers[0].duplicate(doc, ElementPlacement.PLACEATBEGINNING);
+            tmp.close(SaveOptions.DONOTSAVECHANGES); tmp = null;
+            app.activeDocument = doc;
+            layer.name = RAW_LAYER;
+            layer.visible = false;
+        } finally {
+            if (opened) opened.close(SaveOptions.DONOTSAVECHANGES);
+            if (tmp) tmp.close(SaveOptions.DONOTSAVECHANGES);
+            app.activeDocument = doc; app.displayDialogs = oldDialogs; app.preferences.rulerUnits = oldRuler;
+        }
+    }
+
+    function attachRaws(items) {
+        var done = [], errors = [], i, doc;
+        for (i = 0; i < items.length; i++) {
+            try {
+                doc = findDocument(items[i].doc_id, items[i].doc_name);
+                app.activeDocument = doc;
+                context = {doc:doc, data:items[i]};
+                try { doc.suspendHistory("Lilyzono · Raw gốc", "LilyzonoPS.attachRaw()"); }
+                finally { context = null; }
+                done.push(doc.name);
+            } catch (error) { errors.push(items[i].doc_name + ": " + error.message); }
+        }
+        try { app.refresh(); } catch (error) {}
+        alert("Đã gắn raw cho " + done.length + "/" + items.length + " trang (layer ẩn \"" + RAW_LAYER + "\")." +
+              " Giờ mở bản dịch rồi type: tool đọc chữ trên raw, đặt chữ lên bản redraw." +
+              (errors.length ? "\nLỗi:\n" + errors.join("\n") : ""));
+        return done.length;
+    }
+
+    // --- Bảng điều khiển: cửa sổ Lilyzono chạy riêng, gọi các hàm dưới đây qua scripting của Photoshop (COM) ----------
+    var CLEAN_LAYER = "Xoá chữ (Lilyzono)";
+
+    function layerByName(doc, name) {
+        for (var i = 0; i < doc.artLayers.length; i++) if (doc.artLayers[i].name === name) return doc.artLayers[i];
+        return null;
+    }
+
+    function docInfo(d) {
+        var path = "";
+        try { path = d.fullName.fsName; } catch (error) {}  // ảnh chưa lưu: không có đường dẫn
+        return {id:docId(d), name:d.name, path:path, size:pixelSize(d), has_raw:!!rawLayerOf(d),
+                has_redraw:!!layerByName(d, REDRAW_LAYER)};
+    }
+
+    // Ảnh làm việc (bản redraw upload, hoặc layer dưới cùng = ảnh đã mở) và ảnh raw (layer raw gắn vào, hoặc layer dưới
+    // cùng khi bản redraw là layer riêng phía trên) ra PNG, bỏ qua chữ / nhóm Lilyzono.
+    function snapshotPage(doc, folder) {
+        var bottom = doc.layers[doc.layers.length - 1], redraw = layerByName(doc, REDRAW_LAYER);
+        var raw = rawLayerOf(doc) || (redraw ? bottom : null), out = {size:pixelSize(doc), work:folder + "/ps_work.png", raw:null};
+        saveLayer(doc, redraw || bottom, new File(out.work));
+        if (raw) { out.raw = folder + "/ps_raw.png"; saveLayer(doc, raw, new File(out.raw)); }
+        return out;
+    }
+
+    // Layer ảnh (PNG trong suốt, cỡ trang) ngay trên ảnh nền / bản redraw; thay layer cùng tên đã có.
+    function placeLayer() {
+        var doc = context.doc, data = context.data, opened = null, old, oldDialogs = app.displayDialogs;
+        try {
+            app.displayDialogs = DialogModes.NO;
+            while ((old = layerByName(doc, data.layer_name))) old.remove();
+            opened = app.open(new File(data.png));
+            var layer = opened.activeLayer.duplicate(doc, ElementPlacement.PLACEATBEGINNING);
+            opened.close(SaveOptions.DONOTSAVECHANGES); opened = null;
+            app.activeDocument = doc;
+            layer.name = data.layer_name;
+            layer.move(layerByName(doc, REDRAW_LAYER) || doc.layers[doc.layers.length - 1], ElementPlacement.PLACEBEFORE);
+        } finally {
+            if (opened) opened.close(SaveOptions.DONOTSAVECHANGES);
+            app.activeDocument = doc; app.displayDialogs = oldDialogs;
+        }
+    }
+
+    function inHistory(doc, data, title, call) {
+        app.activeDocument = doc;
+        context = {doc:doc, data:data};
+        try { doc.suspendHistory(title, call); } finally { context = null; }
+    }
+
+    // Bảng điều khiển gọi: LilyzonoPS.bridge("tên", "<JSON tham số>") → "<JSON {result} hoặc {error}>".
+    function bridge(name, argsText) {
+        try {
+            var a = argsText ? decode(argsText) : {}, out = null, i, doc = null;
+            if (a.name !== undefined) doc = findDocument(a.id, a.name);
+            if (name === "docs") {
+                out = {docs:[], active:null};
+                for (i = 0; i < app.documents.length; i++) out.docs.push(docInfo(app.documents[i]));
+                try { out.active = app.activeDocument.name; } catch (error) {}
+            } else if (name === "activate") {
+                app.activeDocument = doc; out = true;
+            } else if (name === "open") {
+                out = [];
+                for (i = 0; i < a.paths.length; i++) out.push(app.open(new File(a.paths[i])).name);
+            } else if (name === "snapshot") {
+                out = snapshotPage(doc, a.folder);
+            } else if (name === "attach_raw") {
+                inHistory(doc, {raws:a.raws}, "Lilyzono · Raw gốc", "LilyzonoPS.attachRaw()"); out = true;
+            } else if (name === "place_layer") {
+                inHistory(doc, {png:a.png, layer_name:a.layer_name || CLEAN_LAYER}, "Lilyzono · Xoá chữ", "LilyzonoPS.placeLayer()");
+                out = true;
+            } else if (name === "typeset") {
+                applyToDocument(doc, decode(read(new File(a.json))), true); out = true;
+            } else if (name === "fonts") {
+                out = installedFonts();
+            } else throw new Error("Không có lệnh " + name);
+            try { app.refresh(); } catch (error) {}
+            return encode({result:out});
+        } catch (error) {
+            return encode({error:String(error.message || error) + (error.line ? " (Lilyzono.jsx dòng " + error.line + ")" : "")});
+        }
+    }
+
+    function launchPanel(scriptFolder) {
+        var folder = new Folder(Folder.temp.fsName + "/LilyzonoPanel");
+        if (!folder.exists && !folder.create()) throw new Error("Không tạo được thư mục tạm.");
+        var script = SCRIPT_FILE ? new File(SCRIPT_FILE).fsName : scriptFolder.fsName + "/Lilyzono.jsx";
+        var launcher = new File(folder.fsName + "/panel.vbs");
+        var code = 'On Error Resume Next\r\n' +
+            'CreateObject("WScript.Shell").Run ' + vbsString(workerBase(scriptFolder) + " --panel --script " + quote(script)) +
+            ', 1, False\r\n' +
+            'If Err.Number <> 0 Then MsgBox ' + vbsString("Không mở được bảng điều khiển Lilyzono: ") +
+            ' & Err.Description, 16, "Lilyzono"\r\n';
+        write(launcher, code, "ASCII");
+        if (!launcher.execute()) throw new Error("Không mở được bảng điều khiển (Windows Script Host).");
+    }
+
     function main(scriptFolder) {
         if (!/windows/i.test($.os)) throw new Error("Bản này hỗ trợ Photoshop 2023 trên Windows.");
+        // Mặc định mở bảng điều khiển 8 bước; giữ Shift khi chạy script: hộp thoại nhanh như trước.
+        var quick = false;
+        try { quick = ScriptUI.environment.keyboardState.shiftKey; } catch (error) {}
+        if (!quick) return launchPanel(scriptFolder);
         if (!app.documents.length) throw new Error("Mở ảnh cần type trong Photoshop trước.");
         var doc = app.activeDocument, request = options(doc);
         if (!request) return;
+        if (request.mode === "raw_upload") return attachRaws(request.items);
         // Không chờ: bộ xử lý chạy ngầm rồi tự gọi finish() – trong lúc đó Photoshop vẫn dùng bình thường.
         prepare(doc, request, scriptFolder, true);
     }
-    return {main:main, finish:finish, finishBatch:finishBatch, finishScan:finishScan, savedFonts:savedFonts, applySfx:applySfx, snapshotBackground:snapshotBackground, apply:apply, prepare:prepare, applyToDocument:applyToDocument, pageHeader:pageHeader,
+    return {main:main, bridge:bridge, placeLayer:placeLayer, retireGroup:retireGroup, attachRaw:attachRaw, pageRangeOf:pageRangeOf, attachRaws:attachRaws, rawLayerOf:rawLayerOf, finish:finish, finishBatch:finishBatch, finishScan:finishScan, finishSfxBatch:finishSfxBatch, pageNumberOf:pageNumberOf, savedFonts:savedFonts, applySfx:applySfx, snapshotBackground:snapshotBackground, apply:apply, prepare:prepare, applyToDocument:applyToDocument, pageHeader:pageHeader,
             options:options, preview:preview, pixelSize:pixelSize, translationLines:translationLines,
             encode:encode, decode:decode, vbsString:vbsString};
 }());

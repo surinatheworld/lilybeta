@@ -337,6 +337,12 @@ def profile_style(page, region, base: TextStyle) -> TextStyle:
 
         if kind == "square" and style.shape == "round":
             style.shape = "even"  # khung chữ nhật: các dòng dài đều, không bo tròn
+    override = getattr(region, "override", None) or {}
+    if override.get("family"):
+        style.family = override["family"]
+        style.style_name = override.get("style", "") if override.get("style", "").lower() not in ("regular", "normal", "roman") else ""
+    if override.get("italic") is not None:
+        style.italic = bool(override["italic"])
     return style
 
 
