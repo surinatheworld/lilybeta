@@ -43,6 +43,76 @@ def open_fixture():
 
 
 class ConjoinedBalloonTests(unittest.TestCase):
+    def test_mixed_enclosed_and_exterior_text_is_partitioned_without_losing_ink(self):
+        for reversed_text in (False,True):
+            with self.subTest(reversed=reversed_text):
+                image,mask,boxes = fixture([(160,160),(310,300)],merged=True)
+                # The detector rectangle contains two lobes, a caption in a
+                # concave corner, and another caption beyond the parent's bbox.
+                for x,y in ((290,145),(440,220)):
+                    if reversed_text:
+                        cv2.rectangle(image,(x-4,y-4),(x+29,y+24),(0,0,0),-1)
+                    for dx in (0,14):
+                        mask[y:y+18,x+dx:x+dx+8] = 1
+                        image[y:y+18,x+dx:x+dx+8] = 255 if reversed_text else 0
+                boxes[0].x2 = 470
+                original,original_mask = image.copy(),mask.copy()
+                got,evidence = refine(image,mask,boxes)
+                self.assertEqual(sum(m['parts']==2 for m in evidence.values()),2)
+                self.assertGreaterEqual(sum(m['shape']=='free' for m in evidence.values()),1)
+                covered = np.zeros(mask.shape,bool)
+                for b in got:
+                    covered[b.y1:b.y2,b.x1:b.x2] = True
+                self.assertFalse(np.any((mask > 0) & ~covered))
+                np.testing.assert_array_equal(image,original)
+                np.testing.assert_array_equal(mask,original_mask)
+
+    def test_manual_mixed_region_is_never_partitioned(self):
+        image,mask,boxes = fixture([(160,160),(310,300)],merged=True)
+        mask[145:165,290:320] = 1
+        image[mask > 0] = 0
+        b = boxes[0]
+        got,_ = refine(image,mask,boxes,protected=[(b.x1,b.y1,b.x2,b.y2)])
+        self.assertEqual(got,boxes)
+
+    def test_single_cloud_and_caption_use_the_outline_despite_heavy_lettering(self):
+        for kind in ('cloud','square','round'):
+            with self.subTest(kind=kind):
+                image = np.full((640,640,3),220,np.uint8)
+                body = np.zeros((640,640),np.uint8)
+                if kind=='cloud':
+                    t = np.linspace(0,2*np.pi,720,endpoint=False)
+                    radius = 1+.13*np.cos(10*t)
+                    pts = np.column_stack([320+130*radius*np.cos(t),320+200*radius*np.sin(t)]).astype(np.int32)
+                    cv2.fillPoly(body,[pts],1)
+                    # One deep indentation alongside the other cloud scallops.
+                    cv2.fillPoly(body,[np.array([[440,290],[405,310],[450,335]],np.int32)],0)
+                elif kind=='square':
+                    cv2.rectangle(body,(160,100),(450,510),1,-1)
+                    cv2.fillPoly(body,[np.array([[450,420],[480,450],[450,455]],np.int32)],1)
+                else:
+                    cv2.ellipse(body,(310,180),(150,200),0,0,360,1,-1)
+                    body[:100] = 0
+                    body[:,360:] = 0  # an oval clipped by two frame edges
+                image[body>0] = 255
+                cv2.drawContours(image,cv2.findContours(body,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0],-1,(0,0,0),3)
+                mask = np.zeros(body.shape,np.float32)
+                if kind=='round':
+                    coords=(240,140,320,300)
+                elif kind=='cloud':
+                    coords=(260,195,370,415)
+                else:
+                    coords=(245,170,380,450)
+                x1,y1,x2,y2=coords
+                for x in range(x1,x2-10,30):
+                    for y in range(y1,y2-15,30):
+                        mask[y:y+17,x:x+13]=1
+                image[mask>0]=0
+                got,meta=refine(image,mask,[TextBox(*coords,.9)])
+                self.assertEqual(len(got),1)
+                self.assertEqual(meta[coords]['shape'],kind)
+                self.assertEqual(meta[coords]['parts'],1)
+
     def test_missing_outer_arc_recovers_two_text_bearing_lobes_in_rotated_pages(self):
         image, mask, boxes = open_fixture()
         for rotation in range(4):
@@ -195,6 +265,15 @@ class ConjoinedBalloonTests(unittest.TestCase):
 
 
 class StepTwoBalloonTests(unittest.TestCase):
+    def test_bold_lettering_is_not_used_to_invent_a_ray_balloon(self):
+        image=np.full((400,400,3),255,np.uint8)
+        cv2.rectangle(image,(60,40),(340,360),(0,0,0),3)
+        cv2.putText(image,'BOLD',(100,220),cv2.FONT_HERSHEY_SIMPLEX,1.6,(0,0,0),7)
+        mask=np.zeros((400,400),np.float32)
+        mask[170:235,95:280]=1
+        self.assertEqual(workflow.heuristic_bubble(image,mask,(95,170,280,235),'text'),'square')
+        self.assertEqual(workflow.heuristic_bubble(image,mask,(95,170,280,235),'sfx'),'sfx')
+
     def test_open_balloon_replaces_a_merged_region_without_changing_the_sfx(self):
         image,mask,boxes = open_fixture()
         sfx = TextBox(430,145,450,223,.9,"sfx")

@@ -235,12 +235,14 @@ def _page_sort(name: str):
 # --- bước 2: nhận diện + phân loại ----------------------------------------------------------------
 def heuristic_bubble(img: np.ndarray, mask: np.ndarray, box, det_kind: str) -> str:
     """Loại bóng đoán bằng hình học (khi chưa có / không có câu trả lời của model)."""
-    from .typeset_profiles import detailed_kind
+    from .typeset_profiles import balloon_shape, lettering_features
 
     if det_kind == "sfx":
         return "sfx"
-    kind = detailed_kind(SimpleNamespace(original=img, text_mask=mask), tuple(box))
-    return {"square": "square", "thought": "cloud", "free": "free", "bold": "ray"}.get(kind, "round")
+    if lettering_features(img,mask,box)["dark"]:
+        return "square"
+    kind = balloon_shape(img,tuple(box),outline=True)
+    return {"square": "square", "thought": "cloud", "free": "free"}.get(kind, "round")
 
 
 def erased_mask(raw: np.ndarray, redraw: np.ndarray) -> np.ndarray | None:
@@ -340,13 +342,15 @@ def detect(project: Project, page: dict, detector, cfg: ai.AIConfig, report=None
         evidence = balloon_evidence.get(tuple(r["box"]))
         r["balloon"] = dict(evidence) if evidence else None
         if r["bubble_src"] != "manual":
-            r["bubble"], r["bubble_src"] = heuristic_bubble(img, mask, r["box"], r["det_kind"]), "auto"
+            r["bubble"], r["bubble_src"] = (evidence["shape"] if evidence else
+                                            heuristic_bubble(img, mask, r["box"], r["det_kind"])), "auto"
             r["confidence"], r["uncertain"], r["note"] = None, False, ""
             if evidence:
-                r["bubble"] = evidence["shape"]
                 r["uncertain"] = evidence["uncertain"]
-                r["note"] = (f"Bóng dính {evidence['parts']} thuỳ · thuỳ {evidence['part']}"
-                             + (" · khung chữ đi qua chỗ nối: cần kiểm tra" if evidence["uncertain"] else ""))
+                r["note"] = evidence.get("note", "")
+                if evidence["parts"] > 1:
+                    r["note"] = (f"Bóng dính {evidence['parts']} thuỳ · thuỳ {evidence['part']}"
+                                 + (" · khung chữ đi qua chỗ nối: cần kiểm tra" if evidence["uncertain"] else ""))
         if erased is not None:
             r["erased"] = _erased_fraction(erased, mask, r["box"]) >= ERASED_MIN
             if r["src"] == "diff":
@@ -378,7 +382,7 @@ def detect(project: Project, page: dict, detector, cfg: ai.AIConfig, report=None
         r["confidence"], r["note"] = got["confidence"], got["note"] or r["note"]
         r["uncertain"] = got["confidence"] < ai.UNSURE or bool((r.get("balloon") or {}).get("uncertain"))
         geometry = r.get("balloon")
-        if geometry:
+        if geometry and geometry["parts"] > 1:
             hint = f"Bóng dính {geometry['parts']} thuỳ · thuỳ {geometry['part']}"
             if hint not in r["note"]:
                 r["note"] = hint + (" · " + r["note"] if r["note"] else "")
