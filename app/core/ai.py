@@ -236,6 +236,10 @@ def annotated_jpeg(img: np.ndarray, regions: list[dict]) -> tuple[bytes, float]:
     thick = max(2, round(max(out.shape[:2]) / 600))
     for i, r in enumerate(regions):
         color = COLORS[i % len(COLORS)]
+        geometry = r.get("balloon") or {}
+        if geometry.get("outline"):
+            outline = np.asarray(geometry["outline"], np.float32) * scale
+            cv2.polylines(out, [outline.astype(np.int32)], True, color, max(1, thick-1), cv2.LINE_AA)
         x1, y1, x2, y2 = (int(v * scale) for v in r["box"])
         cv2.rectangle(out, (x1, y1), (x2, y2), color, thick)
         label = r["id"]
@@ -280,6 +284,11 @@ region is outlined and labelled with an ID (R01, R02, ...). For EVERY ID, decide
 - free: text written directly on the art without a balloon (side remarks, small handwritten text, signs)
 - skip: text that must NOT be translated or typeset: publisher/magazine logos, watermarks, page numbers, scanlation credits,
   or a detection that is not text at all
+Conjoined/overlapping balloons: classify the lobe containing each ID's lettering, not the union of their outlines.
+A single deep notch between two oval lobes is NOT a thought cloud. Cloud scallops repeat around the outline;
+ray/shout balloons have pointed spikes. Multiple Japanese columns inside one oval are not multiple balloons.
+Geometry hints identify connected parents and lobes; use them as evidence, and flag uncertainty when an outline
+or border is missing. Keep every ID separate even when IDs share a parent balloon; do not merge their lettering.
 Also give the reading order (1 = first) of all non-skip regions: Japanese manga reads right to left and top to bottom,
 panel by panel; on a two-page spread the RIGHT page is read first. Use confidence 0..1 (below 0.7 = unsure) and a short
 note when unsure. List clearly visible Japanese text that has NO box in "missed" (box in 0..1000 page coordinates
@@ -295,6 +304,12 @@ def classify(cfg: AIConfig, img: np.ndarray, regions: list[dict], right_to_left:
     jpeg, _ = annotated_jpeg(img, regions)
     lines = [f'{r["id"]}: box={_norm(r["box"], (w, h))} detector={"sound effect" if r.get("det_kind") == "sfx" else "text"}'
              for r in regions]
+    for i, r in enumerate(regions):
+        geometry = r.get("balloon")
+        if geometry:
+            lines[i] += (f" connected_parent={geometry['group']} lobe={geometry['part']}/{geometry['parts']}"
+                         f" local_outline={geometry['shape']} peers={','.join(geometry['peers'])}"
+                         f" uncertain_split={geometry['uncertain']}")
     prompt = (f"Page size {w}x{h}px, boxes in 0..1000 coordinates. Reading direction: "
               f"{'right to left' if right_to_left else 'left to right'}.\nRegions:\n" + "\n".join(lines))
     if erased is not None:
