@@ -75,7 +75,10 @@ def _shape(part):
     perimeter = cv2.arcLength(contour, True)
     approx = cv2.approxPolyDP(contour, .025 * perimeter, True)
     if area / max(1, rect[1][0] * rect[1][1]) >= .88 and 4 <= len(approx) <= 6:
-        return "square", contour
+        straight = cv2.approxPolyDP(contour,.006*perimeter,True).reshape(-1,2)
+        lengths = np.linalg.norm(straight-np.roll(straight,1,axis=0),axis=1)
+        if np.count_nonzero(lengths >= min(rect[1])*.45) >= 3:
+            return "square", contour  # two frame edges cannot turn a clipped oval into a caption
     detailed = cv2.approxPolyDP(contour, .004 * perimeter, True).reshape(-1, 2).astype(float)
     orientation = cv2.contourArea(detailed.astype(np.float32), oriented=True)
     sharp = 0
@@ -103,6 +106,33 @@ def _overlap(a, b):
     ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
     iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
     return ix * iy / max(1, (a[2]-a[0])*(a[3]-a[1]) + (b[2]-b[0])*(b[3]-b[1]) - ix*iy)
+
+
+def _ink_groups(ink):
+    """Group nearby exterior glyphs without absorbing the balloon's lettering."""
+    size = max(9,min(35,round(min(ink.shape)*.09))) | 1
+    _, groups = cv2.connectedComponents(cv2.dilate(ink,cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(size,size))))
+    return [((groups == g) & (ink > 0)) for g in np.unique(groups[ink > 0]) if g]
+
+
+def _partition_lettering(ink, owners, relevant):
+    """Assign whole connected strokes, including exterior text; never clip a glyph."""
+    n, glyphs = cv2.connectedComponents(ink)
+    stride = int(owners.max())+1
+    votes = np.bincount((glyphs*stride+owners).ravel(),minlength=n*stride).reshape(n,stride)
+    assignment = np.zeros(n,np.int32)
+    for g in range(1,n):
+        row = votes[g]
+        total = int(row.sum())
+        if sum(row[p] >= max(2,.04*total) for p in relevant) > 1:
+            return None  # a real stroke crosses the lobe boundary
+        part = int(row.argmax())
+        if part in relevant and row[part] >= .95*total:
+            assignment[g] = part
+    mapped = assignment[glyphs]
+    inside = [(p,(mapped == p) & (ink > 0)) for p in relevant]
+    outside = _ink_groups(((ink > 0) & (mapped == 0)).astype(np.uint8))
+    return inside + [(0,group) for group in outside]
 
 
 def _plausible(body, bright=None):
@@ -275,7 +305,11 @@ def refine(image, text_mask, boxes, protected=()):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image.copy()
     gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else gray.copy()
     pred = cv2.resize(text_mask, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_LINEAR)
-    ink = ((pred > .3) & (gray < 190)).astype(np.uint8)
+    from .text_candidates import filter_decorations
+    source_gray = gray.copy()
+    # The detector supports both dark and reversed lettering. Thresholding the
+    # image to dark ink here silently loses white glyphs on cards/dark artwork.
+    ink = (pred > .3).astype(np.uint8)
     paper = max(220, min(245, float(np.percentile(gray,95))-10))
     bright = ((gray >= paper) | (ink > 0)).astype(np.uint8)
     # Remove actual predicted lettering, not the whole encompassing rectangle:
@@ -305,6 +339,7 @@ def refine(image, text_mask, boxes, protected=()):
             continue
         parents.setdefault(parent, []).append(i)
     replacements = {}
+    outside_parent = -1
     for parent, indices in parents.items():
         x, y, bw, bh, area = map(int, stats[parent])
         text_area = sum((scaled[i][2]-scaled[i][0])*(scaled[i][3]-scaled[i][1]) for i in indices)
@@ -314,10 +349,25 @@ def refine(image, text_mask, boxes, protected=()):
         if not _plausible(body,bright[y:y+bh,x:x+bw]):
             continue
         parts, conjoined = _lobes(body)
-        if not conjoined:
-            continue  # existing single-balloon classifier remains the authority
         occupied = np.bincount(parts[ink[y:y+bh,x:x+bw] > 0], minlength=int(parts.max())+1)
-        if np.count_nonzero(occupied[1:] >= MIN_INK) < 2:
+        has_text_lobes = np.count_nonzero(occupied[1:] >= MIN_INK) >= 2
+        if not conjoined or (not has_text_lobes and _shape(body)[0] == "cloud"):
+            # Single balloons need the same outline analysis as joined ones.
+            # Font weight is not evidence of rays, and one deep scallop does
+            # not cancel all the other dents of a cloud.
+            kind, contour = _shape(body)
+            if area > 8*text_area:
+                continue  # a whole white panel is not a balloon
+            contour = cv2.approxPolyDP(contour,max(.8,.003*cv2.arcLength(contour,True)),True).reshape(-1,2)
+            outline = [[round((px+x)/scale),round((py+y)/scale)] for px,py in contour]
+            for i in indices:
+                b = boxes[i]
+                evidence[(b.x1,b.y1,b.x2,b.y2)] = {
+                    "parent":parent,"part":1,"parts":1,"shape":kind,"outline":outline,
+                    "split":False,"uncertain":False,
+                }
+            continue
+        if not has_text_lobes:
             continue  # a wide tail/empty decorative lobe is not a second text-bearing balloon
         part_ids = list(range(1, int(parts.max()) + 1))
         outlines = {}
@@ -349,13 +399,23 @@ def refine(image, text_mask, boxes, protected=()):
                         cuts_ink = True
                         break
             locked = any(_overlap(original, p) > .5 for p in protected)
-            split = len(relevant) > 1 and not locked and not cuts_ink and amounts[0] <= .1*max(1, lettering.sum())
+            split = len(relevant) > 1 and not locked and not cuts_ink
             targets = []
             if split:
-                for part_id in relevant:
-                    ys, xs = np.nonzero((lettering > 0) & (parts == part_id))
-                    coords = (max(0, int((x+xs.min())/scale)-2), max(0, int((y+ys.min())/scale)-2),
-                              min(w, int(np.ceil((x+xs.max()+1)/scale))+2), min(h, int(np.ceil((y+ys.max()+1)/scale))+2))
+                # Work over the complete detector rectangle, not just the
+                # enclosing balloon's bounding box. Exterior captions can lie
+                # outside that box as well as inside its concave corners.
+                crop = ink[y1:y2,x1:x2]
+                owners = np.zeros(crop.shape,np.int32)
+                owners[y+top-y1:y+bottom-y1,x+left-x1:x+right-x1] = parts[top:bottom,left:right]
+                partition = _partition_lettering(crop,owners,relevant)
+                for part_id, glyph_mask in partition or []:
+                    ys, xs = np.nonzero(glyph_mask)
+                    if not len(xs):
+                        targets = []
+                        break
+                    coords = (max(0, int((x1+xs.min())/scale)-2), max(0, int((y1+ys.min())/scale)-2),
+                              min(w, int(np.ceil((x1+xs.max()+1)/scale))+2), min(h, int(np.ceil((y1+ys.max()+1)/scale))+2))
                     if coords[2]-coords[0] < 6 or coords[3]-coords[1] < 6:
                         targets = []
                         break
@@ -364,10 +424,22 @@ def refine(image, text_mask, boxes, protected=()):
                 targets = [(box, max(relevant, key=lambda j: amounts[j]))]
             replacements[i] = [b for b, _ in targets]
             for target, part_id in targets:
+                if part_id == 0:
+                    small = min(target.x2-target.x1,target.y2-target.y1)*scale < 12
+                    evidence[(target.x1,target.y1,target.x2,target.y2)] = {
+                        "parent":outside_parent,"part":1,"parts":1,"shape":"free","outline":[],
+                        "split":True,"uncertain":small,"note":"Chữ ngoài bóng: tách khỏi khung gộp"
+                        + (" · ít nét, cần kiểm tra" if small else ""),
+                    }
+                    outside_parent -= 1
+                    continue
                 kind, outline = outlines[part_id]
                 evidence[(target.x1, target.y1, target.x2, target.y2)] = {
                     "parent": parent, "part": part_id, "parts": len(part_ids), "shape": kind,
                     "outline": outline, "split": len(targets) > 1,
                     "uncertain": len(relevant) > 1 and len(targets) == 1,
                 }
-    return [b for i, box in enumerate(boxes) for b in replacements.get(i, [box])], evidence
+    out = [b for i, box in enumerate(boxes) for b in replacements.get(i, [box])]
+    out = filter_decorations(source_gray,pred,out,scale,protected)
+    keys = {(b.x1,b.y1,b.x2,b.y2) for b in out}
+    return out, {k:v for k,v in evidence.items() if k in keys}
