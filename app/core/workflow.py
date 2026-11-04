@@ -297,6 +297,7 @@ def detect(project: Project, page: dict, detector, cfg: ai.AIConfig, report=None
     đọc, tìm chữ bị sót. Vùng nhận diện được luôn được lưu; model AI lỗi thì ném AIError sau khi lưu."""
     from .detect import sort_reading_order
     from .page import color_text_mask
+    from .balloons import refine
 
     report = report or (lambda s: None)
     redraw = project.data["source"] == "redraw"
@@ -308,6 +309,8 @@ def detect(project: Project, page: dict, detector, cfg: ai.AIConfig, report=None
     report("Nhận diện vùng chữ…")
     boxes, mask = detector.detect(img)
     mask = np.maximum(mask, color_text_mask(img))
+    report("Kiểm tra bóng đôi, chỗ thắt và khung chữ bị gộp…")
+    boxes, balloon_evidence = refine(img, mask, boxes, [r["box"] for r in page["regions"] if manual(r)])
     boxes = sort_reading_order(boxes, project.data["right_to_left"], img)
     np.savez_compressed(project.file(page, "mask.npz"), mask=mask.astype(np.float16))
     h, w = img.shape[:2]
@@ -334,15 +337,31 @@ def detect(project: Project, page: dict, detector, cfg: ai.AIConfig, report=None
     regions += [o for o in old if o["id"] not in used and manual(o)]
     for i, r in enumerate(regions):
         r["order"] = i + 1
+        evidence = balloon_evidence.get(tuple(r["box"]))
+        r["balloon"] = dict(evidence) if evidence else None
         if r["bubble_src"] != "manual":
             r["bubble"], r["bubble_src"] = heuristic_bubble(img, mask, r["box"], r["det_kind"]), "auto"
             r["confidence"], r["uncertain"], r["note"] = None, False, ""
+            if evidence:
+                r["bubble"] = evidence["shape"]
+                r["uncertain"] = evidence["uncertain"]
+                r["note"] = (f"Bóng dính {evidence['parts']} thuỳ · thuỳ {evidence['part']}"
+                             + (" · khung chữ đi qua chỗ nối: cần kiểm tra" if evidence["uncertain"] else ""))
         if erased is not None:
             r["erased"] = _erased_fraction(erased, mask, r["box"]) >= ERASED_MIN
             if r["src"] == "diff":
                 r["note"] = "Chữ đã xoá trong bản redraw (nhận diện bỏ sót)"
             elif not r["erased"] and r["bubble_src"] != "manual":
                 r["bubble"], r["note"] = "skip", "Bản redraw giữ nguyên chữ này: không dịch"
+    # Give a connected parent a stable name based on its persistent text IDs.
+    groups = {}
+    for r in regions:
+        if r.get("balloon"):
+            groups.setdefault(r["balloon"]["parent"], []).append(r["id"])
+    for r in regions:
+        if r.get("balloon"):
+            r["balloon"]["group"] = "B-" + min(groups[r["balloon"]["parent"]])
+            r["balloon"]["peers"] = groups[r["balloon"]["parent"]]
     page["regions"] = regions
     page["size"] = [w, h]
     project.save()
@@ -357,7 +376,12 @@ def detect(project: Project, page: dict, detector, cfg: ai.AIConfig, report=None
             continue
         r["bubble"], r["bubble_src"] = got["bubble"], "ai"
         r["confidence"], r["note"] = got["confidence"], got["note"] or r["note"]
-        r["uncertain"] = got["confidence"] < ai.UNSURE
+        r["uncertain"] = got["confidence"] < ai.UNSURE or bool((r.get("balloon") or {}).get("uncertain"))
+        geometry = r.get("balloon")
+        if geometry:
+            hint = f"Bóng dính {geometry['parts']} thuỳ · thuỳ {geometry['part']}"
+            if hint not in r["note"]:
+                r["note"] = hint + (" · " + r["note"] if r["note"] else "")
         if got["order"]:
             r["order"] = got["order"]
     for m in result["missed"]:
