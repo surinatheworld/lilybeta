@@ -34,7 +34,47 @@ def fixture(centers, axes=None, merged=False):
     return image, mask, boxes
 
 
+def open_fixture():
+    image, mask, boxes = fixture([(335,190),(225,370)],[(80,120),(85,140)],merged=True)
+    # A breathing SFX interrupts the outer arc. The white interior now leaks into
+    # the surrounding panel; a normal 3px closing cannot recover its two lobes.
+    cv2.rectangle(image,(402,145),(425,223),(255,255,255),-1)
+    return image, mask, boxes
+
+
 class ConjoinedBalloonTests(unittest.TestCase):
+    def test_missing_outer_arc_recovers_two_text_bearing_lobes_in_rotated_pages(self):
+        image, mask, boxes = open_fixture()
+        for rotation in range(4):
+            with self.subTest(rotation=rotation):
+                rotated = np.rot90(image,rotation).copy()
+                pred = np.rot90(mask,rotation).copy()
+                ys,xs = np.nonzero(pred)
+                box = TextBox(int(xs.min())-2,int(ys.min())-2,int(xs.max())+3,int(ys.max())+3,.9)
+                original = rotated.copy()
+                got,evidence = refine(rotated,pred,[box])
+                self.assertEqual(len(got),2)
+                self.assertEqual({m["shape"] for m in evidence.values()},{"round"})
+                self.assertTrue(all(m["split"] and not m["uncertain"] for m in evidence.values()))
+                covered = np.zeros(pred.shape,bool)
+                for b in got:
+                    covered[b.y1:b.y2,b.x1:b.x2] = True
+                self.assertFalse(np.any((pred > 0) & ~covered))
+                np.testing.assert_array_equal(rotated,original)
+
+    def test_open_single_oval_and_missing_large_outline_are_not_invented_as_two_balloons(self):
+        image,mask,boxes = fixture([(230,250)],[(120,180)])
+        cv2.rectangle(image,(335,210),(360,285),(255,255,255),-1)
+        self.assertEqual(refine(image,mask,boxes),(boxes,{}))
+        image,mask,boxes = open_fixture()
+        cv2.rectangle(image,(360,80),(450,320),(255,255,255),-1)
+        self.assertEqual(refine(image,mask,boxes),(boxes,{}))
+
+    def test_manual_open_spanning_region_is_preserved(self):
+        image,mask,boxes = open_fixture()
+        b = boxes[0]
+        self.assertEqual(refine(image,mask,boxes,protected=[(b.x1,b.y1,b.x2,b.y2)]),(boxes,{}))
+
     def test_two_existing_text_ids_get_distinct_lobes_and_round_outlines(self):
         image, mask, boxes = fixture([(160, 230), (325, 230)])
         original, original_mask = image.copy(), mask.copy()
@@ -155,6 +195,26 @@ class ConjoinedBalloonTests(unittest.TestCase):
 
 
 class StepTwoBalloonTests(unittest.TestCase):
+    def test_open_balloon_replaces_a_merged_region_without_changing_the_sfx(self):
+        image,mask,boxes = open_fixture()
+        sfx = TextBox(430,145,450,223,.9,"sfx")
+        boxes.append(sfx)
+        with tempfile.TemporaryDirectory() as folder:
+            project = workflow.Project(Path(folder)/"project")
+            project.sync_documents([{"id":1,"name":"open.jpg"}])
+            page = project.page("open.jpg")
+            workflow.imwrite(project.file(page,"work.png"),image)
+            detector = type("Detector",(),{"detect":lambda self,image:(boxes,mask)})()
+            workflow.detect(project,page,detector,ai.AIConfig(provider="none"))
+            children = [r for r in page["regions"] if r.get("balloon")]
+            self.assertEqual(len(children),2)
+            self.assertEqual({r["bubble"] for r in children},{"round"})
+            other = [r for r in page["regions"] if r["det_kind"] == "sfx"]
+            self.assertEqual([r["box"] for r in other],[[430,145,450,223]])
+            ids = [r["id"] for r in page["regions"]]
+            workflow.detect(project,page,detector,ai.AIConfig(provider="none"))
+            self.assertEqual([r["id"] for r in page["regions"]],ids)
+
     def test_split_ids_manual_edits_and_geometry_survive_redetection(self):
         image, mask, boxes = fixture([(160,230),(325,230)], merged=True)
         with tempfile.TemporaryDirectory() as folder:

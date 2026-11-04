@@ -1,4 +1,4 @@
-"""Text-seeded analysis of closed and conjoined balloons for workflow step 2.
+"""Text-seeded analysis of closed, interrupted and conjoined balloons for step 2.
 
 Each enclosing white component is a parent, not necessarily one balloon. Distance
 maxima separated by a genuine narrow neck identify its lobes. Lettering determines
@@ -119,6 +119,98 @@ def _plausible(body, bright=None):
     return solidity >= .7 and complexity <= 1.85
 
 
+def _repair_open_outlines(walls, ink, bright, boxes, scale, protected):
+    """Complete a short missing arc only when the remaining outline proves two lobes.
+
+    Directional closing is a proposal, never the output mask: most of the proposed
+    contour must already exist on the page. Only that accepted contour is added,
+    so unrelated panel edges and SFX joined by the same kernel remain untouched.
+    """
+    repaired = walls.copy()
+    height, width = walls.shape
+    for box in boxes:
+        coords = (box.x1, box.y1, box.x2, box.y2)
+        if box.kind == "sfx" or any(_overlap(coords, p) > .5 for p in protected):
+            continue
+        x1, y1, x2, y2 = [round(v*scale) for v in coords]
+        short = min(x2-x1, y2-y1)
+        if short < 24:
+            continue
+        pad = max(24, round(short*.8))
+        left, top = max(0,x1-pad), max(0,y1-pad)
+        right, bottom = min(width,x2+pad), min(height,y2+pad)
+        local = repaired[top:bottom,left:right]
+        lettering = np.zeros(local.shape, np.uint8)
+        lettering[y1-top:y2-top,x1-left:x2-left] = ink[y1:y2,x1:x2]
+        total = int(lettering.sum())
+        if total < 2*MIN_INK:
+            continue
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(1-local, connectivity=4)
+        hits = np.bincount(labels[lettering > 0], minlength=n)
+        hits[0] = 0
+        parent = int(hits.argmax())
+        px, py, pw, ph, _ = stats[parent]
+        if px > 0 and py > 0 and px+pw < local.shape[1] and py+ph < local.shape[0]:
+            continue  # an already enclosed interior belongs to the ordinary path
+        support = cv2.dilate(local, np.ones((7,7),np.uint8))
+        nearest = None
+        accepted = None
+        for fraction in (.4, .6, .8):
+            length = min(181, max(9, round(short*fraction))) | 1
+            thickness = max(3, round(length*.065)) | 1
+            diagonal = np.zeros((length,length),np.uint8)
+            cv2.line(diagonal,(0,0),(length-1,length-1),1,thickness)
+            kernels = (np.ones((length,thickness),np.uint8),
+                       np.ones((thickness,length),np.uint8), diagonal, np.fliplr(diagonal).copy())
+            for kernel in kernels:
+                closed = cv2.morphologyEx(local,cv2.MORPH_CLOSE,kernel)
+                nc, lab, st, _ = cv2.connectedComponentsWithStats(1-closed,connectivity=4)
+                counts = np.bincount(lab[lettering > 0],minlength=nc)
+                counts[0] = 0
+                p = int(counts.argmax())
+                x, y, w, h, area = map(int,st[p])
+                if (counts[p] < .9*total or area < 3*total or area > .3*width*height
+                        or x == 0 or y == 0 or x+w >= local.shape[1] or y+h >= local.shape[0]):
+                    continue
+                body = _filled(lab[y:y+h,x:x+w] == p)
+                # Closing contracts curved arcs. Snap its contour back to the
+                # actual strokes before testing support; only the absent arc
+                # remains a straight inferred connection between real endpoints.
+                contour = max(cv2.findContours(body,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)[0],key=cv2.contourArea)
+                points = contour.reshape(-1,2) + (x,y)
+                if nearest is None:
+                    _, nearest = cv2.distanceTransformWithLabels(1-local,cv2.DIST_L2,5,
+                                                                labelType=cv2.DIST_LABEL_PIXEL)
+                    ys,xs = np.nonzero(local)
+                    owners = np.concatenate([[[0,0]],np.column_stack([xs,ys])])
+                snapped = owners[nearest[points[:,1],points[:,0]]].astype(np.int32).reshape(-1,1,2)
+                proposal = np.zeros(local.shape,np.uint8)
+                cv2.drawContours(proposal,[snapped],-1,1,-1)
+                x,y,w,h = cv2.boundingRect(snapped)
+                if (x == 0 or y == 0 or x+w >= local.shape[1] or y+h >= local.shape[0]
+                        or np.count_nonzero(proposal & lettering) < .9*total):
+                    continue
+                body = proposal[y:y+h,x:x+w]
+                if not _plausible(body,bright[top+y:top+y+h,left+x:left+x+w]):
+                    continue
+                contour = max(cv2.findContours(body,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)[0],key=cv2.contourArea)
+                points = contour.reshape(-1,2)
+                supported = support[y+points[:,1],x+points[:,0]] > 0
+                if supported.mean() < .87 or np.count_nonzero(~supported) > short*.85:
+                    continue
+                parts, conjoined = _lobes(body)
+                amounts = np.bincount(parts[lettering[y:y+h,x:x+w] > 0],minlength=int(parts.max())+1)
+                if not conjoined or np.count_nonzero(amounts[1:] >= max(MIN_INK,.15*total)) < 2:
+                    continue
+                accepted = contour + np.array([left+x,top+y],np.int32)
+                break
+            if accepted is not None:
+                break
+        if accepted is not None:
+            cv2.drawContours(repaired,[accepted],-1,1,1)
+    return repaired
+
+
 def _outlined_children(boxes, labels, stats, ink, bright, scale, protected, size):
     """Visible interior borders already separate overlapping balloons into components.
 
@@ -172,8 +264,8 @@ def _outlined_children(boxes, labels, stats, ink, bright, scale, protected, size
 def refine(image, text_mask, boxes, protected=()):
     """Return (text boxes, evidence keyed by box). Ambiguous ink is never cut.
 
-    Evidence is supplementary: open, dark or unbounded balloons keep the existing
-    classifier. Multiple text columns in one oval stay one original text box.
+    Evidence is supplementary: unsupported open, dark or unbounded balloons keep
+    the existing classifier. Multiple text columns in one oval stay one text box.
     Protected boxes represent manual work and are never automatically divided.
     """
     if not boxes:
@@ -190,6 +282,7 @@ def refine(image, text_mask, boxes, protected=()):
     # a spanning box can contain the border separating two overlapping balloons.
     gray[pred > .3] = 255
     walls = cv2.morphologyEx((gray < 190).astype(np.uint8), cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    walls = _repair_open_outlines(walls,ink,bright,boxes,scale,protected)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(1 - walls, connectivity=4)
     sh, sw = gray.shape
     boxes, evidence = _outlined_children(boxes,labels,stats,ink,bright,scale,protected,(w,h))
