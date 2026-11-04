@@ -127,8 +127,8 @@ class AIDialog(QDialog):
         self.image.setChecked(cfg.send_image_on_match)
         self.info = QLabel()
         self.info.setWordWrap(True)
-        load = QPushButton("Tải danh sách model")
-        test = QPushButton("Kiểm tra kết nối")
+        load = self._load_btn = QPushButton("Tải danh sách model")
+        test = self._test_btn = QPushButton("Kiểm tra kết nối")
         form.addRow("Nhà cung cấp", self.provider)
         form.addRow("Model bước 2 (đọc ảnh)", self.model)
         form.addRow("Model bước 7 (trống = như bước 2)", self.match_model)
@@ -154,13 +154,27 @@ class AIDialog(QDialog):
     def _provider_changed(self):
         key = self.provider.currentData()
         info = ai.PROVIDERS[key]
+        on = key != "none"
+        for w in (self.model, self.match_model, self.base_url, self.key, self.image, self._load_btn, self._test_btn):
+            w.setEnabled(on)
+        for box in (self.model, self.match_model):
+            box.clear()
+            if key == "gemini":  # model có gói miễn phí lên đầu danh sách
+                box.addItems(([""] if box is self.match_model else []) + [ai.GEMINI_FREE, *ai.FREE_MODELS])
         self.model.setCurrentText(info["model"])
+        if not on:
+            self.info.setText("Bước 2: loại bóng đoán theo hình bóng, thứ tự đọc theo khung tranh. Bước 7: bộ ghép câu "
+                              "cũ của tool (độ dài câu ↔ lượng chữ gốc, chữ Nhật đọc được nếu script có câu gốc). "
+                              "Không cần key, không tốn phí; nên kiểm tra kỹ bảng thoại.")
+            return
         self.base_url.setPlaceholderText(info["url"])
         saved = secrets.get_key(key)
         self.key.setText("")
         self.key.setPlaceholderText("đã lưu – để trống để giữ" if saved else
                                     ("không bắt buộc" if key == "compatible" else f"hoặc biến môi trường {info['env']}"))
         self.info.setText("Key lưu trong Windows Credential Manager, không ghi ra file." +
+                          (f" “{ai.GEMINI_FREE}”: dùng lần lượt các model có gói miễn phí ({', '.join(ai.FREE_MODELS)}), "
+                           "model nào hết hạn mức / quá tải thì tự chuyển sang model sau." if key == "gemini" else "") +
                           (" Máy chủ cục bộ (Ollama / LM Studio): điền địa chỉ …/v1 và tên model đọc được ảnh."
                            if key == "compatible" else ""))
 
@@ -986,8 +1000,15 @@ class PanelWindow(QMainWindow):
 
     def _update_ai_label(self):
         c = self.ai_config
+        if not c.enabled:
+            self.ai_label.setText(c.title)
+            return
+
+        def name(step):
+            m = c.model_for(step)
+            return "model miễn phí (tự chọn)" if m == ai.GEMINI_FREE else m
         try:
-            text = f"{c.title} · bước 2: {c.model_for('detect')} · bước 7: {c.model_for('match')}"
+            text = f"{c.title} · bước 2: {name('detect')} · bước 7: {name('match')}"
             c.key()
         except ai.AIError as exc:
             text = f"<span style='color:{COLORS['error']}'>{exc}</span>"

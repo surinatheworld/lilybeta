@@ -83,6 +83,28 @@ class AIClientTests(unittest.TestCase):
             with self.assertRaisesRegex(ai.AIError, "không đúng JSON"):
                 ai.ask_json(ai.AIConfig(provider="openai"), "detect", "s", "p", [], ai.MATCH_SCHEMA, "x")
 
+    def test_free_gemini_moves_to_the_next_model_when_one_is_out_of_quota(self):
+        tried = []
+
+        def fake(req, timeout):
+            model = req.full_url.split("/models/")[1].split(":")[0]
+            tried.append(model)
+            if len(tried) == 1:
+                raise urllib.error.HTTPError(req.full_url, 429, "x", {}, io.BytesIO(b'{"error": {"message": "slow down"}}'))
+            return _reply({"candidates": [{"content": {"parts": [{"text": '{"assignments": []}'}]}}]})
+
+        with patch("app.core.ai.secrets.get_key", return_value="k"), patch("urllib.request.urlopen", fake):
+            out = ai.ask_json(ai.AIConfig(provider="gemini"), "detect", "s", "p", [], ai.MATCH_SCHEMA, "x")
+        self.assertEqual(out, {"assignments": []})
+        self.assertEqual(tried, list(ai.FREE_MODELS[:2]))  # không chờ thử lại model đang hết hạn mức
+
+        def always_busy(req, timeout):
+            raise urllib.error.HTTPError(req.full_url, 503, "x", {}, io.BytesIO(b'{"error": {"message": "busy"}}'))
+
+        with patch("app.core.ai.secrets.get_key", return_value="k"), patch("urllib.request.urlopen", always_busy):
+            with self.assertRaisesRegex(ai.AIError, "Mọi model Gemini miễn phí"):
+                ai.ask_json(ai.AIConfig(provider="gemini"), "detect", "s", "p", [], ai.MATCH_SCHEMA, "x")
+
     def test_answers_are_checked_against_region_ids(self):
         out = ai.parse_assignments({"assignments": [
             {"line": 1, "region": "R01", "confidence": .9, "note": ""},
@@ -215,6 +237,23 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(x1 <= 310 and y1 <= 30 and x2 >= 470 and y2 >= 45)
         layer, warnings = workflow.clean(p, page)
         self.assertIsNone(layer)  # bản redraw: không xoá chữ
+
+    def test_without_ai_steps_two_and_seven_run_on_the_machine(self):
+        p, page = self.project, self.page
+        workflow.copy_image(p.file(page, "work.png"), p.file(page, "raw.png"))
+        off = ai.AIConfig(provider="none")
+        with patch("app.core.ai.ask_json", side_effect=AssertionError("không được gọi AI")):
+            warnings = workflow.detect(p, page, self.detector, off)
+            self.assertTrue(any("Không dùng AI" in w for w in warnings))
+            self.assertEqual([r["bubble_src"] for r in page["regions"]], ["auto"] * 3)
+            tl = self.folder / "tl.txt"
+            tl.write_text("13\nCảm ơn anh nhiều.\nKhông có gì mà.\nBÙM\n", encoding="utf-8")
+            p.data["translation_file"] = str(tl)
+            workflow.match(p, page, off)
+        placed = [s for r in page["regions"] for s in r["lines"]] + [u["text"] for u in page["unplaced"]]
+        self.assertEqual(sorted(placed), sorted(["Cảm ơn anh nhiều.", "Không có gì mà.", "BÙM"]))
+        self.assertTrue(all(r["confidence"] is None for r in page["regions"]))
+        self.assertTrue(any(r["lines"] for r in page["regions"]))
 
     def test_spread_takes_both_raws_right_to_left(self):
         folder = self.folder / "raw"

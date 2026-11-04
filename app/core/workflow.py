@@ -346,6 +346,8 @@ def detect(project: Project, page: dict, detector, cfg: ai.AIConfig, report=None
     page["regions"] = regions
     page["size"] = [w, h]
     project.save()
+    if not cfg.enabled:  # không dùng AI: loại bóng đoán theo hình bóng, thứ tự đọc theo khung tranh
+        return warnings + ["Không dùng AI: loại bóng đoán theo hình bóng, kiểm tra lại trong bảng thoại"]
     report(f"AI phân loại {len(regions)} vùng…")
     result = ai.classify(cfg, img, regions, project.data["right_to_left"],
                          {r["id"]: r["erased"] for r in regions} if erased is not None else None)
@@ -504,10 +506,13 @@ def match(project: Project, page: dict, cfg: ai.AIConfig, report=None) -> list[s
                 pool.remove(i)
     cands = [r for r in page["regions"] if r["bubble"] != "skip" and r["lines_src"] != "manual"]
     if report:
-        report(f"AI ghép {len(pool)} câu vào {len(cands)} vùng…")
+        report(f"{'AI ghép' if cfg.enabled else 'Ghép'} {len(pool)} câu vào {len(cands)} vùng…")
     img = imread(project.file(page, "raw.png" if project.has(page, "raw.png") else "work.png"))
     size = (img.shape[1], img.shape[0])
-    result = ai.match(cfg, cands, [lines[i] for i in pool], size, img)
+    if cfg.enabled:
+        result = ai.match(cfg, cands, [lines[i] for i in pool], size, img)
+    else:
+        result = _match_locally(project, page, cands, [lines[i] for i in pool])
     for r in cands:
         r["lines"], r["lines_src"] = [], ""
         if r["src"] != "manual" and r["bubble_src"] != "manual":
@@ -517,12 +522,15 @@ def match(project: Project, page: dict, cfg: ai.AIConfig, report=None) -> list[s
         rid, conf, note = result["assign"][k]
         r = by_id[rid]
         r["lines"].append(lines[pool[k]])
-        r["lines_src"] = "ai"
+        r["lines_src"] = "ai" if cfg.enabled else "auto"
+        if conf is None:  # ghép trên máy: không có độ tin cậy
+            continue
         r["confidence"] = conf if r["confidence"] is None or len(r["lines"]) == 1 else min(r["confidence"], conf)
         if conf < ai.UNSURE:
             r["uncertain"] = True
             r["note"] = f"Câu “{lines[pool[k]][:30]}”: {note or 'AI chưa chắc'}"
-    page["unplaced"] = [{"text": lines[pool[k]], "note": "AI không tìm được vùng"} for k in result["unplaced"]]
+    who = "AI" if cfg.enabled else "Bộ ghép trên máy"
+    page["unplaced"] = [{"text": lines[pool[k]], "note": f"{who} không tìm được vùng"} for k in result["unplaced"]]
     project.save()
     warnings = list(result["warnings"])
     if page["unplaced"]:
@@ -531,6 +539,33 @@ def match(project: Project, page: dict, cfg: ai.AIConfig, report=None) -> list[s
     if unsure:
         warnings.append("Ghép chưa chắc: " + ", ".join(unsure))
     return warnings
+
+
+def _match_locally(project: Project, page: dict, cands: list[dict], lines: list[str]) -> dict:
+    """Không dùng AI: bộ ghép câu cũ của tool (độ dài câu ↔ lượng chữ gốc theo thứ tự đọc; script có câu gốc tiếng
+    Nhật thì khớp theo chữ đọc được). Trả về cùng dạng với ai.match."""
+    from .assign import assign_lines
+    from .page import Region
+
+    if not lines:
+        return {"assign": {}, "unplaced": [], "warnings": []}
+    if not cands:
+        raise ValueError("Trang không còn vùng thoại nào để ghép (mọi vùng đã bị bỏ qua hoặc khoá).")
+    pg = _page_object(project, page)
+    regs = [Region(tuple(r["box"]), kind="sfx" if r["bubble"] == "sfx" else "text") for r in cands]
+    pg._ocr_cache = {tuple(r["box"]): r["ja"] for r in cands if r["ja"]}  # chữ đã đọc ở bước 5
+    plan = assign_lines(pg, regs, lines)
+    owner = {id(reg): rd["id"] for reg, rd in zip(regs, cands)}
+    assign, used = {}, set()
+    for reg, ls in plan:
+        for s in ls:
+            k = next((i for i, x in enumerate(lines) if x == s and i not in used), None)
+            if k is None:
+                continue
+            used.add(k)
+            if id(reg) in owner:  # khung "chưa đặt" (không ghép được) không có ID
+                assign[k] = (owner[id(reg)], None, "")
+    return {"assign": assign, "unplaced": [i for i in range(len(lines)) if i not in assign], "warnings": []}
 
 
 # --- bước 8: typeset ---------------------------------------------------------------------------

@@ -23,8 +23,13 @@ import numpy as np
 
 from . import secrets
 
+GEMINI_FREE = "auto-free"  # tên model đặc biệt: lần lượt các model Gemini có gói miễn phí
+# Model Gemini còn gói miễn phí (thử 11/2026 với key AI Studio chưa bật thanh toán), tốt nhất trước. Model đang hết
+# hạn mức / quá tải / không phản hồi thì chuyển ngay sang model sau.
+FREE_MODELS = ("gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash")
 PROVIDERS = {
-    "gemini": {"title": "Google Gemini", "model": "gemini-3.5-flash", "env": "GEMINI_API_KEY",
+    "none": {"title": "Không dùng AI (thuật toán trên máy)", "model": "", "env": "", "url": ""},
+    "gemini": {"title": "Google Gemini", "model": GEMINI_FREE, "env": "GEMINI_API_KEY",
                "url": "https://generativelanguage.googleapis.com/v1beta"},
     "openai": {"title": "OpenAI", "model": "gpt-5.5", "env": "OPENAI_API_KEY", "url": "https://api.openai.com/v1"},
     "anthropic": {"title": "Anthropic Claude", "model": "claude-sonnet-5-5", "env": "ANTHROPIC_API_KEY",
@@ -51,6 +56,10 @@ class AIConfig:
     send_image_on_match: bool = True
 
     @property
+    def enabled(self) -> bool:
+        return self.provider != "none"
+
+    @property
     def title(self) -> str:
         return PROVIDERS.get(self.provider, {}).get("title", self.provider)
 
@@ -65,6 +74,8 @@ class AIConfig:
 
     def key(self) -> str:
         info = PROVIDERS[self.provider]
+        if not self.enabled:
+            return ""
         key = secrets.get_key(self.provider) or os.environ.get(info["env"], "")
         if not key and self.provider != "compatible":
             raise AIError(f"Chưa có API key cho {self.title}: bấm “Cấu hình AI…” để nhập (hoặc đặt biến môi trường "
@@ -77,9 +88,9 @@ RETRY_CODES = {429, 500, 502, 503, 504}  # quá tải / gọi quá nhanh: lỗi 
 RETRY_WAITS = (5, 15, 30)  # giây chờ trước mỗi lần thử lại
 
 
-def _post(url: str, body: dict, headers: dict, title: str) -> dict:
+def _post(url: str, body: dict, headers: dict, title: str, retry: bool = True) -> dict:
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", **headers})
-    for wait in RETRY_WAITS:
+    for wait in RETRY_WAITS if retry else ():
         try:
             return _send(req, title)
         except AIError as exc:
@@ -107,7 +118,9 @@ def _send(req: urllib.request.Request, title: str) -> dict:
         error.code = e.code
         raise error from None
     except (socket.timeout, TimeoutError):
-        raise AIError(f"{title} không trả lời sau {TIMEOUT} giây.") from None
+        error = AIError(f"{title} không trả lời sau {TIMEOUT} giây.")
+        error.code = 408
+        raise error from None
     except urllib.error.URLError as e:
         raise AIError(f"Không kết nối được {title}: {e.reason}") from None
     except ValueError:
@@ -129,24 +142,24 @@ def _parse(text: str, title: str) -> dict:
 
 def ask_json(cfg: AIConfig, step: str, system: str, prompt: str, images: list[bytes], schema: dict, name: str) -> dict:
     """Gửi lời dặn + ảnh (JPEG), bắt model trả lời đúng `schema` (JSON Schema). Trả về đối tượng JSON."""
+    if not cfg.enabled:
+        raise AIError("Đang chọn “Không dùng AI”.")
     if cfg.provider not in PROVIDERS:
         raise AIError(f"Không biết nhà cung cấp AI “{cfg.provider}”.")
     model, key, title = cfg.model_for(step), cfg.key(), f"{cfg.title} ({cfg.model_for(step)})"
     b64 = [base64.b64encode(img).decode() for img in images]
+    if cfg.provider == "gemini" and model == GEMINI_FREE:
+        errors = []
+        for m in FREE_MODELS:
+            try:
+                return _gemini(cfg, m, key, f"{cfg.title} ({m})", system, prompt, b64, schema, retry=False)
+            except AIError as exc:
+                if exc.code not in RETRY_CODES | {404, 408}:
+                    raise
+                errors.append(f"{m}: {str(exc).splitlines()[0]}")
+        raise AIError("Mọi model Gemini miễn phí đều đang hết hạn mức / quá tải, thử lại sau:\n" + "\n".join(errors))
     if cfg.provider == "gemini":
-        body = {"systemInstruction": {"parts": [{"text": system}]},
-                "contents": [{"role": "user", "parts": [{"text": prompt}] + [
-                    {"inline_data": {"mime_type": "image/jpeg", "data": d}} for d in b64]}],
-                "generationConfig": {"responseMimeType": "application/json", "responseJsonSchema": schema}}
-        data = _post(f"{cfg.url()}/models/{model}:generateContent", body, {"x-goog-api-key": key}, title)
-        cands = data.get("candidates") or []
-        if not cands:
-            raise AIError(f"{title} không trả lời ({data.get('promptFeedback', {}).get('blockReason', 'không rõ lý do')}).")
-        parts = cands[0].get("content", {}).get("parts") or []
-        text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
-        if not text:
-            raise AIError(f"{title} không trả lời (finishReason: {cands[0].get('finishReason', '?')}).")
-        return _parse(text, title)
+        return _gemini(cfg, model, key, title, system, prompt, b64, schema)
     if cfg.provider == "anthropic":
         # Bắt buộc gọi đúng một "tool" có input_schema = schema: đầu ra luôn là đối tượng JSON theo schema.
         content = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": d}} for d in b64]
@@ -175,6 +188,22 @@ def ask_json(cfg: AIConfig, step: str, system: str, prompt: str, images: list[by
     if choice.get("finish_reason") == "length":
         raise AIError(f"{title} trả lời bị cắt giữa chừng (quá dài).")
     return _parse(msg.get("content") or "", title)
+
+
+def _gemini(cfg, model, key, title, system, prompt, b64, schema, retry=True) -> dict:
+    body = {"systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": prompt}] + [
+                {"inline_data": {"mime_type": "image/jpeg", "data": d}} for d in b64]}],
+            "generationConfig": {"responseMimeType": "application/json", "responseJsonSchema": schema}}
+    data = _post(f"{cfg.url()}/models/{model}:generateContent", body, {"x-goog-api-key": key}, title, retry)
+    cands = data.get("candidates") or []
+    if not cands:
+        raise AIError(f"{title} không trả lời ({data.get('promptFeedback', {}).get('blockReason', 'không rõ lý do')}).")
+    parts = cands[0].get("content", {}).get("parts") or []
+    text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+    if not text:
+        raise AIError(f"{title} không trả lời (finishReason: {cands[0].get('finishReason', '?')}).")
+    return _parse(text, title)
 
 
 def list_models(cfg: AIConfig) -> list[str]:

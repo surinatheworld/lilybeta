@@ -34,7 +34,8 @@ bình thường; chạy lại script chỉ đưa cửa sổ lên trước). Gi�
 
 | Nhà cung cấp | Model mặc định | API key |
 |---|---|---|
-| Google Gemini | `gemini-3.5-flash` | aistudio.google.com/apikey · biến `GEMINI_API_KEY` |
+| Không dùng AI | – | không cần: bước 2 đoán loại bóng theo hình bóng, thứ tự đọc theo khung tranh; bước 7 dùng bộ ghép câu cũ của tool |
+| Google Gemini | `auto-free`: lần lượt `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`, `gemini-2.5-flash` (đều có gói miễn phí); model hết hạn mức / quá tải thì tự chuyển model sau | aistudio.google.com/apikey (không cần bật thanh toán) · biến `GEMINI_API_KEY` |
 | OpenAI | `gpt-5.5` | platform.openai.com/api-keys · biến `OPENAI_API_KEY` |
 | Anthropic Claude | `claude-sonnet-5-5` | console.anthropic.com · biến `ANTHROPIC_API_KEY` |
 | Máy chủ tương thích OpenAI (Ollama, LM Studio…) | tự nhập | địa chỉ dạng `http://localhost:11434/v1`, key không bắt buộc |
