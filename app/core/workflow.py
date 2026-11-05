@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 
 from . import ai
-from .docs import load_pages, page_number
+from .docs import load_pages, page_number, translation_units
 
 STEPS = [("open", "Mở ảnh"), ("detect", "Nhận diện & phân loại bóng (AI)"), ("setup", "Thiết lập bảng thoại"),
          ("raw", "Nạp bản Raw"), ("ocr", "OCR bản Raw"), ("clean", "Xoá chữ (bóng kín)"),
@@ -192,13 +192,13 @@ class Project:
 
     def page_lines(self, page: dict) -> list[str]:
         if page.get("lines_manual"):
-            return list(page["lines"])
+            return translation_units(page["lines"])
         pages = self.translation()
         n = self.tl_page(page)
         if n is not None and n in pages:
-            return list(pages[n])
+            return translation_units(pages[n])
         if list(pages) == [0] and len(self.pages) == 1:
-            return list(pages[0])
+            return translation_units(pages[0])
         return []
 
     def region(self, page: dict, rid: str) -> dict:
@@ -532,7 +532,7 @@ def match(project: Project, page: dict, cfg: ai.AIConfig, report=None) -> list[s
     locked = [r for r in page["regions"] if r["lines_src"] == "manual"]
     pool = list(range(len(lines)))
     for r in locked:  # câu đã gán tay: bỏ khỏi danh sách gửi đi
-        for s in r["lines"]:
+        for s in translation_units(r["lines"]):
             i = next((i for i in pool if lines[i].strip() == s.strip()), None)
             if i is not None:
                 pool.remove(i)

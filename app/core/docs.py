@@ -89,6 +89,26 @@ def source_text(line: str) -> str:
 def source_length(line: str) -> int | None:
     """Số ký tự câu gốc ghi trong nhãn của script, None nếu không có."""
     return len(source_text(line)) or None
+
+
+def translation_units(lines: list[str]) -> list[str]:
+    """Treat explicit soft line breaks as independently assignable dialogue.
+
+    A DOCX paragraph can contain several balloons separated with Shift+Enter.
+    Regions may still receive several units. A Japanese-tagged script row stays
+    together because its source column describes that complete translation.
+    """
+    out = []
+    for line in lines:
+        if source_text(line):
+            if line.strip():
+                out.append(line.strip())
+            continue
+        tag = TAG.match(line)
+        prefix = tag.group(0) if tag else ""
+        text = line[len(prefix):]
+        out.extend(prefix + part.strip() for part in text.splitlines() if part.strip())
+    return out
 # Tên loại trong cột Type (bỏ tiền tố "Snow_", bỏ dấu cách / gạch) → loại khung của bộ font.
 TYPE_KINDS = {"dialogue": "normal", "speech": "normal", "thought": "thought", "bolderthought": "bold_thought",
               "boldthought": "bold_thought", "narration": "square", "box": "square", "shoutangry": "bold", "shout": "bold",
