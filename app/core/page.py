@@ -593,7 +593,9 @@ class Page:
             x1, y1 = min(r.box[0] for r in parts), min(r.box[1] for r in parts)
             x2, y2 = max(r.box[2] for r in parts), max(r.box[3] for r in parts)
             whole = Region((x1, y1, x2, y2), text=SOFT_BREAK.join(r.text for r in parts), style=parts[0].style,
-                           kind=parts[0].kind, cleaned=True, marked=parts[0].marked)
+                           kind=parts[0].kind, cleaned=True, marked=parts[0].marked, group=parts[0].group,
+                           typeset_kind=parts[0].typeset_kind, override=dict(parts[0].override),
+                           needs_redraw=any(r.needs_redraw for r in parts))
             at = self.regions.index(parts[0])
             others = [r for r in self.regions if r not in parts]
             self.regions[:] = others[:at] + [whole] + others[at:]

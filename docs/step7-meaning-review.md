@@ -1,85 +1,86 @@
-# Đối chiếu nghĩa bắt buộc trước typeset (không dùng API)
+# Ghép nghĩa Nhật–Việt trên máy trước typeset
 
-**Xem chữ trong bóng trước khi duyệt:** sau Bước 7, panel tự dựng và mở **Bản gán thử (chữ Việt trong bóng)**.
-Câu Việt được đặt trực tiếp vào vị trí đã gán, kể cả vùng đang cần xem lại. Bạn xem ảnh rồi mới sửa/gán lại hoặc
-xác nhận nghĩa. Ảnh thử lưu riêng ở `assignment-preview.png`; không ghi đè bản typeset đã xuất và không tự
-đánh dấu đã duyệt. Vùng nền đơn giản được xoá chữ trên bản ảnh thử; phần cần redraw vẫn có thể còn chữ Nhật.
+Bước 7 của bảng Photoshop dùng nghĩa để **chọn vị trí ngay từ đầu**. Nhánh không API không còn gọi bộ ghép
+theo độ dài/thứ tự, cũng không dùng câu Việt tham chiếu đã lưu làm đáp án. Thiếu model dịch thì báo lỗi và giữ
+bản gán cũ; không tự quay về ghép theo vị trí.
 
-## Vì sao bản cũ vẫn gắn sai
+## Cách ghép
 
-OCR tiếng Nhật chỉ nhận mặt chữ, không dịch nghĩa. Với cấu hình không API, Bước 7 cũ dùng cặp Nhật trong
-script hoặc bản Việt tham chiếu đã lưu; khi thiếu chúng, bộ ghép vẫn dựa vào độ dài và thứ tự đọc. Một SFX
-bị bỏ sót hoặc hai bóng bị gộp có thể làm những câu phía sau lệch hàng loạt. Nhãn “đã gán” và điểm ghép cao
-không chứng minh câu Việt có cùng nghĩa với chữ Nhật. Bước 8 cũ vẫn xuất layer từ những đề xuất này.
+1. Đọc chữ Nhật từ Raw. PP-OCRv5 bổ sung một nguồn OCR độc lập, đọc lại crop chặt/crop nới và chữ ngắn
+   xoay hướng khi cần. Các lần đọc được lưu cùng ảnh, tọa độ; đổi Raw phải đọc lại. Chữ Nhật và câu đã sửa tay
+   được giữ nguyên. Chỉ thêm vùng bị bỏ sót khi có chữ Nhật đủ rõ, không suy tọa độ từ câu Việt.
+   Chữ trên màn hình có đuôi câu ở dòng kế được nối theo hướng dòng và căn thẳng trước khi đọc lại; mở rộng
+   crop sẽ bỏ OCR và cờ xoá chữ của khung cũ. Tên Latin có thể khớp furigana/kana thực sự đọc được trên Raw.
+2. E5 và MiniLM tìm các nguồn có liên quan. NLLB-200 int8 chạy trực tiếp bằng CTranslate2, chấm **chính câu
+   Việt đầu vào theo cả Nhật→Việt và Việt→Nhật**. Không chỉ so câu với bản dịch máy rồi chấp nhận một vùng.
+   Tên, cách nói tắt, tiếng động và dấu câu có kiểm tra riêng; biến thể dùng để chấm không sửa văn bản người dùng.
+3. Tối ưu các đích trên toàn trang với lựa chọn “Chưa gán”. Một nguồn thiếu/OCR rác không kéo lệch những câu sau.
+   Hai phần của bóng đôi được xét cùng ngữ cảnh; SFX xen giữa trong danh sách không làm đứt cặp bóng. Một vùng
+   Nhật có lời đáp ngắn và câu dài có thể nhận hai đơn vị Việt, nếu có bằng chứng nội dung cho cả hai.
+4. Nếu một câu Việt bao trùm hai bóng nối nhau, chọn điểm cắt giữa các từ bằng nghĩa của từng phần. Lưu vị trí
+   ký tự trong câu gốc để kiểm tra không mất, lặp hoặc tự viết lại bản dịch. Cặp có đảo cấu trúc ngữ pháp Việt
+   được xét theo nghĩa chung, thay vì buộc mỗi mảnh khớp từng chữ Nhật riêng lẻ.
+   Với câu Word gộp các mệnh đề nằm ở những bóng không nối nhau, chỉ tách khi từng mảnh có đích rõ theo nghĩa;
+   giữ nguyên mọi ký tự. Khung dàn chữ dùng hình từng thùy và giới hạn panel để không tràn sang bóng khác/lề trang.
 
-## Quy trình hiện tại
+Khi một ngữ cảnh chung được chọn làm ứng viên, các bóng con cũng được chấm riêng. Bộ nhớ đệm không làm một
+ứng viên chưa xét tự có điểm; kết quả ở trạng thái cache mới và cache có sẵn phải nhất quán. Khoảng cách với
+phương án khác được tính trên phép ghép cả trang, kể cả khi phải đổi chỗ những câu còn lại.
 
-1. Bước 7 bổ sung OCR từ Raw và tạo đề xuất ghép. Cấu hình mặc định của panel là **Không dùng API**.
-2. Model `multilingual-e5-small` và `paraphrase-multilingual-MiniLM-L12-v2` chạy ONNX trực tiếp trên CPU.
-   Mỗi câu Việt thực tế được so với chữ Nhật của vùng được gán và các vùng khác trên cùng trang.
-3. Để thông qua tự động, cả hai model phải chọn đúng vùng đang gán, cùng vượt ngưỡng điểm và khoảng cách
-   với vùng đứng kế tiếp. Đây là điểm tương đồng, không phải xác suất dịch đúng. Câu rất ngắn/SFX, OCR trống
-   hoặc lặp, model lỗi/thiếu, hoặc kết quả mơ hồ đều cần xem lại. Nhãn Nhật trong script cũng không thay thế
-   phép so nghĩa. Hai model có thể cùng sai, nhất là với phủ định, tên riêng hoặc ngữ cảnh truyện.
-4. Cột **Đối chiếu nghĩa** hiển thị trạng thái. Di chuột xem lý do và các ID/chữ Nhật được gợi ý. Sửa ô Nhật
-   nếu OCR sai, rồi sửa/gán lại câu Việt. Với vùng cần đánh giá ngữ cảnh, chọn vùng, xem ảnh Raw và bấm
-   **Xác nhận nghĩa vùng…**; hộp xác nhận hiển thị đúng cặp Nhật–Việt, mặc định chọn Không.
-5. Bước 8 kiểm tra lại trước khi xuất thông số layer hoặc gọi Photoshop. Còn vùng chưa xác minh, câu chưa đặt,
-   thiếu/trùng câu đầu vào thì dừng xuất layer. Bản gán thử ở Bước 7 vẫn xem được trước khi xác nhận nghĩa.
+Trang rất dày (>18 đơn vị đầu vào) dùng tìm kiếm giới hạn bộ nhớ. Điểm chấm là bằng chứng tương đối của model,
+không phải xác suất dịch đúng. Model vẫn có thể nhầm tên, thành ngữ, lời rút gọn hoặc chữ cách điệu. Không có
+cam kết nhận đúng mọi truyện; câu thiếu nguồn đáng tin phải để “Chưa gán”.
 
-Kết quả đối chiếu gắn với nội dung ảnh, chữ Nhật, tọa độ, các vùng trên trang và danh sách câu đầu vào.
-Thay dữ liệu liên quan thì phải kiểm tra lại, kể cả khi mở dự án cũ đã có preview/typeset.json. File xuất
-cũ được giữ nguyên để không mất dữ liệu; chúng không được coi là kết quả vừa xác minh.
+## Xem kết quả và xuất layer
 
-Chế độ chạy nhanh cũng kiểm tra trước khi vẽ/xuất. Nếu bị chặn, đường dẫn dự án `meaning-review` xuất hiện
-trong lỗi để mở trong panel, xem lại loại bóng, đối chiếu, xoá chữ và chạy Bước 8. Bộ font tuỳ chọn được lưu
-theo dự án. Với đầu vào không có tên tài liệu Photoshop, cần đồng bộ lại tài liệu trong panel.
+Sau Bước 7, panel tự mở **Bản gán thử (chữ Việt trong bóng)**. Đây là ảnh đặt chữ vào các vị trí đã chọn, kể cả
+các cặp chưa đủ chắc để duyệt. Chỉ lưu `assignment-preview.png`; không tạo layer hoặc ghi đè bản xuất trước.
+Xoá chữ trên bản thử bị giới hạn quanh khung chữ gốc để tránh mất viền bóng. SFX trên tranh vẫn có thể cần redraw.
 
-## Model cục bộ
+Cột **Đối chiếu nghĩa** ghi kết quả chấm hai chiều và ngữ cảnh. Cặp rõ được thông qua tự động; cặp mơ hồ giữ
+trạng thái cần xem. Chọn vùng, so với Raw, sửa chữ Nhật/câu Việt khi cần rồi **Xác nhận nghĩa vùng…** sau khi
+thực sự đối chiếu. Sửa một vùng hoặc đổi ảnh, khung, nhóm bóng, danh sách đầu vào hay vị trí các câu làm kết quả
+duyệt liên quan hết hiệu lực.
 
-Cài `requirements.txt`, sau đó cài trọng số một lần:
+Bước 8 kiểm tra nguồn, các trạng thái duyệt, câu chưa đặt và bảo toàn toàn bộ đầu vào trước khi ghi thông số layer
+hay gọi Photoshop. Bản gán thử luôn xem được trước bước này. Chế độ chạy nhanh cũ vẫn có lớp chặn trước xuất;
+luồng ghép nghĩa mới nằm trong Bước 7 của bảng Lilyzono.
+
+## Cài model một lần
 
 ```powershell
+.venv\Scripts\python -m pip install -r requirements.txt
 .venv\Scripts\python tools/install_semantic_models.py
+.venv\Scripts\python tools/install_translation_models.py
 ```
 
-Lệnh cài chỉ tải file trọng số/tokenizer tĩnh và kiểm SHA-256 đã ghim trong mã. Nó không gửi nội dung
-truyện. Hoặc chép từ bộ model đã tải sẵn, hoàn toàn offline:
+Lệnh cài chỉ tải file trọng số/tokenizer tĩnh, kiểm SHA-256; không gửi ảnh hay bản dịch. Có thể chép hoàn toàn offline:
 
 ```powershell
-.venv\Scripts\python tools/install_semantic_models.py --from-folder D:\model-bundle
+.venv\Scripts\python tools/install_translation_models.py --from-folder D:\model-bundle
 ```
 
-Bộ model chứa `e5/model.onnx`, `e5/tokenizer.json`, `minilm/model.onnx`, `minilm/tokenizer.json`.
-Khi chạy tool, không tải model ngầm, không dùng inference API, kể cả localhost. Thiếu model thì dừng để
-đối chiếu; không quay về tự chấp nhận theo độ dài. Hai model và tokenizer chiếm khoảng 263 MB.
+Bundle có `translation/{model.bin,config.json,shared_vocabulary.txt,sentencepiece.bpe.model}` và
+`source-ocr/{ch_PP-OCRv5_det_mobile.onnx,ch_PP-OCRv5_rec_server.onnx}`. Hai encoder nghĩa dùng installer riêng.
+Tổng các bộ mới cùng encoder nghĩa khoảng 1 GB. Khi xử lý truyện, **không tải ngầm, không gọi API kể cả localhost**.
+NLLB chạy CPU; OCR ưu tiên DirectML và có CPU dự phòng. Bộ nhớ đệm điểm chấm nằm trong thư mục dự án,
+chỉ tái dùng cho đúng cặp văn bản và phiên bản, không phải bảng đáp án theo trang/ID.
 
-Trong bản tích hợp hiện tại, `photoshop/Lilyzono.jsx` ưu tiên khởi động Python từ `.venv` của dự án và
-`LilyzonoPhotoshop.py`. Sau khi cập nhật mã nguồn/dependency/model, đóng bảng Lilyzono rồi mở lại từ script
-trong Photoshop để nạp bản sửa.
+**Giấy phép trọng số:** NLLB của Meta là **CC BY-NC 4.0, chỉ dùng phi thương mại theo giấy phép đó**.
+PP-OCRv5 là Apache 2.0; E5 là MIT; MiniLM là Apache 2.0. Xem
+[thông tin nguồn và giấy phép](model-licenses/local-translation-notice.md).
 
-Model gốc: [E5, MIT](https://huggingface.co/intfloat/multilingual-e5-small) và
-[MiniLM, Apache 2.0](https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2).
-Văn bản giấy phép nằm trong `docs/model-licenses/`. Model giữ nguyên, không fine-tune.
+Trong bản tích hợp, JSX ưu tiên `.venv/Scripts/pythonw.exe` và `LilyzonoPhotoshop.py` của repo. Đóng bảng Lilyzono
+rồi mở lại script trong Photoshop để nạp mã mới. Không cần đóng gói EXE.
 
-## Kiểm chứng và giới hạn
-
-Test kiểm tra câu gán đảo vùng, hai model bất đồng, thiếu/lỗi model, SFX, OCR lặp, cache cũ, thay Raw/chữ/tọa độ,
-xác nhận thủ công, thiếu câu và chặn trước khi dựng/xuất. Test widget chạy riêng:
+## Kiểm tra
 
 ```powershell
 .venv\Scripts\python -m unittest discover -s tests -q
 .venv\Scripts\python tests/panel_step7_smoke.py
 ```
 
-Kiểm tra lớp chặn trên đúng 28 ảnh và file Word người dùng đã cung cấp: 222 vùng có câu được kiểm tra; 1 vùng đạt đồng
-thuận rõ, 221 vùng cần xem lại. Cả 28 trang bị chặn trước typeset vì còn vùng chưa xác minh, gồm lỗi gán
-đã biết ở trang 9 và 23. Không gọi API, không chạy hàm dựng chữ, không ghi đè preview/typeset.json cũ.
-Đây là kiểm tra khả năng chặn kết quả chưa xác minh, không phải số đo 100% ghép đúng. Model đối chiếu
-không tạo bản dịch Việt mới và không tự sửa hết lỗi OCR/tách bóng; các trường hợp chưa đủ bằng chứng
-vẫn cần người biết nội dung truyện đối chiếu.
-
-Sau khi bổ sung bản gán thử, cả 28 trang đã được dựng thành ảnh có chữ Việt trong các bóng theo đúng kết quả
-ghép đang có. Không thay câu/gán sẵn đáp án để làm đẹp kết quả; lỗi ghép vẫn hiện trong ảnh để đối chiếu.
-Test kiểm tra ảnh thử thực sự có chữ, không tự duyệt nghĩa, không xuất layer/ghi đè bản đã duyệt, tự mở đúng
-ảnh sau Bước 7 và không vẽ nhãn ID đè lên bản chữ.
+Test riêng kiểm tra đảo danh sách, nguồn bị thiếu, dấu câu/SFX lặp, một nguồn hai câu, SFX xen giữa bóng đôi,
+ngữ pháp cặp bóng, cắt câu không mất chữ, nguồn đã sửa tay, đổi Raw, model thiếu và chặn xuất khi dữ liệu cũ.
+Kiểm tra ảnh thực phải dùng bản gán đã vẽ chữ, đối chiếu riêng với ảnh Nhật; số câu được gán không tự chứng minh
+ghép đúng. Dữ liệu truyện và đáp án kiểm tra của người dùng không được đóng gói vào thuật toán.

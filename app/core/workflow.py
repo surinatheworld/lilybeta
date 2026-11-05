@@ -531,12 +531,23 @@ def match(project: Project, page: dict, cfg: ai.AIConfig, report=None) -> list[s
         raise ValueError(f"Bản dịch không có trang {n if n is not None else '?'} (chọn file bản dịch hoặc sửa số trang).")
     locked = [r for r in page["regions"] if r["lines_src"] == "manual"]
     pool = list(range(len(lines)))
+    preserved_units, reserved = [], set()
+    old_by_id = {r['id']:r for r in page['regions']}
+    for unit in page.get('assignment_units',[]):
+        i=unit.get('index'); parts=unit.get('parts') or []
+        if not isinstance(i,int) or i not in pool or unit.get('text')!=lines[i]:continue
+        ids={p['id'] for p in parts}
+        if not ids or not ids<=old_by_id.keys() or not any(old_by_id[rid]['lines_src']=='manual' for rid in ids):continue
+        if any(old_by_id[rid]['lines']!=[p['text'] for u in page['assignment_units'] for p in u['parts'] if p['id']==rid] for rid in ids):continue
+        # Locking one unchanged fragment also reserves its original sentence's
+        # other fragments; never put a second copy of that sentence elsewhere.
+        preserved_units.append({**unit,'evidence':None});reserved.update(ids);pool.remove(i)
     for r in locked:  # câu đã gán tay: bỏ khỏi danh sách gửi đi
         for s in translation_units(r["lines"]):
             i = next((i for i in pool if lines[i].strip() == s.strip()), None)
             if i is not None:
                 pool.remove(i)
-    cands = [r for r in page["regions"] if r["bubble"] != "skip" and r["lines_src"] != "manual"]
+    cands = [r for r in page["regions"] if r["bubble"] != "skip" and r["lines_src"] != "manual" and r['id'] not in reserved]
     if report:
         report(f"{'AI ghép' if cfg.enabled else 'Ghép'} {len(pool)} câu vào {len(cands)} vùng…")
     img = imread(project.file(page, "raw.png" if project.has(page, "raw.png") else "work.png"))
@@ -548,19 +559,31 @@ def match(project: Project, page: dict, cfg: ai.AIConfig, report=None) -> list[s
         result = ai.match(cfg, cands, [lines[i] for i in pool], size, img)
         save_references(cands, result.get("readings", {}))
     else:
-        result = _match_locally(project, page, cands, [lines[i] for i in pool])
-        warnings.append("Không gọi API, không tạo bản dịch mới. Ghép sơ bộ từ script/tham chiếu hoặc độ dài, thứ tự đọc; "
-                        "sau đó đối chiếu nghĩa Nhật–Việt cục bộ. Chưa xác minh thì không typeset.")
+        from .source_ocr import prepare
+        try:
+            if pool:
+                warnings.extend(prepare(project, page, img, report))
+        except (ImportError, ValueError, OSError) as exc:
+            warnings.append("OCR bổ sung chưa chạy được: " + str(exc)[:180])
+        cands = [r for r in page["regions"] if r["bubble"] != "skip" and r["lines_src"] != "manual" and r['id'] not in reserved]
+        result = _match_locally(project, page, cands, [lines[i] for i in pool], report)
+        warnings.append("Không dùng API, không tạo bản dịch thay thế đầu vào. Ghép theo nghĩa hai chiều và ngữ cảnh bóng.")
     for r in cands:
         r["lines"], r["lines_src"] = [], ""
         if r["src"] != "manual" and r["bubble_src"] != "manual":
             r["uncertain"] = bool(r["confidence"] is not None and r["confidence"] < ai.UNSURE)
     by_id = {r["id"]: r for r in cands}
+    page["assignment_units"] = preserved_units
     for k in sorted(result["assign"]):
         rid, conf, note = result["assign"][k]
         r = by_id[rid]
-        r["lines"].append(lines[pool[k]])
-        r["lines_src"] = "ai" if cfg.enabled else "auto"
+        parts = result.get("splits", {}).get(k) or [{"id":rid,"text":lines[pool[k]],"start":0,"end":len(lines[pool[k]])}]
+        for part in parts:
+            target = by_id[part["id"]]
+            target["lines"].append(part["text"])
+            target["lines_src"] = "ai" if cfg.enabled else "auto"
+        page["assignment_units"].append({"index":pool[k],"text":lines[pool[k]],"parts":parts,
+                                         "evidence":result.get("evidence",{}).get(k)})
         if conf is None:  # ghép trên máy: không có độ tin cậy
             continue
         ref = reference(r)
@@ -579,49 +602,22 @@ def match(project: Project, page: dict, cfg: ai.AIConfig, report=None) -> list[s
     unsure = [r["id"] for r in cands if r["uncertain"] and r["lines"]]
     if unsure:
         warnings.append("Ghép chưa chắc: " + ", ".join(unsure))
-    from .semantic_review import verify_page
+    from .semantic_review import verify_page, review_local_assignments
+    if not cfg.enabled:
+        review_local_assignments(project, page)
     pending = verify_page(project, page, report)
     if pending:
         warnings.append("Chưa xác minh nghĩa Nhật–Việt (Bước 8 sẽ dừng): " + ", ".join(pending))
     return warnings
 
 
-def _match_locally(project: Project, page: dict, cands: list[dict], lines: list[str]) -> dict:
-    """Không dùng AI: bộ ghép câu cũ của tool (độ dài câu ↔ lượng chữ gốc theo thứ tự đọc; script có câu gốc tiếng
-    Nhật thì khớp theo chữ đọc được). Trả về cùng dạng với ai.match."""
-    from .assign import assign_lines
-    from .page import Region
-
-    if not lines:
-        return {"assign": {}, "unplaced": [], "warnings": []}
-    if not cands:
-        raise ValueError("Trang không còn vùng thoại nào để ghép (mọi vùng đã bị bỏ qua hoặc khoá).")
-    from .match_text import reference_anchors
-
-    anchored = reference_anchors(cands, lines)
-    if anchored:
-        remaining = [i for i in range(len(lines)) if i not in anchored]
-        owned = {a[0] for a in anchored.values()}
-        free = [r for r in cands if r["id"] not in owned]
-        rest = (_match_locally(project, page, free, [lines[i] for i in remaining]) if free and remaining
-                else {"assign":{}, "unplaced":list(range(len(remaining))), "warnings":[]})
-        return {"assign":{**anchored, **{remaining[k]:v for k,v in rest["assign"].items()}},
-                "unplaced":[remaining[k] for k in rest["unplaced"]], "warnings":rest["warnings"]}
-    pg = _page_object(project, page)
-    regs = [Region(tuple(r["box"]), kind="sfx" if r["bubble"] == "sfx" else "text") for r in cands]
-    pg._ocr_cache = {tuple(r["box"]): r["ja"] for r in cands if r["ja"]}  # chữ đã đọc ở bước 5
-    plan = assign_lines(pg, regs, lines)
-    owner = {id(reg): rd["id"] for reg, rd in zip(regs, cands)}
-    assign, used = {}, set()
-    for reg, ls in plan:
-        for s in ls:
-            k = next((i for i, x in enumerate(lines) if x == s and i not in used), None)
-            if k is None:
-                continue
-            used.add(k)
-            if id(reg) in owner:  # khung "chưa đặt" (không ghép được) không có ID
-                assign[k] = (owner[id(reg)], None, "")
-    return {"assign": assign, "unplaced": [i for i in range(len(lines)) if i not in assign], "warnings": []}
+def _match_locally(project: Project, page: dict, cands: list[dict], lines: list[str], report=None) -> dict:
+    """Ghép nghĩa toàn trang bằng model cục bộ; không dự phòng bằng độ dài/thứ tự."""
+    from .semantic_match import match as semantic_match, Scorer
+    if not lines or not cands:
+        return {"assign":{},"unplaced":list(range(len(lines))),"warnings":[],"evidence":{}}
+    scorer = Scorer(report=report, cache_file=project.folder/"semantic-score-cache.json")
+    return semantic_match(cands, lines, scorer=scorer, report=report)
 
 
 # --- bước 8: typeset ---------------------------------------------------------------------------
@@ -674,14 +670,26 @@ def _render_assignments(project: Project, page: dict, report, *, draft: bool) ->
     if draft and not redraw:
         from .clean import easy_only
         pg.inpainter = easy_only
+        before_clean = pg.working.copy()
+        erase_guard = np.zeros(pg.working.shape[:2], bool)
         clean_kinds = set(project.data.get("clean_kinds") or CLEAN_KINDS)
         # Erase around the original Japanese boxes, before layout expands them.
         for rd in rows:
+            x,y,X,Y = rd["box"]
+            erase_guard[max(0,y-6):min(erase_guard.shape[0],Y+6),max(0,x-6):min(erase_guard.shape[1],X+6)] = True
             done = rd["cleaned"] and project.has(page, "cleaned.png")
+            if not done and rd["bubble"] == "free":
+                from .clean import fill_bubble
+                # A missed classification must not leave Japanese under the
+                # translation when geometry proves a closed white balloon.
+                done = fill_bubble(pg.working, pg.text_mask, tuple(rd["box"]))
             if not done and rd["bubble"] in clean_kinds:
                 original = Region(tuple(rd["box"]), kind="sfx" if rd["bubble"] == "sfx" else "text")
                 done = pg._clean_local(original) is None and not original.needs_redraw
             draft_cleaned[rd["id"]] = done
+        # Flood/leftover cleanup may see a shared balloon outline. A draft must
+        # never erase artwork outside the actual original lettering rectangles.
+        pg.working[~erase_guard] = before_clean[~erase_guard]
     if report:
         report("Dàn chữ…")
     apply_plan(pg, plan, None)
@@ -697,6 +705,8 @@ def _render_assignments(project: Project, page: dict, report, *, draft: bool) ->
             if draft:
                 cleaned = draft_cleaned.get(rd["id"], False)
             r.cleaned, r.needs_redraw = True, not cleaned
+    from .balloon_layout import constrain_lobes
+    constrain_lobes(pg, owner)
     for r in pg.regions:
         if r.kind == "sfx":
             pg.clean(r)

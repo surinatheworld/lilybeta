@@ -258,11 +258,20 @@ class WorkflowTests(unittest.TestCase):
             tl = self.folder / "tl.txt"
             tl.write_text("13\nCảm ơn anh nhiều.\nKhông có gì mà.\nBÙM\n", encoding="utf-8")
             p.data["translation_file"] = str(tl)
-            workflow.match(p, page, off)
+            from tests.test_semantic_matching import Scores
+            japanese=["ありがとうございます","どういたしまして","爆発しました"]
+            translated=["Cảm ơn anh nhiều.","Không có gì mà.","BÙM"]
+            for r,ja in zip(page['regions'],japanese):r.update(ja=ja,ja_src='manual')
+            scoring=Scores({(ja,vi):4 for ja,vi in zip(japanese,translated)})
+            with patch('app.core.source_ocr.prepare',return_value=[]), \
+                 patch('app.core.semantic_match.Scorer',return_value=scoring):
+                workflow.match(p, page, off)
         placed = [s for r in page["regions"] for s in r["lines"]] + [u["text"] for u in page["unplaced"]]
         self.assertEqual(sorted(placed), sorted(["Cảm ơn anh nhiều.", "Không có gì mà.", "BÙM"]))
         self.assertTrue(all(r["confidence"] is None for r in page["regions"]))
-        self.assertTrue(any(r["lines"] for r in page["regions"]))
+        # Local evidence may abstain; every input must remain either assigned
+        # or explicitly unplaced, without an inference service.
+        self.assertTrue(page["unplaced"] or any(r["lines"] for r in page["regions"]))
 
     def test_spread_takes_both_raws_right_to_left(self):
         folder = self.folder / "raw"
