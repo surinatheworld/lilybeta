@@ -1,6 +1,8 @@
 # Lilyzono trong Photoshop 2023 (Windows)
 
-**Đối chiếu nghĩa trước typeset:** Bước 7 kiểm tra cặp Nhật–Việt bằng hai model trên máy; Bước 8 và chế độ
+**Đối chiếu nghĩa trước typeset:** Bước 7 chọn vùng theo nghĩa Nhật–Việt bằng NLLB cục bộ, hai encoder nghĩa
+và ngữ cảnh bóng đôi; không dùng độ dài/thứ tự làm dự phòng khi không API. Cài thêm
+`tools/install_translation_models.py` (trọng số NLLB phi thương mại, CC BY-NC 4.0). Bước 8 và chế độ
 chạy nhanh dừng nếu còn vùng chưa xác minh/câu chưa đặt. Chọn vùng, so với Raw, sửa câu rồi dùng
 **Xác nhận nghĩa vùng…** cho trường hợp cần đánh giá thủ công. Mặc định không dùng API. Xem hướng dẫn
 `docs/step7-meaning-review.md` trong repo. Đóng/mở lại bảng Lilyzono trong PTS để nạp mã nguồn mới.

@@ -11,3 +11,7 @@ selftest.log
 selftest.psd
 models/manga-ocr/
 models/semantic-review/
+models/translation/
+models/source-ocr/
+semantic-score-cache.json
+semantic-score-cache.tmp

@@ -127,8 +127,13 @@ class StepSevenContentTests(unittest.TestCase):
         for r,item in zip(self.page["regions"],self.reply()["readings"]):
             r["ja"]=item["ja"]
             match_text.save_references([r],{r["id"]:item})
+        from app.core.semantic_match import match
+        from tests.test_semantic_matching import Scores
+        sources=[r['ja'] for r in self.page['regions']]
+        scoring=Scores({(sources[0],"Cảm ơn anh nhiều."):4,(sources[1],"Không có gì mà."):4})
         with patch("app.core.ai.ask_json", side_effect=AssertionError("offline")), \
-                patch("app.core.ocr.reader", side_effect=AssertionError("already read")):
+                patch("app.core.source_ocr.prepare",return_value=[]), \
+                patch("app.core.workflow._match_locally",side_effect=lambda p,pg,rs,ls,report=None:match(rs,ls,scoring)):
             warnings=workflow.match(self.project,self.page,ai.AIConfig(provider="none"))
         self.assertEqual(self.page["regions"][0]["lines"],["Cảm ơn anh nhiều."])
         self.assertEqual(self.page["regions"][1]["lines"],["Không có gì mà."])

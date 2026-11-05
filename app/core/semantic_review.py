@@ -18,7 +18,7 @@ from .docs import TAG, translation_units
 from .ocr import normalize
 from .paths import model_path
 
-VERSION = 1
+VERSION = 3
 MODEL_FILES = {
     "e5": ("dd476dd0c2514e9b9be83aeb3853fac0763e0bdf4a71645407587d77c48a2d88",
            "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39"),
@@ -84,7 +84,9 @@ def _signature(project, page, region):
     image = project.file(page, "raw.png" if project.has(page, "raw.png") else "work.png")
     stamp = hashlib.sha256(image.read_bytes()).hexdigest() if image.exists() else "missing"
     value = {"version":VERSION, "source":project.data["source"], "image":stamp, "inputs":project.page_lines(page),
-             "context":[[r["id"], r["box"], r.get("ja", ""), r["bubble"]] for r in page["regions"]],
+             "context":[[r["id"], r["box"], r.get("ja", ""), r["bubble"],r["lines"],
+                         r.get("ja_variants",[]),r.get("balloon",{}),r.get('source_ocr_confidence')] for r in page["regions"]],
+             "units":page.get("assignment_units",[]),
              "id":region["id"], "ja":region.get("ja", ""), "box":region["box"], "lines":region["lines"]}
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
@@ -108,6 +110,53 @@ def confirm_region(project, page, region):
 def _unreliable_japanese(text):
     chars = normalize(text)
     return not chars or (len(chars)>=12 and Counter(chars).most_common(1)[0][1] > .65*len(chars))
+
+
+def valid_provenance(project, page):
+    """Check exact original character coverage plus the actual current region contents."""
+    units=page.get("assignment_units")
+    if not units:return False
+    inputs=project.page_lines(page); expected={}; seen=set()
+    for unit in units:
+        i=unit.get("index")
+        if not isinstance(i,int) or i<0 or i>=len(inputs) or i in seen or unit.get("text")!=inputs[i]:return False
+        seen.add(i); end=0
+        for part in unit.get("parts",[]):
+            start,stop=part.get("start"),part.get("end")
+            if start!=end or not isinstance(stop,int) or stop<=start or stop>len(inputs[i]):return False
+            if part.get("text")!=inputs[i][start:stop]:return False
+            expected.setdefault(part.get("id"),[]).append(part["text"]);end=stop
+        if end!=len(inputs[i]):return False
+    rows={r['id']:r for r in page['regions']}
+    if not expected.keys()<=rows.keys():return False
+    if any(rows[rid]['bubble']=='skip' or rows[rid]['lines']!=texts for rid,texts in expected.items()):return False
+    actual={r['id']:r['lines'] for r in page['regions'] if r['bubble']!='skip' and r['lines_src']!='manual' and r['lines']}
+    return {rid:texts for rid,texts in expected.items() if rows[rid]['lines_src']!='manual'}==actual
+
+
+def review_local_assignments(project, page):
+    from .semantic_match import VERSION as MATCH_VERSION
+    from .match_language import lexical
+    source_present=project.has(page,'raw.png') or (project.data['source']!='redraw' and project.has(page,'work.png'))
+    valid=source_present and valid_provenance(project,page)
+    for region in page['regions']:
+        if not region['lines'] or region['lines_src']=='manual':continue
+        units=[u for u in page.get('assignment_units',[]) if any(p['id']==region['id'] for p in u['parts'])]
+        checks=[]
+        for unit in units:
+            evidence=unit.get('evidence') or {}; score=evidence.get('score',-99); margin=evidence.get('margin',-99)
+            exact=lexical(unit['text'],region.get('ja',''))>=6
+            good=bool(valid and evidence.get('version')==MATCH_VERSION and
+                      region.get('source_ocr_confidence',1.)>=.8 and
+                      (exact or (score>=.8 and margin>=.3 and not _unreliable_japanese(evidence.get('ja','')))))
+            checks.append({'text':unit['text'],'state':'passed' if good else 'review','models':evidence,
+                           'reason':'Khớp chữ/SFX' if exact else 'So nghĩa hai chiều và ngữ cảnh bóng', 'candidates':[]})
+        passed=bool(checks) and all(c['state']=='passed' for c in checks)
+        region['meaning_review']={'signature':_signature(project,page,region),'state':'passed' if passed else 'review',
+                                  'method':'local-bidirectional','checks':checks,
+                                  'reason':'Nghĩa Nhật–Việt phù hợp' if passed else 'Chưa đủ bằng chứng nghĩa; xem ảnh gán thử'}
+        region['uncertain']=not passed
+    project.save()
 
 
 def verify_page(project, page, report=None, models=None):
@@ -186,7 +235,13 @@ def require_verified(project, page, report=None):
         problems.append(f"{len(page['unplaced'])} câu chưa có vùng")
     expected = translation_units(project.page_lines(page))
     actual = translation_units([s for r in page["regions"] if r["bubble"]!="skip" for s in r["lines"]])
-    if expected and Counter(expected) != Counter(actual):
+    conserved=Counter(expected)==Counter(actual)
+    if not conserved and valid_provenance(project,page):
+        used={u['index'] for u in page['assignment_units']}
+        covered={p['id'] for u in page['assignment_units'] for p in u['parts']}
+        manual=translation_units([s for r in page['regions'] if r['lines_src']=='manual' and r['bubble']!='skip' and r['id'] not in covered for s in r['lines']])
+        conserved=Counter(inputs for i,inputs in enumerate(project.page_lines(page)) if i not in used)==Counter(manual)
+    if expected and not conserved:
         problems.append("câu đã gán không khớp danh sách đầu vào (thiếu, trùng hoặc còn bản cũ)")
     if problems:
         raise ValueError("Dừng trước typeset — " + "; ".join(problems) +
