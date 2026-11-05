@@ -1,5 +1,8 @@
 """Meaning checks are separate from draft placement and precede all exports."""
 from pathlib import Path
+import os
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+import copy
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -11,6 +14,11 @@ from app.core import semantic_review as meaning, workflow
 
 
 class MeaningGateTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtGui import QGuiApplication
+        cls.app = QGuiApplication.instance() or QGuiApplication([])
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -112,6 +120,39 @@ class MeaningGateTests(unittest.TestCase):
         review = workflow.Project(self.project.folder/"meaning-review")
         self.assertEqual(review.pages[0]["regions"][0]["meaning_review"]["state"],"review")
         self.assertFalse((self.project.folder/"preview.png").exists())
+
+    def test_unverified_assignments_render_as_draft_without_approving_or_exporting_layers(self):
+        p,page=self.project,self.page
+        np.savez_compressed(p.file(page,"mask.npz"),mask=np.zeros((100,100),np.float32))
+        p.file(page,"typeset.json").write_bytes(b"old layer export")
+        p.file(page,"preview.png").write_bytes(b"old approved preview")
+        with patch.object(meaning,"local_models",side_effect=FileNotFoundError("missing models")):
+            meaning.verify_page(p,page)
+            before=copy.deepcopy(page)
+            with patch("app.core.ai.ask_json",side_effect=AssertionError("no API")) as api:
+                path,warnings=workflow.preview_assignments(p,page)
+            api.assert_not_called()
+            self.assertEqual(page,before)
+            self.assertEqual(Path(path).name,"assignment-preview.png")
+            image=workflow.imread(path)
+            self.assertTrue(np.any(image<200),"Actual text should be visible on the white page")
+            self.assertTrue(any("Bản gán thử" in w for w in warnings))
+            with self.assertRaisesRegex(ValueError,"Dừng trước typeset"):
+                workflow.typeset(p,page)
+        self.assertEqual(p.file(page,"typeset.json").read_bytes(),b"old layer export")
+        self.assertEqual(p.file(page,"preview.png").read_bytes(),b"old approved preview")
+
+    def test_panel_step_seven_renders_draft_without_calling_photoshop(self):
+        from app.panel import Runner
+        from unittest.mock import Mock
+        ps=Mock()
+        runner=Runner(SimpleNamespace(project=self.project,ps=ps,ai_config=SimpleNamespace()))
+        with patch("app.core.workflow.match",return_value=["Chưa xác minh nghĩa"]), \
+             patch("app.core.workflow.preview_assignments",return_value=("draft.png",["Bản gán thử"])) as preview:
+            warnings=runner.run_step("match",self.page,lambda s:None)
+        preview.assert_called_once()
+        ps.call.assert_not_called()
+        self.assertEqual(warnings,["Chưa xác minh nghĩa","Bản gán thử"])
 
 
 if __name__ == "__main__":

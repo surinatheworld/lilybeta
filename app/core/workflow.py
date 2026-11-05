@@ -627,6 +627,23 @@ def _match_locally(project: Project, page: dict, cands: list[dict], lines: list[
 # --- bước 8: typeset ---------------------------------------------------------------------------
 def typeset(project: Project, page: dict, report=None) -> tuple[str, list[str]]:
     """Dàn chữ theo bảng thoại; ghi typeset.json (thông số layer chữ cho Photoshop) và preview.png."""
+    if not any(r["lines"] and r["bubble"] != "skip" for r in page["regions"]):
+        raise ValueError("Chưa có vùng nào có câu dịch (chạy bước 7 hoặc nhập câu dịch trong bảng thoại).")
+    from .semantic_review import require_verified
+    require_verified(project, page, report)
+    return _render_assignments(project, page, report, draft=False)
+
+
+def preview_assignments(project: Project, page: dict, report=None) -> tuple[str, list[str]]:
+    """Draw the actual assignments for visual review, including unverified pairs.
+
+    This writes only assignment-preview.png; it neither approves meaning nor
+    produces layer instructions for Photoshop.
+    """
+    return _render_assignments(project, page, report, draft=True)
+
+
+def _render_assignments(project: Project, page: dict, report, *, draft: bool) -> tuple[str, list[str]]:
     from .assign import apply_plan
     from .document import Document
     from .page import Region
@@ -637,8 +654,6 @@ def typeset(project: Project, page: dict, report=None) -> tuple[str, list[str]]:
     rows = sorted((r for r in page["regions"] if r["lines"] and r["bubble"] != "skip"), key=lambda r: r["order"])
     if not rows:
         raise ValueError("Chưa có vùng nào có câu dịch (chạy bước 7 hoặc nhập câu dịch trong bảng thoại).")
-    from .semantic_review import require_verified
-    require_verified(project, page, report)
     profile = project.data["profile"]
     kinds = kinds_for(profile)
     pg = _page_object(project, page)
@@ -655,6 +670,18 @@ def typeset(project: Project, page: dict, report=None) -> tuple[str, list[str]]:
         owner[reg.uid] = rd
         plan.append((reg, list(rd["lines"])))
     pg.regions = [reg for reg, _ in plan]
+    draft_cleaned = {}
+    if draft and not redraw:
+        from .clean import easy_only
+        pg.inpainter = easy_only
+        clean_kinds = set(project.data.get("clean_kinds") or CLEAN_KINDS)
+        # Erase around the original Japanese boxes, before layout expands them.
+        for rd in rows:
+            done = rd["cleaned"] and project.has(page, "cleaned.png")
+            if not done and rd["bubble"] in clean_kinds:
+                original = Region(tuple(rd["box"]), kind="sfx" if rd["bubble"] == "sfx" else "text")
+                done = pg._clean_local(original) is None and not original.needs_redraw
+            draft_cleaned[rd["id"]] = done
     if report:
         report("Dàn chữ…")
     apply_plan(pg, plan, None)
@@ -666,7 +693,10 @@ def typeset(project: Project, page: dict, report=None) -> tuple[str, list[str]]:
         if redraw:
             r.cleaned = r.kind == "sfx"
         else:
-            r.cleaned, r.needs_redraw = True, not rd["cleaned"]
+            cleaned = rd["cleaned"] and project.has(page, "cleaned.png")
+            if draft:
+                cleaned = draft_cleaned.get(rd["id"], False)
+            r.cleaned, r.needs_redraw = True, not cleaned
     for r in pg.regions:
         if r.kind == "sfx":
             pg.clean(r)
@@ -683,12 +713,18 @@ def typeset(project: Project, page: dict, report=None) -> tuple[str, list[str]]:
         spec["name"] = f"{spec['id']} · {spec['contents']}".replace("\r", " ").replace("\u0003", " ")[:120]
     pg.doc = Document(pg)
     preview = pg.doc.composite()
-    imwrite(project.file(page, "preview.png"), preview)
-    out = project.file(page, "typeset.json")
-    out.write_text(json.dumps({"size": list(pg.size), "profile_name": PROFILES.get(profile, "Typeset"), "redraw": "",
-                               "layers": specs}, ensure_ascii=False), encoding="utf-8")
+    if draft:
+        out = project.file(page, "assignment-preview.png")
+        imwrite(out, preview)
+    else:
+        imwrite(project.file(page, "preview.png"), preview)
+        out = project.file(page, "typeset.json")
+        out.write_text(json.dumps({"size": list(pg.size), "profile_name": PROFILES.get(profile, "Typeset"), "redraw": "",
+                                   "layers": specs}, ensure_ascii=False), encoding="utf-8")
     clear_caches()
     warnings = []
+    if draft:
+        warnings.append("Bản gán thử để xem chữ ngay trong bóng; chưa xác nhận đối chiếu nghĩa và chưa tạo layer PTS.")
     if page.get("unplaced"):
         warnings.append(f"{len(page['unplaced'])} câu chưa có vùng nên chưa type")
     overlay = [s["id"] for s in specs if s.get("redraw")]

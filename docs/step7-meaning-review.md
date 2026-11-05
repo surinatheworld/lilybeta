@@ -1,5 +1,10 @@
 # Đối chiếu nghĩa bắt buộc trước typeset (không dùng API)
 
+**Xem chữ trong bóng trước khi duyệt:** sau Bước 7, panel tự dựng và mở **Bản gán thử (chữ Việt trong bóng)**.
+Câu Việt được đặt trực tiếp vào vị trí đã gán, kể cả vùng đang cần xem lại. Bạn xem ảnh rồi mới sửa/gán lại hoặc
+xác nhận nghĩa. Ảnh thử lưu riêng ở `assignment-preview.png`; không ghi đè bản typeset đã xuất và không tự
+đánh dấu đã duyệt. Vùng nền đơn giản được xoá chữ trên bản ảnh thử; phần cần redraw vẫn có thể còn chữ Nhật.
+
 ## Vì sao bản cũ vẫn gắn sai
 
 OCR tiếng Nhật chỉ nhận mặt chữ, không dịch nghĩa. Với cấu hình không API, Bước 7 cũ dùng cặp Nhật trong
@@ -19,8 +24,8 @@ không chứng minh câu Việt có cùng nghĩa với chữ Nhật. Bước 8 c
 4. Cột **Đối chiếu nghĩa** hiển thị trạng thái. Di chuột xem lý do và các ID/chữ Nhật được gợi ý. Sửa ô Nhật
    nếu OCR sai, rồi sửa/gán lại câu Việt. Với vùng cần đánh giá ngữ cảnh, chọn vùng, xem ảnh Raw và bấm
    **Xác nhận nghĩa vùng…**; hộp xác nhận hiển thị đúng cặp Nhật–Việt, mặc định chọn Không.
-5. Bước 8 kiểm tra lại trước khi dựng chữ, ghi preview/thông số layer hoặc gọi Photoshop. Còn vùng chưa
-   xác minh, câu chưa đặt, thiếu/trùng câu đầu vào thì dừng. Sửa tay vị trí không tự tính là đã xác nhận nghĩa.
+5. Bước 8 kiểm tra lại trước khi xuất thông số layer hoặc gọi Photoshop. Còn vùng chưa xác minh, câu chưa đặt,
+   thiếu/trùng câu đầu vào thì dừng xuất layer. Bản gán thử ở Bước 7 vẫn xem được trước khi xác nhận nghĩa.
 
 Kết quả đối chiếu gắn với nội dung ảnh, chữ Nhật, tọa độ, các vùng trên trang và danh sách câu đầu vào.
 Thay dữ liệu liên quan thì phải kiểm tra lại, kể cả khi mở dự án cũ đã có preview/typeset.json. File xuất
@@ -67,9 +72,14 @@ xác nhận thủ công, thiếu câu và chặn trước khi dựng/xuất. Tes
 .venv\Scripts\python tests/panel_step7_smoke.py
 ```
 
-Chạy trên đúng 28 ảnh và file Word người dùng đã cung cấp: 222 vùng có câu được kiểm tra; 1 vùng đạt đồng
+Kiểm tra lớp chặn trên đúng 28 ảnh và file Word người dùng đã cung cấp: 222 vùng có câu được kiểm tra; 1 vùng đạt đồng
 thuận rõ, 221 vùng cần xem lại. Cả 28 trang bị chặn trước typeset vì còn vùng chưa xác minh, gồm lỗi gán
 đã biết ở trang 9 và 23. Không gọi API, không chạy hàm dựng chữ, không ghi đè preview/typeset.json cũ.
 Đây là kiểm tra khả năng chặn kết quả chưa xác minh, không phải số đo 100% ghép đúng. Model đối chiếu
 không tạo bản dịch Việt mới và không tự sửa hết lỗi OCR/tách bóng; các trường hợp chưa đủ bằng chứng
 vẫn cần người biết nội dung truyện đối chiếu.
+
+Sau khi bổ sung bản gán thử, cả 28 trang đã được dựng thành ảnh có chữ Việt trong các bóng theo đúng kết quả
+ghép đang có. Không thay câu/gán sẵn đáp án để làm đẹp kết quả; lỗi ghép vẫn hiện trong ảnh để đối chiếu.
+Test kiểm tra ảnh thử thực sự có chữ, không tự duyệt nghĩa, không xuất layer/ghi đè bản đã duyệt, tự mở đúng
+ảnh sau Bước 7 và không vẽ nhãn ID đè lên bản chữ.

@@ -6,6 +6,9 @@ chạy nhanh dừng nếu còn vùng chưa xác minh/câu chưa đặt. Chọn v
 `docs/step7-meaning-review.md` trong repo. Đóng/mở lại bảng Lilyzono trong PTS để nạp mã nguồn mới.
 Không tự tạo bản dịch Việt mới.
 
+Sau Bước 7, panel tự mở **Bản gán thử (chữ Việt trong bóng)** để xem câu đã đặt vào đâu trước khi duyệt.
+Các vùng chưa chắc vẫn được vẽ vào ảnh thử. Ảnh này không tự tạo layer Photoshop hay xác nhận ghép đúng.
+
 Tạo một nhóm **Lilyzono · Typeset Gái Băng** (hoặc **Typeset Isshiki**, chọn ở ô **Bộ font**; tool nhớ lựa chọn) ngay
 trong tài liệu đang mở:
 

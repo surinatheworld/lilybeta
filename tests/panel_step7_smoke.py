@@ -10,7 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QTableWidget, QHeaderView, QMessageBox
+from PySide6.QtWidgets import QApplication, QTableWidget, QHeaderView, QMessageBox, QComboBox
 
 from app.core import workflow, match_text
 from app.panel import PanelWindow, COLS, C_JA, C_VI, C_LINES, C_MEANING
@@ -63,5 +63,22 @@ with tempfile.TemporaryDirectory() as folder:
     with patch("app.panel.QMessageBox.question",return_value=QMessageBox.Yes):
         PanelWindow.confirm_meaning(window)
         assert table.item(0,C_MEANING).text() == "Đã xác nhận"
+    project.file(page,"assignment-preview.png").write_bytes(b"draft fixture")
+    window.view_kind=QComboBox()
+    window.view_kind.addItem("Raw","raw.png")
+    window.view_kind.addItem("Bản gán thử","assignment-preview.png")
+    window.runner.steps=["match"]
+    window.current=page["key"]
+    window._busy=lambda value:None
+    window.progress=SimpleNamespace(setText=lambda text:None)
+    window.refresh_pages=lambda:None
+    window.show_page=lambda key:None
+    window.log=lambda *args:None
+    PanelWindow._finished(window)
+    assert window.view_kind.currentData()=="assignment-preview.png"
+    captures=[]
+    window.view=SimpleNamespace(show_page=lambda *args:captures.append(args))
+    PanelWindow.refresh_view(window)
+    assert captures[-1][1]==[],"Draft text must be visible without ID boxes over it"
     table.close()
 print("PASS: Vietnamese reference column, read-only flags, Japanese/translation editing, stale reference hiding")
