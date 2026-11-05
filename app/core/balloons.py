@@ -26,7 +26,7 @@ def _filled(region):
     return (outside[1:-1, 1:-1] != 2).astype(np.uint8)
 
 
-def _lobes(region):
+def _lobes(region, neck_ratio=NECK_RATIO):
     """Reject extra maxima of the same oval; accept cores separated by a neck."""
     dist = cv2.distanceTransform(np.pad(region, 1), cv2.DIST_L2, 5)[1:-1, 1:-1]
     peak = float(dist.max())
@@ -46,7 +46,7 @@ def _lobes(region):
     for point in candidates[:32]:
         distinct = True
         for old in poles:
-            threshold = NECK_RATIO * min(float(dist[old]), float(dist[point]))
+            threshold = neck_ratio * min(float(dist[old]), float(dist[point]))
             _, joined = cv2.connectedComponents((dist >= threshold).astype(np.uint8), connectivity=4)
             if joined[point] == joined[old]:
                 distinct = False
@@ -59,7 +59,7 @@ def _lobes(region):
         return np.ones(region.shape, np.int32) * region, False
     cores = np.zeros(region.shape, np.int32)
     for i, pole in enumerate(poles, 1):
-        _, lab = cv2.connectedComponents((dist >= NECK_RATIO * float(dist[pole])).astype(np.uint8), connectivity=4)
+        _, lab = cv2.connectedComponents((dist >= neck_ratio * float(dist[pole])).astype(np.uint8), connectivity=4)
         cores[lab == lab[pole]] = i
     _, nearest = cv2.distanceTransformWithLabels((cores == 0).astype(np.uint8), cv2.DIST_L2, 5,
                                                 labelType=cv2.DIST_LABEL_PIXEL)
@@ -75,10 +75,21 @@ def _shape(part):
     perimeter = cv2.arcLength(contour, True)
     approx = cv2.approxPolyDP(contour, .025 * perimeter, True)
     if area / max(1, rect[1][0] * rect[1][1]) >= .88 and 4 <= len(approx) <= 6:
-        straight = cv2.approxPolyDP(contour,.006*perimeter,True).reshape(-1,2)
-        lengths = np.linalg.norm(straight-np.roll(straight,1,axis=0),axis=1)
-        if np.count_nonzero(lengths >= min(rect[1])*.45) >= 3:
-            return "square", contour  # two frame edges cannot turn a clipped oval into a caption
+        short = min(rect[1])
+        straight = cv2.approxPolyDP(contour,max(.7,.006*short),True).reshape(-1,2).astype(float)
+        vectors = straight-np.roll(straight,1,axis=0)
+        lengths = np.linalg.norm(vectors,axis=1)
+        corners = cv2.boxPoints(rect)
+        rectangular = True
+        for axis in (corners[1]-corners[0],corners[2]-corners[1]):
+            axis = axis/max(1,np.linalg.norm(axis))
+            aligned = (lengths >= short*.4) & (abs(vectors@axis) >= .99*lengths)
+            offsets = ((straight+np.roll(straight,1,axis=0))*.5)[aligned] @ np.array([-axis[1],axis[0]])
+            if len(offsets)<2 or np.ptp(offsets)<short*.6:
+                rectangular = False
+                break
+        if rectangular:
+            return "square", contour
     detailed = cv2.approxPolyDP(contour, .004 * perimeter, True).reshape(-1, 2).astype(float)
     orientation = cv2.contourArea(detailed.astype(np.float32), oriented=True)
     sharp = 0
@@ -96,8 +107,13 @@ def _shape(part):
         except cv2.error:
             defects = None
         if defects is not None:
-            _, _, w, h = cv2.boundingRect(contour)
-            if (defects.reshape(-1, 4)[:, 3] / 256 > max(3, min(w, h) * .035)).sum() >= 4:
+            bx, by, w, h = cv2.boundingRect(contour)
+            rows = defects.reshape(-1,4)
+            deep = rows[rows[:,3]/256 > max(3,min(w,h)*.018)]
+            points = contour[deep[:,2]].reshape(-1,2) if len(deep) else np.empty((0,2))
+            angles = np.arctan2(points[:,1]-(by+h/2),points[:,0]-(bx+w/2))
+            spread = len(np.unique(np.floor((angles+np.pi)/(np.pi/2))))
+            if spread>=3 and (3<=len(deep)<=16 or (len(deep)>16 and np.median(deep[:,3]/256)>.04*min(w,h))):
                 return "cloud", contour
     return "round", contour
 
@@ -117,28 +133,52 @@ def _ink_groups(ink):
 
 def _partition_lettering(ink, owners, relevant):
     """Assign whole connected strokes, including exterior text; never clip a glyph."""
-    n, glyphs = cv2.connectedComponents(ink)
+    _, _, stats, _ = cv2.connectedComponentsWithStats(ink)
+    sizes = [max(w,h) for x,y,w,h,area in stats[1:] if area >= 8]
+    gap = max(3,min(13,round(float(np.percentile(sizes,75))*.35))) | 1 if sizes else 3
+    _, words = cv2.connectedComponents(cv2.dilate(ink,cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(gap,gap))))
     stride = int(owners.max())+1
-    votes = np.bincount((glyphs*stride+owners).ravel(),minlength=n*stride).reshape(n,stride)
-    assignment = np.zeros(n,np.int32)
-    for g in range(1,n):
+    count = int(words.max())+1
+    votes = np.bincount((words[ink>0]*stride+owners[ink>0]),minlength=count*stride).reshape(count,stride)
+    assignment = np.zeros(count,np.int32)
+    for g in range(1,count):
         row = votes[g]
         total = int(row.sum())
-        if sum(row[p] >= max(2,.04*total) for p in relevant) > 1:
-            return None  # a real stroke crosses the lobe boundary
         part = int(row.argmax())
-        if part in relevant and row[part] >= .95*total:
+        if sum(row[p] >= max(2,.04*total) for p in relevant) > 1 and row[part] < .75*total:
+            return None  # a connected word truly spans both lobes; keep it intact
+        if part in relevant and row[part] >= .75*total:
             assignment[g] = part
-    mapped = assignment[glyphs]
+    mapped = assignment[words]
     inside = [(p,(mapped == p) & (ink > 0)) for p in relevant]
     outside = _ink_groups(((ink > 0) & (mapped == 0)).astype(np.uint8))
     return inside + [(0,group) for group in outside]
+
+
+def _broad_neck(region):
+    contour = max(cv2.findContours(region,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0],key=cv2.contourArea)
+    hull = cv2.convexHull(contour,returnPoints=False)
+    if len(contour) <= len(hull) or len(hull) <= 3:
+        return False
+    try:
+        defects = cv2.convexityDefects(contour,hull)
+    except cv2.error:
+        return False
+    if defects is None:
+        return False
+    depths = np.sort(defects.reshape(-1,4)[:,3]/256)[::-1]
+    short = min(region.shape)
+    return depths[0] > .12*short and (depths[0] > .2*short or (len(depths)>1 and depths[1]>.08*short))
 
 
 def _plausible(body, bright=None):
     """White panel background winds around artwork; a balloon is more compact."""
     if bright is not None and np.count_nonzero(body & bright) < .85*np.count_nonzero(body):
         return False  # screentone/art background, not a predominantly plain light interior
+    if bright is not None:
+        _,_,islands,_ = cv2.connectedComponentsWithStats((body & (1-bright)).astype(np.uint8))
+        if any(a > max(36,.02*body.sum()) and min(w,h)>=8 for x,y,w,h,a in islands[1:]):
+            return False  # a mostly white panel can still enclose a character's black hair
     contours, _ = cv2.findContours(body, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return False
@@ -149,8 +189,151 @@ def _plausible(body, bright=None):
     return solidity >= .7 and complexity <= 1.85
 
 
+def _ellipse_match(body,threshold=.9):
+    contour = max(cv2.findContours(body,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)[0],key=cv2.contourArea)
+    if len(contour)<5:
+        return False
+    fitted = np.zeros(body.shape,np.uint8)
+    cv2.ellipse(fitted,cv2.fitEllipse(contour),1,-1)
+    return np.count_nonzero(fitted & body) >= threshold*max(1,np.count_nonzero(fitted | body))
+
+
+def _thought_tail(body,x,y,labels,stats,gray,text_boxes=()):
+    """Empty round satellites on plain paper, with a chain or an attached bulb."""
+    h,w = body.shape;short=min(w,h);pad=max(12,round(short*.35))
+    candidates=np.flatnonzero((stats[:,0]+stats[:,2]>x-pad)&(stats[:,0]<x+w+pad)
+        &(stats[:,1]+stats[:,3]>y-pad)&(stats[:,1]<y+h+pad)
+        &(stats[:,2]>=4)&(stats[:,3]>=4)&(stats[:,2]<=short*.22)&(stats[:,3]<=short*.22)
+        &(stats[:,4]>=8)&(stats[:,4]<body.sum()*.05))
+    contour=max(cv2.findContours(body,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)[0],key=cv2.contourArea)
+    boundary=contour.reshape(-1,2).astype(float)
+    satellites=[]
+    for label in candidates:
+        if not label:continue
+        sx,sy,sw,sh,area=map(int,stats[label])
+        component=(labels[sy:sy+sh,sx:sx+sw]==label).astype(np.uint8)
+        if any(a<=sx+sw/2<c and b<=sy+sh/2<d for a,b,c,d in text_boxes):continue
+        if np.count_nonzero((component>0)&(gray[sy:sy+sh,sx:sx+sw]<180))>.1*area:continue
+        ring=max(cv2.findContours(component,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0],key=cv2.contourArea)
+        perimeter=cv2.arcLength(ring,True)
+        if (min(sw,sh)<.6*max(sw,sh) or 4*np.pi*cv2.contourArea(ring)<.65*perimeter**2
+                or not _ellipse_match(component,.8)):continue
+        radius=max(sw,sh)
+        left,top=max(0,sx-radius),max(0,sy-radius)
+        context=gray[top:sy+sh+radius,left:sx+sw+radius]
+        if np.mean(context>=220)<.72:continue
+        center=np.array([sx+sw/2-x,sy+sh/2-y])
+        ix,iy=np.rint(center).astype(int)
+        if 0<=ix<w and 0<=iy<h and body[iy,ix]:
+            continue  # scene bubbles inside a panel are not an exterior thought tail
+        distance=np.linalg.norm(boundary-center,axis=1)
+        nearest=boundary[int(distance.argmin())]
+        if distance.min()>short*.35:continue
+        satellites.append((center,nearest,float(distance.min())))
+    for center,nearest,distance in satellites:
+        for other,_,farther in satellites:
+            a=center-np.array([w/2,h/2]);b=other-np.array([w/2,h/2])
+            if (distance<short*.2 and farther>distance and 3<np.linalg.norm(center-other)<short*.3
+                    and a@b>.85*np.linalg.norm(a)*np.linalg.norm(b)):
+                return True
+        if len(contour)>=5 and distance<max(10,short*.2):
+            (cx,cy),(ew,eh),angle=cv2.fitEllipse(contour)
+            delta=nearest-np.array([cx,cy]);theta=np.deg2rad(angle)
+            u=delta[0]*np.cos(theta)+delta[1]*np.sin(theta)
+            v=-delta[0]*np.sin(theta)+delta[1]*np.cos(theta)
+            if (u/max(1,ew/2))**2+(v/max(1,eh/2))**2>1.12:
+                return True
+    return False
+
+
+def _radial_outline(walls,box,gray):
+    x1,y1,x2,y2=box;short=min(x2-x1,y2-y1);extent=max(x2-x1,y2-y1)
+    if short<16:return False
+    near=max(12,round(short*.5))
+    left,top=max(0,x1-near),max(0,y1-near)
+    context=gray[top:y2+near,left:x2+near]
+    ring=np.ones(context.shape,bool)
+    ring[y1-top:y2-top,x1-left:x2-left]=False
+    if np.mean(context[ring]>=220)<.9:return False
+    pad=round(extent*.9)
+    left,top=max(0,x1-pad),max(0,y1-pad)
+    crop=walls[top:y2+pad,left:x2+pad]
+    cx,cy=(x1+x2)/2-left,(y1+y2)/2-top
+    lines=cv2.HoughLinesP(crop*255,1,np.pi/180,max(8,round(short*.12)),
+                          minLineLength=max(8,short*.13),maxLineGap=2)
+    bins=set();count=0
+    for a,b,c,d in [] if lines is None else lines.reshape(-1,4):
+        dx,dy=float(c-a),float(d-b);rx,ry=(a+c)/2-cx,(b+d)/2-cy
+        length=np.hypot(dx,dy);radius=np.hypot(rx,ry)
+        if not (.45*short<radius<1.5*extent) or abs(dx*rx+dy*ry)<.92*length*radius:continue
+        ex=(x2-x1)/2+.25*short;ey=(y2-y1)/2+.25*short
+        if not 1<np.hypot(rx/ex,ry/ey)<1.9:continue
+        xx=np.rint(np.linspace(a,c,max(2,round(length)))).astype(int)
+        yy=np.rint(np.linspace(b,d,len(xx))).astype(int)
+        if np.mean(crop[yy,xx]>0)<.85:continue
+        bins.add(int((np.arctan2(ry,rx)+np.pi)*16/(2*np.pi))%16);count+=1
+    return count>=10 and len(bins)>=10
+
+
+def _complete_ellipse(walls,lettering,bright):
+    """Fit an observed C-shaped arc, then verify almost all of its circumference."""
+    if not lettering.any():return None
+    ys,xs=np.nonzero(lettering);tx1,tx2=xs.min(),xs.max()+1;ty1,ty2=ys.min(),ys.max()+1
+    contours=cv2.findContours(walls,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)[0]
+    contours=sorted(contours,key=lambda c:cv2.arcLength(c,True),reverse=True)[:8]
+    support=cv2.dilate(walls,np.ones((9,9),np.uint8))
+    trials=[]
+    for observed in contours:
+        if len(observed)<12 or cv2.arcLength(observed,True)<2*((tx2-tx1)+(ty2-ty1)):continue
+        trials.append(observed)
+        ox,oy,ow,oh=cv2.boundingRect(observed)
+        if ox<=tx1 and oy<=ty1 and ox+ow>=tx2 and oy+oh>=ty2:
+            for fraction in (.2,.35,.5):
+                length=max(12,round(len(observed)*fraction))
+                extended=np.concatenate([observed,observed])
+                trials.extend(extended[start:start+length] for start in range(0,len(observed),max(1,len(observed)//8)))
+    best=None;score=.85
+    for observed in trials:
+        try:ellipse=cv2.fitEllipse(observed[::max(1,len(observed)//4096)])
+        except cv2.error:continue
+        (cx,cy),(ew,eh),angle=ellipse
+        if min(ew,eh)<12 or max(ew,eh)>2*max(walls.shape):continue
+        points=cv2.ellipse2Poly((round(cx),round(cy)),(round(ew/2),round(eh/2)),round(angle),0,360,5)
+        if (points[:,0].min()<=0 or points[:,1].min()<=0 or points[:,0].max()>=walls.shape[1]-1
+                or points[:,1].max()>=walls.shape[0]-1):continue
+        coverage=float(np.mean(support[points[:,1],points[:,0]]>0))
+        if coverage<score:continue
+        body=np.zeros(walls.shape,np.uint8);cv2.ellipse(body,ellipse,1,-1)
+        contour=max(cv2.findContours(body,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)[0],key=cv2.contourArea)
+        x,y,w,h=cv2.boundingRect(contour);area=int(body.sum())
+        if (x==0 or y==0 or x+w>=walls.shape[1] or y+h>=walls.shape[0]
+                or not 1.15*(tx2-tx1)*(ty2-ty1)<=area<=8*(tx2-tx1)*(ty2-ty1)
+                or np.count_nonzero(body & lettering)<.98*lettering.sum()):continue
+        points=contour.reshape(-1,2)
+        coverage=float(np.mean(support[points[:,1],points[:,0]]>0))
+        if coverage<score or not _plausible(body,bright):continue
+        best=contour;score=coverage
+        if score>.99:break
+    return best
+
+
+def _dark_container(gray,pred,box,cache):
+    if not cache:
+        dark=((gray<100)|(pred>.3)).astype(np.uint8)
+        cache.extend(cv2.connectedComponentsWithStats(dark,connectivity=4)[1:3])
+    labels,stats=cache;x1,y1,x2,y2=box
+    hits=np.bincount(labels[y1:y2,x1:x2].ravel(),minlength=len(stats));hits[0]=0
+    p=int(hits.argmax());x,y,w,h,area=map(int,stats[p])
+    if not p or area>20*(x2-x1)*(y2-y1) or hits[p]<.5*(x2-x1)*(y2-y1):return "free",[]
+    body=(labels[y:y+h,x:x+w]==p).astype(np.uint8)
+    kind,contour=_shape(body)
+    if (kind=="square" and area>=.85*w*h) or (kind=="round" and _ellipse_match(body)):
+        return kind,(contour.reshape(-1,2)+(x,y)).tolist()
+    return "free",[]
+
+
 def _repair_open_outlines(walls, ink, bright, boxes, scale, protected):
-    """Complete a short missing arc only when the remaining outline proves two lobes.
+    """Complete a short missing arc supported by the remaining observed contour.
 
     Directional closing is a proposal, never the output mask: most of the proposed
     contour must already exist on the page. Only that accepted contour is added,
@@ -158,15 +341,35 @@ def _repair_open_outlines(walls, ink, bright, boxes, scale, protected):
     """
     repaired = walls.copy()
     height, width = walls.shape
+    _, enclosed, enclosed_stats, _ = cv2.connectedComponentsWithStats(1-walls, connectivity=4)
+    closed_parents = {}
     for box in boxes:
         coords = (box.x1, box.y1, box.x2, box.y2)
         if box.kind == "sfx" or any(_overlap(coords, p) > .5 for p in protected):
             continue
         x1, y1, x2, y2 = [round(v*scale) for v in coords]
+        # Inspect the full-page component before cropping. A closed, tall
+        # balloon may extend beyond this local ROI; cropping must not turn its
+        # edge into a fictitious gap and close each lobe independently.
+        seed = ink[y1:y2,x1:x2] > 0
+        if seed.any():
+            hits = np.bincount(enclosed[y1:y2,x1:x2][seed], minlength=len(enclosed_stats))
+            hits[0] = 0
+            parent = int(hits.argmax())
+            px, py, pw, ph, _ = enclosed_stats[parent]
+            if (hits[parent] >= .9*seed.sum() and px>0 and py>0
+                    and px+pw<width and py+ph<height):
+                # A closed panel also encloses an open balloon. Its artwork and
+                # winding background must not suppress recovery of the real arc.
+                if parent not in closed_parents:
+                    body = _filled(enclosed[py:py+ph,px:px+pw] == parent)
+                    closed_parents[parent] = _plausible(body, bright[py:py+ph,px:px+pw])
+                if closed_parents[parent]:
+                    continue
         short = min(x2-x1, y2-y1)
         if short < 24:
             continue
-        pad = max(24, round(short*.8))
+        pad = max(24, round(short*1.2))
         left, top = max(0,x1-pad), max(0,y1-pad)
         right, bottom = min(width,x2+pad), min(height,y2+pad)
         local = repaired[top:bottom,left:right]
@@ -231,13 +434,19 @@ def _repair_open_outlines(walls, ink, bright, boxes, scale, protected):
                 parts, conjoined = _lobes(body)
                 amounts = np.bincount(parts[lettering[y:y+h,x:x+w] > 0],minlength=int(parts.max())+1)
                 if not conjoined or np.count_nonzero(amounts[1:] >= max(MIN_INK,.15*total)) < 2:
-                    continue
+                    if (conjoined or area>8*(x2-x1)*(y2-y1) or supported.mean()<.93
+                            or not _ellipse_match(body)):
+                        continue
                 accepted = contour + np.array([left+x,top+y],np.int32)
                 break
             if accepted is not None:
                 break
         if accepted is not None:
             cv2.drawContours(repaired,[accepted],-1,1,1)
+        else:
+            arc=_complete_ellipse(local,lettering,bright[top:bottom,left:right])
+            if arc is not None:
+                cv2.drawContours(repaired,[arc+np.array([left,top],np.int32)],-1,1,1)
     return repaired
 
 
@@ -260,7 +469,7 @@ def _outlined_children(boxes, labels, stats, ink, bright, scale, protected, size
         crop = ink[y1:y2,x1:x2]
         hits = np.bincount(labels[y1:y2,x1:x2][crop > 0], minlength=len(stats))
         candidates = []
-        for parent in np.flatnonzero(hits >= max(MIN_INK, .15*crop.sum())):
+        for parent in np.flatnonzero(hits >= MIN_INK):
             x, y, w, h, area = map(int, stats[parent])
             if (parent and x > 0 and y > 0 and x+w < sw and y+h < sh
                     and 3*hits[parent] <= area <= .3*sw*sh and min(w,h) >= 12):
@@ -294,8 +503,8 @@ def _outlined_children(boxes, labels, stats, ink, bright, scale, protected, size
 def refine(image, text_mask, boxes, protected=()):
     """Return (text boxes, evidence keyed by box). Ambiguous ink is never cut.
 
-    Evidence is supplementary: unsupported open, dark or unbounded balloons keep
-    the existing classifier. Multiple text columns in one oval stay one text box.
+    Unsupported boundaries are marked for review as unboxed text. Multiple text
+    columns in one oval stay one text box.
     Protected boxes represent manual work and are never automatically divided.
     """
     if not boxes:
@@ -307,14 +516,20 @@ def refine(image, text_mask, boxes, protected=()):
     pred = cv2.resize(text_mask, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_LINEAR)
     from .text_candidates import filter_decorations
     source_gray = gray.copy()
+    _,raw_white,raw_stats,_=cv2.connectedComponentsWithStats((source_gray>=200).astype(np.uint8),connectivity=4)
     # The detector supports both dark and reversed lettering. Thresholding the
     # image to dark ink here silently loses white glyphs on cards/dark artwork.
-    ink = (pred > .3).astype(np.uint8)
+    # Pool a binary mask before scaling: interpolating probabilities first can
+    # erase a small stroke just above the threshold, then silently drop it when
+    # a spanning rectangle is replaced by child rectangles.
+    ink = cv2.resize((text_mask > .3).astype(np.float32), (gray.shape[1], gray.shape[0]),
+                     interpolation=cv2.INTER_AREA) > 0
+    ink = ink.astype(np.uint8)
     paper = max(220, min(245, float(np.percentile(gray,95))-10))
     bright = ((gray >= paper) | (ink > 0)).astype(np.uint8)
     # Remove actual predicted lettering, not the whole encompassing rectangle:
     # a spanning box can contain the border separating two overlapping balloons.
-    gray[pred > .3] = 255
+    gray[ink > 0] = 255
     walls = cv2.morphologyEx((gray < 190).astype(np.uint8), cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
     walls = _repair_open_outlines(walls,ink,bright,boxes,scale,protected)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(1 - walls, connectivity=4)
@@ -322,12 +537,27 @@ def refine(image, text_mask, boxes, protected=()):
     boxes, evidence = _outlined_children(boxes,labels,stats,ink,bright,scale,protected,(w,h))
     scaled = []
     parents = {}
+    validated=set();dark_cache=[];negative_parent=-1
+    def separate_evidence(shape,outline=(),uncertain=False,note=""):
+        nonlocal negative_parent
+        item={"parent":negative_parent,"part":1,"parts":1,"shape":shape,"outline":list(outline),
+              "split":False,"uncertain":uncertain,"note":note}
+        negative_parent-=1
+        return item
     for i, box in enumerate(boxes):
         coords = (box.x1, box.y1, box.x2, box.y2)
         x1, y1 = max(0, round(coords[0]*scale)), max(0, round(coords[1]*scale))
         x2, y2 = min(sw, round(coords[2]*scale)), min(sh, round(coords[3]*scale))
         scaled.append((x1, y1, x2, y2))
         if x2 <= x1 or y2 <= y1 or box.kind == "sfx":
+            continue
+        pad=max(3,min(20,round(min(x2-x1,y2-y1)*.3)))
+        px1,py1=max(0,x1-pad),max(0,y1-pad)
+        background=source_gray[py1:y2+pad,px1:x2+pad][pred[py1:y2+pad,px1:x2+pad]<=.3]
+        if len(background)>12 and np.median(background)<100:
+            kind,outline=_dark_container(source_gray,pred,(x1,y1,x2,y2),dark_cache)
+            outline=[[round(px/scale),round(py/scale)] for px,py in outline]
+            evidence[coords]=separate_evidence(kind,outline)
             continue
         hits = np.bincount(labels[y1:y2, x1:x2].ravel(), minlength=n)
         hits[0] = 0
@@ -336,10 +566,9 @@ def refine(image, text_mask, boxes, protected=()):
             continue
         x, y, bw, bh, area = map(int, stats[parent])
         if x == 0 or y == 0 or x+bw >= sw or y+bh >= sh or area > .3*sw*sh:
-            continue
+            if area>8*(x2-x1)*(y2-y1):continue
         parents.setdefault(parent, []).append(i)
     replacements = {}
-    outside_parent = -1
     for parent, indices in parents.items():
         x, y, bw, bh, area = map(int, stats[parent])
         text_area = sum((scaled[i][2]-scaled[i][0])*(scaled[i][3]-scaled[i][1]) for i in indices)
@@ -348,7 +577,15 @@ def refine(image, text_mask, boxes, protected=()):
         body = _filled(labels[y:y+bh, x:x+bw] == parent)
         if not _plausible(body,bright[y:y+bh,x:x+bw]):
             continue
+        if area > 5*text_area and _shape(body)[0]=="cloud" and not _ellipse_match(body):
+            continue
+        thought = _thought_tail(body,x,y,raw_white,raw_stats,source_gray,
+                               [s for s,b in zip(scaled,boxes) if b.kind!="sfx"])
         parts, conjoined = _lobes(body)
+        if not conjoined and _broad_neck(body):
+            parts, conjoined = _lobes(body,.94)
+            if not conjoined:
+                parts, conjoined = _lobes(body,.99)
         occupied = np.bincount(parts[ink[y:y+bh,x:x+bw] > 0], minlength=int(parts.max())+1)
         has_text_lobes = np.count_nonzero(occupied[1:] >= MIN_INK) >= 2
         if not conjoined or (not has_text_lobes and _shape(body)[0] == "cloud"):
@@ -356,23 +593,32 @@ def refine(image, text_mask, boxes, protected=()):
             # Font weight is not evidence of rays, and one deep scallop does
             # not cancel all the other dents of a cloud.
             kind, contour = _shape(body)
-            if area > 8*text_area:
+            if thought:kind="cloud"
+            if area > (8 if kind=="square" else 5)*text_area and not _ellipse_match(body):
                 continue  # a whole white panel is not a balloon
             contour = cv2.approxPolyDP(contour,max(.8,.003*cv2.arcLength(contour,True)),True).reshape(-1,2)
             outline = [[round((px+x)/scale),round((py+y)/scale)] for px,py in contour]
             for i in indices:
+                validated.add((boxes[i].x1,boxes[i].y1,boxes[i].x2,boxes[i].y2))
                 b = boxes[i]
+                if evidence.get((b.x1,b.y1,b.x2,b.y2),{}).get("parts",1)>1:
+                    continue  # preserve an overlap split already proved by the interior border
                 evidence[(b.x1,b.y1,b.x2,b.y2)] = {
                     "parent":parent,"part":1,"parts":1,"shape":kind,"outline":outline,
                     "split":False,"uncertain":False,
                 }
             continue
         if not has_text_lobes:
+            validated.update((boxes[i].x1,boxes[i].y1,boxes[i].x2,boxes[i].y2) for i in indices)
             continue  # a wide tail/empty decorative lobe is not a second text-bearing balloon
         part_ids = list(range(1, int(parts.max()) + 1))
+        if not thought:
+            thought = any(_thought_tail((parts==p).astype(np.uint8),x,y,raw_white,raw_stats,source_gray,
+                          [s for s,b in zip(scaled,boxes) if b.kind!="sfx"]) for p in part_ids)
         outlines = {}
         for part_id in part_ids:
             kind, contour = _shape(parts == part_id)
+            if thought:kind="cloud"
             contour = cv2.approxPolyDP(contour, max(.8, .003*cv2.arcLength(contour, True)), True).reshape(-1, 2)
             outline = [[int(round((px+x)/scale)), int(round((py+y)/scale))] for px, py in contour]
             outlines[part_id] = (kind, outline)
@@ -387,19 +633,11 @@ def refine(image, text_mask, boxes, protected=()):
             lettering = np.zeros(body.shape, np.uint8)
             lettering[top:bottom, left:right] = ink[y+top:y+bottom, x+left:x+right]
             amounts = np.bincount(parts[lettering > 0], minlength=len(part_ids)+1)
-            relevant = [j for j in part_ids if amounts[j] >= max(MIN_INK, .15*lettering.sum())]
+            relevant = [j for j in part_ids if amounts[j] >= MIN_INK]
             if not relevant:
                 continue
-            cuts_ink = False
-            if len(relevant) > 1:
-                nc, glyphs = cv2.connectedComponents(lettering)
-                for glyph in range(1, nc):
-                    ids, counts = np.unique(parts[glyphs == glyph], return_counts=True)
-                    if sum(count >= max(2, .04*counts.sum()) for pid, count in zip(ids, counts) if pid) > 1:
-                        cuts_ink = True
-                        break
             locked = any(_overlap(original, p) > .5 for p in protected)
-            split = len(relevant) > 1 and not locked and not cuts_ink
+            split = len(relevant) > 1 and not locked
             targets = []
             if split:
                 # Work over the complete detector rectangle, not just the
@@ -426,12 +664,10 @@ def refine(image, text_mask, boxes, protected=()):
             for target, part_id in targets:
                 if part_id == 0:
                     small = min(target.x2-target.x1,target.y2-target.y1)*scale < 12
-                    evidence[(target.x1,target.y1,target.x2,target.y2)] = {
-                        "parent":outside_parent,"part":1,"parts":1,"shape":"free","outline":[],
-                        "split":True,"uncertain":small,"note":"Chữ ngoài bóng: tách khỏi khung gộp"
-                        + (" · ít nét, cần kiểm tra" if small else ""),
-                    }
-                    outside_parent -= 1
+                    meta=separate_evidence("free",uncertain=small,note="Chữ ngoài bóng: tách khỏi khung gộp"
+                        + (" · ít nét, cần kiểm tra" if small else ""))
+                    meta["split"]=True
+                    evidence[(target.x1,target.y1,target.x2,target.y2)]=meta
                     continue
                 kind, outline = outlines[part_id]
                 evidence[(target.x1, target.y1, target.x2, target.y2)] = {
@@ -440,6 +676,15 @@ def refine(image, text_mask, boxes, protected=()):
                     "uncertain": len(relevant) > 1 and len(targets) == 1,
                 }
     out = [b for i, box in enumerate(boxes) for b in replacements.get(i, [box])]
+    for box in out:
+        coords=(box.x1,box.y1,box.x2,box.y2)
+        if (box.kind=="sfx" or coords in evidence or coords in validated
+                or any(_overlap(coords,p)>.5 for p in protected)):continue
+        scaled_box=tuple(round(v*scale) for v in coords)
+        if _radial_outline(walls,scaled_box,source_gray):
+            evidence[coords]=separate_evidence("cloud")
+        else:
+            evidence[coords]=separate_evidence("free",uncertain=True,note="Không xác nhận được viền bóng: kiểm tra chữ ngoài khung")
     out = filter_decorations(source_gray,pred,out,scale,protected)
     keys = {(b.x1,b.y1,b.x2,b.y2) for b in out}
     return out, {k:v for k,v in evidence.items() if k in keys}
