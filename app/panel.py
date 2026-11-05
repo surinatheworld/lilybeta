@@ -37,8 +37,8 @@ BUBBLE_COLORS = {"round": "#2f81f7", "square": "#a371f7", "ray": "#f0883e", "clo
 REQUIRES = {"detect": ["open"], "setup": ["detect"], "raw": ["open"], "ocr": ["raw", "detect"],
             "clean": ["detect"], "match": ["detect"], "typeset": ["detect"]}
 COLS = ["ID", "Loại bóng", "Kiểu chữ", "Font", "Cỡ", "Chữ Nhật (OCR)", "Việt tham chiếu (AI)",
-        "Bản dịch (mỗi câu một dòng)", "Tin cậy", "Ghi chú"]
-C_ID, C_BUBBLE, C_KIND, C_FONT, C_SIZE, C_JA, C_VI, C_LINES, C_CONF, C_NOTE = range(len(COLS))
+        "Bản dịch (mỗi câu một dòng)", "Đối chiếu nghĩa", "Tin cậy", "Ghi chú"]
+C_ID, C_BUBBLE, C_KIND, C_FONT, C_SIZE, C_JA, C_VI, C_LINES, C_MEANING, C_CONF, C_NOTE = range(len(COLS))
 
 
 # --- Photoshop qua COM ----------------------------------------------------------------------------
@@ -92,8 +92,8 @@ class Photoshop:
 # --- thiết lập AI --------------------------------------------------------------------------------
 def load_ai_config() -> ai.AIConfig:
     s = QSettings("Lilyzono", "Panel")
-    provider = s.value("ai/provider", "gemini")
-    return ai.AIConfig(provider=provider if provider in ai.PROVIDERS else "gemini", model=s.value("ai/model", ""),
+    provider = s.value("ai/provider", "none")
+    return ai.AIConfig(provider=provider if provider in ai.PROVIDERS else "none", model=s.value("ai/model", ""),
                        match_model=s.value("ai/match_model", ""), base_url=s.value("ai/base_url", ""),
                        send_image_on_match=s.value("ai/match_image", "true") == "true")
 
@@ -164,10 +164,9 @@ class AIDialog(QDialog):
                 box.addItems(([""] if box is self.match_model else []) + [ai.GEMINI_FREE, *ai.FREE_MODELS])
         self.model.setCurrentText(info["model"])
         if not on:
-            self.info.setText("Bước 2: loại bóng đoán theo hình bóng, thứ tự đọc theo khung tranh. Bước 7: bộ ghép câu "
-                              "trên máy dùng câu gốc tiếng Nhật hoặc bản Việt tham chiếu đã lưu, rồi độ dài/thứ tự đọc. "
-                              "Không tạo bản dịch Nhật → Việt mới. "
-                              "Không cần key, không tốn phí; nên kiểm tra kỹ bảng thoại.")
+            self.info.setText("Không gọi API. Bước 7 đề xuất ghép trên máy rồi đối chiếu nghĩa Nhật–Việt bằng model "
+                              "cục bộ. Bước 8 dừng nếu còn vùng chưa xác minh hoặc câu chưa đặt. "
+                              "Câu ngắn/OCR lỗi cần xem Raw và xác nhận ở bảng thoại; không tự tạo bản dịch mới.")
             return
         self.base_url.setPlaceholderText(info["url"])
         saved = secrets.get_key(key)
@@ -773,7 +772,9 @@ class PanelWindow(QMainWindow):
         up, down = QPushButton("↑"), QPushButton("↓")
         delete = QPushButton("Xoá vùng")
         unlock = QPushButton("Bỏ khoá chỉnh tay")
-        for b in (up, down, delete, unlock):
+        confirm_meaning = QPushButton("Xác nhận nghĩa vùng…")
+        confirm_meaning.clicked.connect(self.confirm_meaning)
+        for b in (up, down, delete, unlock, confirm_meaning):
             trow.addWidget(b)
         trow.addStretch(1)
         rlay.addLayout(trow)
@@ -1184,6 +1185,7 @@ class PanelWindow(QMainWindow):
 
     def fill_table(self) -> None:
         from .core.match_text import reference
+        from .core.semantic_review import current_review
         from .core.typeset_profiles import kinds_for
 
         page = self.page_obj()
@@ -1250,6 +1252,17 @@ class PanelWindow(QMainWindow):
                 if r["lines_src"] == "manual":
                     lines.setFont(bold)
                 self.table.setItem(row, C_LINES, lines)
+                meaning = current_review(self.project, page, r)
+                state = (meaning or {}).get("state", "")
+                label = {"passed":"Model đã đối chiếu", "confirmed":"Đã xác nhận", "review":"Cần đối chiếu"}.get(state, "Chưa đối chiếu")
+                status = QTableWidgetItem(label if r["lines"] else "")
+                status.setFlags(status.flags() & ~Qt.ItemIsEditable)
+                detail = (meaning or {}).get("reason", "Chạy Bước 7 hoặc Bước 8 để kiểm tra nghĩa Nhật–Việt.")
+                for check in (meaning or {}).get("checks", []):
+                    detail += "\n\n" + check["text"] + "\n" + check["reason"]
+                    detail += "\n" + "\n".join(c["id"]+": "+c["ja"] for c in check.get("candidates", []))
+                status.setToolTip(detail)
+                self.table.setItem(row, C_MEANING, status)
                 conf = QTableWidgetItem("" if r["confidence"] is None else f"{r['confidence']:.2f}")
                 conf.setFlags(conf.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(row, C_CONF, conf)
@@ -1413,6 +1426,27 @@ class PanelWindow(QMainWindow):
         if r["src"] == "manual":
             r["src"] = "detect"
         self.project.save()
+        self.fill_table()
+
+    def confirm_meaning(self):
+        from .core.semantic_review import confirm_region, current_review
+
+        if self.runner.busy:
+            return
+        self.commit_editors()
+        page, region = self._selected_region()
+        if region is None or not region["lines"]:
+            self.log("warn", "Chọn vùng có câu dịch và đối chiếu với ảnh Raw trước khi xác nhận.")
+            return
+        review = current_review(self.project,page,region) or {}
+        text = (f"{region['id']}\n\nNhật: {region['ja'] or '(OCR chưa đọc được — xem ảnh Raw)'}\n\n"
+                + "Việt: " + "\n".join(region["lines"]) + "\n\n" + review.get("reason", "Chưa có đối chiếu tự động")
+                + "\n\nBạn đã xem ảnh Raw và xác nhận các câu Việt này thuộc đúng vùng, đúng nghĩa chưa?")
+        if QMessageBox.question(self,"Xác nhận đối chiếu Nhật–Việt",text,
+                                QMessageBox.Yes | QMessageBox.No,QMessageBox.No) != QMessageBox.Yes:
+            return
+        confirm_region(self.project,page,region)
+        self.project.invalidate(page,"match")
         self.fill_table()
 
     def save_lines(self):

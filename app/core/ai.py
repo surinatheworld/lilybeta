@@ -29,7 +29,7 @@ GEMINI_FREE = "auto-free"  # tên model đặc biệt: lần lượt các model 
 # hạn mức / quá tải / không phản hồi thì chuyển ngay sang model sau.
 FREE_MODELS = ("gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash")
 PROVIDERS = {
-    "none": {"title": "Không dùng AI (thuật toán trên máy)", "model": "", "env": "", "url": ""},
+    "none": {"title": "Không dùng API (xử lý trên máy)", "model": "", "env": "", "url": ""},
     "gemini": {"title": "Google Gemini", "model": GEMINI_FREE, "env": "GEMINI_API_KEY",
                "url": "https://generativelanguage.googleapis.com/v1beta"},
     "openai": {"title": "OpenAI", "model": "gpt-5.5", "env": "OPENAI_API_KEY", "url": "https://api.openai.com/v1"},

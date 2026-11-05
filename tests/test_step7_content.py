@@ -65,7 +65,7 @@ class StepSevenContentTests(unittest.TestCase):
         with patch("app.core.ocr.reader", return_value=SimpleNamespace(read=read)), \
                 patch("app.core.ai.ask_json", side_effect=request) as api:
             warnings = workflow.match(self.project, self.page, self.cfg, progress.append)
-            self.assertFalse(warnings)
+            self.assertTrue(any("Chưa xác minh nghĩa" in w for w in warnings))
             self.assertEqual(api.call_count,1)  # translation and assignment in one request
             workflow.match(self.project, self.page, self.cfg)
         self.assertEqual(len(calls),2)  # Japanese is reused on rerun

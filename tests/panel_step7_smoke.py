@@ -6,13 +6,15 @@ from pathlib import Path
 import sys
 import tempfile
 from types import SimpleNamespace
+from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QTableWidget, QHeaderView
+from PySide6.QtWidgets import QApplication, QTableWidget, QHeaderView, QMessageBox
 
 from app.core import workflow, match_text
-from app.panel import PanelWindow, COLS, C_JA, C_VI, C_LINES
+from app.panel import PanelWindow, COLS, C_JA, C_VI, C_LINES, C_MEANING
+from app.core.semantic_review import confirm_region
 
 
 app = QApplication([])
@@ -35,6 +37,11 @@ with tempfile.TemporaryDirectory() as folder:
     assert table.item(0,C_VI).text() == "Cảm ơn anh."
     assert not table.item(0,C_VI).flags() & Qt.ItemIsEditable
     assert table.item(0,C_LINES).data(Qt.UserRole) == "Cảm ơn anh rất nhiều."
+    assert table.item(0,C_MEANING).text() == "Chưa đối chiếu"
+    assert not table.item(0,C_MEANING).flags() & Qt.ItemIsEditable
+    confirm_region(project,page,r)
+    PanelWindow.fill_table(window)
+    assert table.item(0,C_MEANING).text() == "Đã xác nhận"
     PanelWindow._item_changed(window,table.item(0,C_JA))
     assert edits[-1] == ("R01","ja","ありがとうございます")
     PanelWindow._item_changed(window,table.item(0,C_LINES))
@@ -42,6 +49,19 @@ with tempfile.TemporaryDirectory() as folder:
     r["ja"] = "違います"
     PanelWindow.fill_table(window)
     assert table.item(0,C_VI).text() == ""
+    assert table.item(0,C_MEANING).text() == "Chưa đối chiếu"
     assert table.item(0,C_LINES).text() == "Cảm ơn anh rất nhiều."
+    window.runner = SimpleNamespace(busy=False)
+    window.commit_editors = lambda:None
+    window._selected_region = lambda:(page,r)
+    window.fill_table = lambda:PanelWindow.fill_table(window)
+    with patch("app.panel.QMessageBox.question",return_value=QMessageBox.No) as question:
+        PanelWindow.confirm_meaning(window)
+        assert question.call_args.args[-1] == QMessageBox.No
+        assert r["ja"] in question.call_args.args[2] and r["lines"][0] in question.call_args.args[2]
+        assert table.item(0,C_MEANING).text() == "Chưa đối chiếu"
+    with patch("app.panel.QMessageBox.question",return_value=QMessageBox.Yes):
+        PanelWindow.confirm_meaning(window)
+        assert table.item(0,C_MEANING).text() == "Đã xác nhận"
     table.close()
 print("PASS: Vietnamese reference column, read-only flags, Japanese/translation editing, stale reference hiding")

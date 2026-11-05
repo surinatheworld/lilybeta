@@ -1,5 +1,11 @@
 # Lilyzono trong Photoshop 2023 (Windows)
 
+**Đối chiếu nghĩa trước typeset:** Bước 7 kiểm tra cặp Nhật–Việt bằng hai model trên máy; Bước 8 và chế độ
+chạy nhanh dừng nếu còn vùng chưa xác minh/câu chưa đặt. Chọn vùng, so với Raw, sửa câu rồi dùng
+**Xác nhận nghĩa vùng…** cho trường hợp cần đánh giá thủ công. Mặc định không dùng API. Xem hướng dẫn
+`docs/step7-meaning-review.md` trong repo. Đóng/mở lại bảng Lilyzono trong PTS để nạp mã nguồn mới.
+Không tự tạo bản dịch Việt mới.
+
 Tạo một nhóm **Lilyzono · Typeset Gái Băng** (hoặc **Typeset Isshiki**, chọn ở ô **Bộ font**; tool nhớ lựa chọn) ngay
 trong tài liệu đang mở:
 
