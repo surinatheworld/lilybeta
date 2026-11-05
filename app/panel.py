@@ -36,8 +36,9 @@ BUBBLE_COLORS = {"round": "#2f81f7", "square": "#a371f7", "ray": "#f0883e", "clo
                  "free": "#e3b341", "skip": "#6e7681"}
 REQUIRES = {"detect": ["open"], "setup": ["detect"], "raw": ["open"], "ocr": ["raw", "detect"],
             "clean": ["detect"], "match": ["detect"], "typeset": ["detect"]}
-COLS = ["ID", "Loại bóng", "Kiểu chữ", "Font", "Cỡ", "Chữ Nhật (OCR)", "Bản dịch (mỗi câu một dòng)", "Tin cậy", "Ghi chú"]
-C_ID, C_BUBBLE, C_KIND, C_FONT, C_SIZE, C_JA, C_LINES, C_CONF, C_NOTE = range(len(COLS))
+COLS = ["ID", "Loại bóng", "Kiểu chữ", "Font", "Cỡ", "Chữ Nhật (OCR)", "Việt tham chiếu (AI)",
+        "Bản dịch (mỗi câu một dòng)", "Tin cậy", "Ghi chú"]
+C_ID, C_BUBBLE, C_KIND, C_FONT, C_SIZE, C_JA, C_VI, C_LINES, C_CONF, C_NOTE = range(len(COLS))
 
 
 # --- Photoshop qua COM ----------------------------------------------------------------------------
@@ -164,7 +165,8 @@ class AIDialog(QDialog):
         self.model.setCurrentText(info["model"])
         if not on:
             self.info.setText("Bước 2: loại bóng đoán theo hình bóng, thứ tự đọc theo khung tranh. Bước 7: bộ ghép câu "
-                              "cũ của tool (độ dài câu ↔ lượng chữ gốc, chữ Nhật đọc được nếu script có câu gốc). "
+                              "trên máy dùng câu gốc tiếng Nhật hoặc bản Việt tham chiếu đã lưu, rồi độ dài/thứ tự đọc. "
+                              "Không tạo bản dịch Nhật → Việt mới. "
                               "Không cần key, không tốn phí; nên kiểm tra kỹ bảng thoại.")
             return
         self.base_url.setPlaceholderText(info["url"])
@@ -172,7 +174,8 @@ class AIDialog(QDialog):
         self.key.setText("")
         self.key.setPlaceholderText("đã lưu – để trống để giữ" if saved else
                                     ("không bắt buộc" if key == "compatible" else f"hoặc biến môi trường {info['env']}"))
-        self.info.setText("Key lưu trong Windows Credential Manager, không ghi ra file." +
+        self.info.setText("Bước 7 tự đọc chữ Nhật còn thiếu, dịch Việt tham chiếu và ghép câu của bạn theo nghĩa. "
+                         "Key lưu trong Windows Credential Manager, không ghi ra file." +
                           (f" “{ai.GEMINI_FREE}”: dùng lần lượt các model có gói miễn phí ({', '.join(ai.FREE_MODELS)}), "
                            "model nào hết hạn mức / quá tải thì tự chuyển sang model sau." if key == "gemini" else "") +
                           (" Máy chủ cục bộ (Ollama / LM Studio): điền địa chỉ …/v1 và tên model đọc được ảnh."
@@ -762,6 +765,7 @@ class PanelWindow(QMainWindow):
         for c in (C_ID, C_BUBBLE, C_KIND, C_SIZE, C_CONF):
             hdr.setSectionResizeMode(c, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(C_JA, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(C_VI, QHeaderView.Stretch)
         hdr.setSectionResizeMode(C_LINES, QHeaderView.Stretch)
         rlay.addWidget(QLabel("<b>Bảng thoại</b> · ô in đậm là chỉnh tay (giữ nguyên khi chạy lại); dòng vàng: AI chưa chắc"))
         rlay.addWidget(self.table, 3)
@@ -1179,6 +1183,7 @@ class PanelWindow(QMainWindow):
         self.view.show_page(str(path), regions, self.selected)
 
     def fill_table(self) -> None:
+        from .core.match_text import reference
         from .core.typeset_profiles import kinds_for
 
         page = self.page_obj()
@@ -1232,6 +1237,13 @@ class PanelWindow(QMainWindow):
                 if r["ja_src"] == "manual":
                     ja.setFont(bold)
                 self.table.setItem(row, C_JA, ja)
+                ref = reference(r)
+                vi = QTableWidgetItem(ref["text"] if ref else "")
+                vi.setFlags(vi.flags() & ~Qt.ItemIsEditable)
+                vi.setToolTip((f"Dịch tham chiếu từ chữ Nhật · tin cậy {ref['confidence']:.2f}\n"
+                               f"{ref['note']}\nBước 7 dùng để ghép; bản dịch đưa vào layer vẫn là câu của bạn.")
+                              if ref else "Bước 7 tự đọc chữ còn thiếu và dịch tham chiếu khi bật AI.")
+                self.table.setItem(row, C_VI, vi)
                 lines = QTableWidgetItem(" ⏎ ".join(r["lines"]))
                 lines.setData(Qt.UserRole, "\n".join(r["lines"]))
                 lines.setToolTip("\n".join(r["lines"]))
