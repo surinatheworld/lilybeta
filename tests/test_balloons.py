@@ -135,10 +135,14 @@ class ConjoinedBalloonTests(unittest.TestCase):
     def test_open_single_oval_and_missing_large_outline_are_not_invented_as_two_balloons(self):
         image,mask,boxes = fixture([(230,250)],[(120,180)])
         cv2.rectangle(image,(335,210),(360,285),(255,255,255),-1)
-        self.assertEqual(refine(image,mask,boxes),(boxes,{}))
+        got,meta=refine(image,mask,boxes)
+        self.assertEqual(got,boxes)
+        self.assertTrue(all(m['parts']==1 for m in meta.values()))
         image,mask,boxes = open_fixture()
         cv2.rectangle(image,(360,80),(450,320),(255,255,255),-1)
-        self.assertEqual(refine(image,mask,boxes),(boxes,{}))
+        got,meta=refine(image,mask,boxes)
+        self.assertEqual(got,boxes)
+        self.assertTrue(all(m['parts']==1 and m['uncertain'] for m in meta.values()))
 
     def test_manual_open_spanning_region_is_preserved(self):
         image,mask,boxes = open_fixture()
@@ -182,7 +186,7 @@ class ConjoinedBalloonTests(unittest.TestCase):
         image, mask, boxes = fixture([(230,250)], [(160,180)])
         got, evidence = refine(image, mask, boxes)
         self.assertEqual(got, boxes)
-        self.assertFalse(evidence)
+        self.assertTrue(all(m['parts']==1 and m['shape']=='round' for m in evidence.values()))
 
     def test_manual_spanning_box_and_ink_crossing_the_neck_are_not_split(self):
         image, mask, boxes = fixture([(160,230),(325,230)], merged=True)
@@ -203,7 +207,9 @@ class ConjoinedBalloonTests(unittest.TestCase):
         image[:] = 255
         image[mask > 0] = 0
         boxes[0].kind = "text"
-        self.assertEqual(refine(image, mask, boxes), (boxes, {}))
+        got,meta=refine(image,mask,boxes)
+        self.assertEqual(got,boxes)
+        self.assertTrue(all(m['shape']=='free' and m['uncertain'] for m in meta.values()))
 
     def test_visible_border_in_overlapping_balloons_separates_a_spanning_box(self):
         image, mask, boxes = fixture([(210,240),(340,280)], merged=True)
@@ -244,13 +250,17 @@ class ConjoinedBalloonTests(unittest.TestCase):
         for b in boxes:
             mask[b.y1:b.y2,b.x1:b.x2] = 1
         image[mask>0] = 0
-        self.assertEqual(refine(image,mask,boxes),(boxes,{}))
+        got,meta=refine(image,mask,boxes)
+        self.assertEqual(got,boxes)
+        self.assertTrue(all(m['shape']=='free' and m['parts']==1 for m in meta.values()))
 
     def test_screentone_art_background_does_not_become_a_thought_balloon(self):
         image, mask, boxes = fixture([(160,230),(325,230)])
         image[np.all(image == 255,axis=2)] = 225
         image[:60] = 255  # paper-white reference outside the gray art region
-        self.assertEqual(refine(image,mask,boxes),(boxes,{}))
+        got,meta=refine(image,mask,boxes)
+        self.assertEqual(got,boxes)
+        self.assertTrue(all(m['shape']=='free' and m['parts']==1 for m in meta.values()))
 
     def test_unusable_tiny_child_keeps_all_text_and_is_flagged_for_review(self):
         image, mask, boxes = fixture([(160,230),(325,230)], merged=True)
