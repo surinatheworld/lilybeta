@@ -10,3 +10,4 @@ dist/
 selftest.log
 selftest.psd
 models/manga-ocr/
+models/semantic-review/

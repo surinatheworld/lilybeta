@@ -54,6 +54,7 @@ class PhotoshopBridgeTests(unittest.TestCase):
             job.write_text(json.dumps({"protocol":1, "image":str(path), "size":[500,480],
                                        "lines":["Cảm ơn anh."], "engine":"opencv"}), encoding="utf-8")
             with patch("app.photoshop.model_path", return_value=str(model)), \
+                 patch("app.photoshop._verify_quick_plan"), \
                  patch("app.photoshop.files_for", return_value=["font.ttf"]), \
                  patch("app.photoshop.register_fonts"), \
                  patch("app.photoshop.TextDetector") as detector:
@@ -117,6 +118,7 @@ class PhotoshopModesTests(unittest.TestCase):
         model = folder / "fake-model"
         model.touch()
         with patch("app.photoshop.model_path", return_value=str(model)), \
+             patch("app.photoshop._verify_quick_plan"), \
              patch("app.photoshop.files_for", return_value=["font.ttf"]), \
              patch("app.photoshop.register_fonts"), \
              patch("app.photoshop.assign_lines", lambda page, regions, lines: [(r, [s]) for r, s in zip(regions, lines)]), \

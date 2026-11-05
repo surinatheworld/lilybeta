@@ -152,9 +152,47 @@ def _lines_for(pages: dict[int, list[str]], doc_name: str, single: bool) -> list
     return []
 
 
+def _verify_quick_plan(page, plan, lines, folder, prefix, report, document=None):
+    """Quick mode has the same meaning gate as the panel, before any drawing/export."""
+    from .core import workflow
+    from .core.match_text import read_missing
+    from .core.semantic_review import require_verified
+
+    review = workflow.Project(folder / f"{prefix}meaning-review")
+    document = document or {}
+    review.sync_documents([{"id":document.get("doc_id",0), "name":document.get("doc_name") or "page.png"}])
+    data = review.pages[0]
+    previous = {r["id"]: r for r in data["regions"]}
+    data.update(lines=list(lines), lines_manual=True, unplaced=[])
+    regions = list(page.regions)
+    regions.extend(r for r, _ in plan if all(r is not old for old in regions))
+    data["regions"] = []
+    for n, region in enumerate(regions, 1):
+        row = workflow.new_region(f"R{n:02d}", list(region.box))
+        row.update(order=n, bubble="sfx" if region.kind == "sfx" else "round",
+                   lines=[s for r, strings in plan if r is region for s in strings],
+                   ja=getattr(page, "_ocr_cache", {}).get(tuple(region.box), ""), ja_src="ocr")
+        if row["id"] in previous:
+            row["meaning_review"] = previous[row["id"]].get("meaning_review")
+        data["regions"].append(row)
+    workflow.imwrite(review.file(data, "raw.png"), page.original)
+    workflow.imwrite(review.file(data, "work.png"), page.original)
+    data["size"] = [page.original.shape[1], page.original.shape[0]]
+    review.data.update(profile=getattr(page,"typeset_profile",GAI_BANG), kind_fonts=getattr(page,"custom_fonts",{}))
+    np.savez_compressed(review.file(data,"mask.npz"),
+                        mask=getattr(page,"text_mask",np.zeros(page.original.shape[:2],np.float32)))
+    review.set_status(data,"open","done")
+    review.set_status(data,"detect","warn","Kiểm tra loại bóng và đối chiếu nghĩa trước typeset")
+    read_missing(review, data, data["regions"], page.original, report)
+    try:
+        require_verified(review, data, report)
+    except ValueError as exc:
+        raise ValueError(f"{exc}\nMở dự án {review.folder} trong bảng điều khiển để đối chiếu và chạy Bước 8.") from exc
+
+
 def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", size=None, right_to_left: bool = True,
                  detector=None, report=None, profile: str = GAI_BANG, redrawn: str | None = None,
-                 custom_fonts: dict | None = None) -> dict:
+                 custom_fonts: dict | None = None, review_document: dict | None = None) -> dict:
     """Một trang: nhận diện, ghép thoại, xoá chữ theo luật "chỉ chỗ dễ", dàn chữ; ghi ảnh Redraw/xem trước.
 
     `redrawn`: ảnh đã redraw sẵn (cùng khung): làm nền thay cho phần xoá chữ của tool; chữ vẫn nhận diện trên raw."""
@@ -171,6 +209,7 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
     plan = assign_lines(page, page.regions, lines)
     if not plan and not page.regions:
         raise ValueError("Không nhận diện được khung chữ. Hãy dùng ảnh rõ nét hơn.")
+    _verify_quick_plan(page, plan, lines, folder, prefix, report, review_document)
     apply_plan(page, plan, TextStyle())
     translated = [r for r in page.regions if r.text.strip()]
     report(f"Xoá chữ ở chỗ dễ ({len(translated)} khung)…")
@@ -335,7 +374,7 @@ def process_job(path: Path, report=None) -> dict:
             try:
                 res = typeset_page(item["image"], lines, folder, f"p{i}_", item.get("size"), rtl, detector,
                                    lambda text, step=step: report(step + text), profile, item.get("redrawn"),
-                                   custom_fonts=custom)
+                                   custom_fonts=custom, review_document=item)
                 out.append({"ok": True, "doc_id": item.get("doc_id"), "doc_name": name, **res})
             except Exception as exc:  # noqa: BLE001 - trang lỗi không làm hỏng cả chương
                 out.append({"ok": False, "doc_id": item.get("doc_id"), "doc_name": name, "error": str(exc)})
@@ -346,7 +385,7 @@ def process_job(path: Path, report=None) -> dict:
         if not lines:
             raise ValueError(f"Bản dịch không có trang {page_number(request.get('doc_name', ''))}.")
     return {**base, **typeset_page(request["image"], lines, folder, "", request.get("size"), rtl, detector, report, profile,
-                                       request.get("redrawn"), custom_fonts=custom)}
+                                 request.get("redrawn"), custom_fonts=custom, review_document=request)}
 
 
 def _failure(job: Path, exc: Exception) -> dict:

@@ -1,5 +1,8 @@
 # Bước 7: đọc Nhật, dịch Việt tham chiếu và ghép thoại
 
+**Cập nhật:** luồng không API hiện có [đối chiếu nghĩa cục bộ và chặn Bước 8](step7-meaning-review.md).
+Các mô tả gọi nhà cung cấp dưới đây chỉ áp dụng khi người dùng chủ động bật API.
+
 Trước thay đổi này, Bước 5 đã đọc tiếng Nhật bằng manga-ocr ONNX. Bước 7 có AI so nghĩa tiếng Nhật với bản dịch,
 nhưng chạy riêng Bước 7 không tự đọc các ô Nhật còn trống và không lưu bản Việt tham chiếu theo ID.
 

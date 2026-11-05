@@ -199,6 +199,15 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(warnings)
 
         p.region(page, "R03")["size"] = 30
+        # Placement and manual text edits alone do not authorize typesetting.
+        with self.assertRaisesRegex(ValueError, "Dừng trước typeset"):
+            workflow.typeset(p, page)
+        self.assertFalse(p.has(page, "typeset.json"))
+        # Explicitly choose the three lines for this layout fixture and review them.
+        from app.core.semantic_review import confirm_region
+        page.update(lines_manual=True, lines=["Cảm ơn anh nhiều.", "Không có gì mà.", "BÙM"], unplaced=[])
+        for r in (r1, p.region(page, "R03")):
+            confirm_region(p, page, r)
         path, warnings = workflow.typeset(p, page)
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         ids = [layer["id"] for layer in data["layers"]]

@@ -549,8 +549,8 @@ def match(project: Project, page: dict, cfg: ai.AIConfig, report=None) -> list[s
         save_references(cands, result.get("readings", {}))
     else:
         result = _match_locally(project, page, cands, [lines[i] for i in pool])
-        warnings.append("Không dùng AI: không tạo bản dịch Nhật → Việt mới; dùng câu gốc trong script, "
-                        "bản Việt tham chiếu đã lưu hoặc độ dài/thứ tự đọc để ghép.")
+        warnings.append("Không gọi API, không tạo bản dịch mới. Ghép sơ bộ từ script/tham chiếu hoặc độ dài, thứ tự đọc; "
+                        "sau đó đối chiếu nghĩa Nhật–Việt cục bộ. Chưa xác minh thì không typeset.")
     for r in cands:
         r["lines"], r["lines_src"] = [], ""
         if r["src"] != "manual" and r["bubble_src"] != "manual":
@@ -579,6 +579,10 @@ def match(project: Project, page: dict, cfg: ai.AIConfig, report=None) -> list[s
     unsure = [r["id"] for r in cands if r["uncertain"] and r["lines"]]
     if unsure:
         warnings.append("Ghép chưa chắc: " + ", ".join(unsure))
+    from .semantic_review import verify_page
+    pending = verify_page(project, page, report)
+    if pending:
+        warnings.append("Chưa xác minh nghĩa Nhật–Việt (Bước 8 sẽ dừng): " + ", ".join(pending))
     return warnings
 
 
@@ -633,6 +637,8 @@ def typeset(project: Project, page: dict, report=None) -> tuple[str, list[str]]:
     rows = sorted((r for r in page["regions"] if r["lines"] and r["bubble"] != "skip"), key=lambda r: r["order"])
     if not rows:
         raise ValueError("Chưa có vùng nào có câu dịch (chạy bước 7 hoặc nhập câu dịch trong bảng thoại).")
+    from .semantic_review import require_verified
+    require_verified(project, page, report)
     profile = project.data["profile"]
     kinds = kinds_for(profile)
     pg = _page_object(project, page)
