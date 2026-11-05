@@ -26,7 +26,7 @@ from .docs import load_pages, page_number
 
 STEPS = [("open", "Mở ảnh"), ("detect", "Nhận diện & phân loại bóng (AI)"), ("setup", "Thiết lập bảng thoại"),
          ("raw", "Nạp bản Raw"), ("ocr", "OCR bản Raw"), ("clean", "Xoá chữ (bóng kín)"),
-         ("match", "Ghép bản dịch (AI)"), ("typeset", "Typeset")]
+         ("match", "Dịch tham chiếu & ghép thoại"), ("typeset", "Typeset")]
 STEP_NAMES = dict(STEPS)
 # Thứ tự chạy "toàn bộ": cần raw trước khi nhận diện (bản redraw đã xoá chữ Nhật, không còn gì để nhận).
 RUN_ORDER = ["open", "raw", "detect", "setup", "ocr", "clean", "match", "typeset"]
@@ -332,6 +332,8 @@ def detect(project: Project, page: dict, detector, cfg: ai.AIConfig, report=None
             used.add(best["id"])
             r = best
             if r["src"] != "manual":
+                if list(r["box"]) != [int(v) for v in box] and r["ja_src"] != "manual":
+                    r["ja"], r["ja_src"] = "", ""  # step 7 must reread a moved/split text block
                 r["box"], r["det_kind"], r["src"] = [int(v) for v in box], det_kind, src
         else:
             r = new_region(project.next_id(page), box, det_kind, src)
@@ -521,6 +523,8 @@ def clean(project: Project, page: dict) -> tuple[str | None, list[str]]:
 # --- bước 7: ghép bản dịch ---------------------------------------------------------------------
 def match(project: Project, page: dict, cfg: ai.AIConfig, report=None) -> list[str]:
     """Model AI ghép từng câu dịch của trang vào ID vùng thoại. Vùng đã sửa tay giữ nguyên câu của nó."""
+    from .match_text import read_missing, reference, save_references
+
     lines = [s for s in project.page_lines(page) if s.strip()]
     if not lines:
         n = project.tl_page(page)
@@ -537,10 +541,16 @@ def match(project: Project, page: dict, cfg: ai.AIConfig, report=None) -> list[s
         report(f"{'AI ghép' if cfg.enabled else 'Ghép'} {len(pool)} câu vào {len(cands)} vùng…")
     img = imread(project.file(page, "raw.png" if project.has(page, "raw.png") else "work.png"))
     size = (img.shape[1], img.shape[0])
+    warnings = read_missing(project, page, cands, img, report)
     if cfg.enabled:
+        if report:
+            report("Bước 7 · dịch Nhật → Việt theo ID và ghép thoại theo nội dung…")
         result = ai.match(cfg, cands, [lines[i] for i in pool], size, img)
+        save_references(cands, result.get("readings", {}))
     else:
         result = _match_locally(project, page, cands, [lines[i] for i in pool])
+        warnings.append("Không dùng AI: không tạo bản dịch Nhật → Việt mới; dùng câu gốc trong script, "
+                        "bản Việt tham chiếu đã lưu hoặc độ dài/thứ tự đọc để ghép.")
     for r in cands:
         r["lines"], r["lines_src"] = [], ""
         if r["src"] != "manual" and r["bubble_src"] != "manual":
@@ -553,14 +563,17 @@ def match(project: Project, page: dict, cfg: ai.AIConfig, report=None) -> list[s
         r["lines_src"] = "ai" if cfg.enabled else "auto"
         if conf is None:  # ghép trên máy: không có độ tin cậy
             continue
+        ref = reference(r)
+        if cfg.enabled and ref:
+            conf = min(conf, ref["confidence"])
         r["confidence"] = conf if r["confidence"] is None or len(r["lines"]) == 1 else min(r["confidence"], conf)
         if conf < ai.UNSURE:
             r["uncertain"] = True
-            r["note"] = f"Câu “{lines[pool[k]][:30]}”: {note or 'AI chưa chắc'}"
+            r["note"] = f"Câu “{lines[pool[k]][:30]}”: {note or (ref or {}).get('note') or 'AI chưa chắc'}"
     who = "AI" if cfg.enabled else "Bộ ghép trên máy"
     page["unplaced"] = [{"text": lines[pool[k]], "note": f"{who} không tìm được vùng"} for k in result["unplaced"]]
     project.save()
-    warnings = list(result["warnings"])
+    warnings.extend(result["warnings"])
     if page["unplaced"]:
         warnings.append(f"{len(page['unplaced'])} câu chưa có vùng: gán tay trong bảng thoại")
     unsure = [r["id"] for r in cands if r["uncertain"] and r["lines"]]
@@ -579,6 +592,17 @@ def _match_locally(project: Project, page: dict, cands: list[dict], lines: list[
         return {"assign": {}, "unplaced": [], "warnings": []}
     if not cands:
         raise ValueError("Trang không còn vùng thoại nào để ghép (mọi vùng đã bị bỏ qua hoặc khoá).")
+    from .match_text import reference_anchors
+
+    anchored = reference_anchors(cands, lines)
+    if anchored:
+        remaining = [i for i in range(len(lines)) if i not in anchored]
+        owned = {a[0] for a in anchored.values()}
+        free = [r for r in cands if r["id"] not in owned]
+        rest = (_match_locally(project, page, free, [lines[i] for i in remaining]) if free and remaining
+                else {"assign":{}, "unplaced":list(range(len(remaining))), "warnings":[]})
+        return {"assign":{**anchored, **{remaining[k]:v for k,v in rest["assign"].items()}},
+                "unplaced":[remaining[k] for k in rest["unplaced"]], "warnings":rest["warnings"]}
     pg = _page_object(project, page)
     regs = [Region(tuple(r["box"]), kind="sfx" if r["bubble"] == "sfx" else "text") for r in cands]
     pg._ocr_cache = {tuple(r["box"]): r["ja"] for r in cands if r["ja"]}  # chữ đã đọc ở bước 5

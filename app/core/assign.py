@@ -232,18 +232,21 @@ def _match_by_text(page, regions, lines):
 
     if not all(source_text(s) for s in lines):
         return None
-    reader = ocr.reader()
-    if reader is None:
-        return None
     cache = getattr(page, "_ocr_cache", None)
     if cache is None:
         cache = page._ocr_cache = {}
+    # Step 5/7 may already have read every region. Reuse those strings even if
+    # the local OCR model is unavailable (e.g. Japanese was entered manually).
+    missing = any(tuple(r.box) not in cache and not r.polygon for r in regions)
+    reader = ocr.reader() if missing else None
     texts = []
     for r in regions:
         key = tuple(r.box)
         if key not in cache:
-            cache[key] = reader.read(page.original, r.box) if not r.polygon else ""
+            cache[key] = reader.read(page.original, r.box) if reader is not None and not r.polygon else ""
         texts.append(cache[key])
+    if not any(texts):
+        return None
     cov = [[ocr.coverage(source_text(s), t) for t in texts] for s in lines]
     size = [len(ocr.normalize(t)) for t in texts]
     anchored: dict[int, list[tuple[int, int]]] = {}  # vùng → [(vị trí trong chữ đọc được, câu)]
