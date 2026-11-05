@@ -33,6 +33,11 @@ thiếu bóng hoặc bản dịch khác nghĩa bản gốc.
 Các câu/ô Nhật đã sửa tay giữ nguyên. Kết quả OCR được lưu trước khi gọi AI, nên lỗi API không xóa thoại đã gán
 hoặc làm mất chữ Nhật vừa đọc. Bản dịch tham chiếu được tái sử dụng trong prompt nếu vẫn khớp nguồn Nhật/tọa độ.
 
+Với file Word, các dòng xuống bằng Shift+Enter được đưa thành những câu có thể ghép độc lập: một đoạn Word có thể
+chứa thoại của hai bóng khác nhau. Một bóng vẫn có thể nhận nhiều câu. Dòng script có nhãn kèm câu gốc tiếng Nhật
+được giữ nguyên vì cả bản dịch đó gắn với một câu gốc. Các phần của đoạn đã gán tay cũng được loại khỏi lượt ghép
+tự động để tránh đặt lại chúng vào vùng khác.
+
 ## Kiểm tra
 
 ```powershell
