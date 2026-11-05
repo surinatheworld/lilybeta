@@ -490,6 +490,7 @@ class Runner:
 
     def start(self, steps: list[str], keys: list[str]) -> None:
         self.cancel = False
+        self.steps = list(steps)
         self.thread = threading.Thread(target=self._run, args=(steps, keys), daemon=True)
         self.thread.start()
 
@@ -598,7 +599,12 @@ class Runner:
                 report("Tạo layer xoá chữ trong Photoshop…")
                 ps.call("place_layer", png=layer, **doc)
         elif step == "match":
+            p.file(page, "assignment-preview.png").unlink(missing_ok=True)
             out = workflow.match(p, page, self.w.ai_config, report)
+            if any(r["lines"] and r["bubble"] != "skip" for r in page["regions"]):
+                report("Dựng ảnh xem trước: đặt chữ Việt vào các bóng đã gán…")
+                _, preview_warnings = workflow.preview_assignments(p, page, report)
+                out.extend(preview_warnings)
         elif step == "typeset":
             path, out = workflow.typeset(p, page, report)
             report("Tạo layer chữ trong Photoshop…")
@@ -741,6 +747,7 @@ class PanelWindow(QMainWindow):
         self.view_kind.addItem("Ảnh làm việc", "work.png")
         self.view_kind.addItem("Raw", "raw.png")
         self.view_kind.addItem("Đã xoá chữ", "cleaned.png")
+        self.view_kind.addItem("Bản gán thử (chữ Việt trong bóng)", "assignment-preview.png")
         self.view_kind.addItem("Kết quả typeset", "preview.png")
         self.add_btn = QPushButton("+ Thêm vùng (kéo trên ảnh)")
         self.add_btn.setCheckable(True)
@@ -1039,7 +1046,7 @@ class PanelWindow(QMainWindow):
             self.log("warn", "Chưa chọn trang nào.")
             return
         self.commit_editors()
-        if "typeset" in steps or "setup" in steps:
+        if any(s in steps for s in ("typeset", "setup", "match")):
             self._register_fonts()
         self._busy(True)
         self.log("info", f"Chạy {', '.join(str(_num(s)) for s in steps)} cho {len(keys)} trang…")
@@ -1070,6 +1077,14 @@ class PanelWindow(QMainWindow):
         self._busy(False)
         self.progress.setText("")
         self.refresh_pages()
+        page = self.page_obj()
+        if page and "match" in getattr(self.runner, "steps", []):
+            name = ("preview.png" if self.project.status(page, "typeset")["state"] in ("done", "warn")
+                    else "assignment-preview.png")
+            if self.project.has(page, name):
+                self.view_kind.blockSignals(True)
+                self.view_kind.setCurrentIndex(self.view_kind.findData(name))
+                self.view_kind.blockSignals(False)
         self.show_page(self.current)
         self.log("info", "Xong.")
 
@@ -1180,7 +1195,7 @@ class PanelWindow(QMainWindow):
         path = self.project.file(page, name)
         if not path.exists():
             path = self.project.file(page, "work.png")
-        regions = [] if name == "preview.png" else page["regions"]
+        regions = [] if name in ("preview.png", "assignment-preview.png") else page["regions"]
         self.view.show_page(str(path), regions, self.selected)
 
     def fill_table(self) -> None:
