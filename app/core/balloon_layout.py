@@ -83,3 +83,23 @@ def constrain_lobes(page, owners):
             rect=(cx-rx,cy-ry,cx+rx,cy+ry)
         region.manual_rect=tuple(map(int,rect))
         region.text_shape=shape
+
+
+def constrain_panel_rects(page, owners):
+    """Giữ chữ trong panel nếu vùng chữ gốc nằm hẳn bên trong đường viền."""
+    for region in page.regions:
+        row = owners.get(region.uid) or owners.get(region.group)
+        if not row or row.get('src') == 'manual' or region.kind == 'sfx' or region.manual_rect:
+            continue
+        x, y, right, bottom = region.box
+        anchor = ((x + right) / 2, (y + bottom) / 2)
+        left, top, panel_right, panel_bottom = panel_limits(page, anchor)
+        if not (left <= x < right <= panel_right and top <= y < bottom <= panel_bottom):
+            continue
+        a, b, c, d = region.text_rect
+        # Giữ khoảng thở sát viền khi khung tự động lấn ra ngoài panel.
+        rect = (max(a, left + 3) if a < left else a, max(b, top + 3) if b < top else b,
+                min(c, panel_right - 3) if c > panel_right else c, min(d, panel_bottom - 3) if d > panel_bottom else d)
+        if rect != (a, b, c, d) and min(rect[2] - rect[0], rect[3] - rect[1]) >= 16:
+            region.manual_rect = rect
+            region.text_shape = None

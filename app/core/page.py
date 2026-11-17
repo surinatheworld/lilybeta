@@ -11,7 +11,7 @@ import numpy as np
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage, QPainter
 
-from .clean import MARGIN, clean_local, fill_bubble, is_small_sfx, lobe_shape, text_area
+from .clean import MARGIN, clean_local, fill_bubble, is_small_sfx, lobe_shape, screentone_only, text_area
 from .detect import TextDetector, sort_reading_order
 from .typeset import TextStyle, best_rect, block_box, block_quality, draw_text, layout, place_in_shape
 from .typeset_profiles import apply_profile, profile_style
@@ -106,7 +106,8 @@ class Region:
         if self.even:  # đã hạ về cỡ chung của trang: câu ngắn chỉ được to hơn chút (bản type tay: "Nagi" 1,25 lần)
             style = replace(style, short_grow=EVEN_GROW)
         if self.needs_redraw and style.stroke_width == 0 and self.auto_cap:
-            style = replace(style, stroke_width=BACKGROUND_STROKE, stroke_color="#ffffff")
+            stroke_color = "#000000" if style.color.lower() == "#ffffff" else "#ffffff"
+            style = replace(style, stroke_width=BACKGROUND_STROKE, stroke_color=stroke_color)
         if style.size == 0 and style.max_size == 0 and self.auto_cap:
             # Câu chỉ có dấu ("!", "…?"): to như dấu gốc, tới PUNCT_GROW lần cỡ chuẩn.
             if not any(ch.isalnum() for ch in self.text):  # câu chỉ có dấu: to như dấu gốc, không phóng thêm
@@ -216,15 +217,16 @@ class Page:
 
     def _clean_local(self, region: Region):
         """Xoá chữ phần làm được trên máy; trả về mask còn cần AI vẽ lại (None nếu xong / để lại)."""
+        region.needs_redraw = False
         if self.redrawn_covers(region):
             return None
         skip = getattr(self.inpainter, "skip", False)
-        if skip and not region.polygon and not self.in_balloon(region):
+        if skip and self.inpainter is not screentone_only and not region.polygon and not self.in_balloon(region):
             # Chỉ xoá chữ trong bóng thoại / ô khép kín: SFX, chữ đè lên tranh (dù nền trắng) để nguyên, đặt chữ đè lên.
             region.needs_redraw = True
             return None
         need = clean_local(self.working, self.text_mask, region.box, self.area_mask(region), self.inpainter,
-                           whole_box=region.kind == "text")
+                           whole_box=region.kind == "text", sfx=region.kind == "sfx")
         if need is not None and (skip(self, region) if callable(skip) else skip):
             region.needs_redraw = True
             return None
@@ -244,7 +246,10 @@ class Page:
                 continue
             if r.kind == "sfx" and not small_sfx:
                 continue  # detector false positives can be hearts, hair or other drawing details
-            if self.redrawn_covers(r) or (self.in_balloon(r) and fill_bubble(self.working, self.text_mask, r.box)):
+            if self.redrawn_covers(r) or (
+                self.in_balloon(r) and fill_bubble(self.working, self.text_mask, r.box,
+                                                   preserve_texture=self.inpainter is screentone_only)
+            ):
                 pass
             elif small_sfx and is_small_sfx(r, self.size):
                 need = clean_local(self.working, self.text_mask, r.box, None, self.inpainter)
@@ -316,7 +321,10 @@ class Page:
         x1, y1, x2, y2 = map(int, region.text_rect)
         patch = self.working[max(0, y1):y2, max(0, x1):x2]
         if patch.size and float(np.median(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY))) < DARK_BACKGROUND:
-            region.style = replace(region.style, color="#ffffff")
+            stroke_color = region.style.stroke_color
+            if region.style.stroke_width > 0 and stroke_color.lower() == "#ffffff":
+                stroke_color = "#000000"
+            region.style = replace(region.style, color="#ffffff", stroke_color=stroke_color)
 
     def _separate(self, region: Region) -> None:
         """Hai câu chung một bóng: khối chữ không được chồng / sát nhau. Chạm thì chọn lại khung cho cả hai cùng lúc,

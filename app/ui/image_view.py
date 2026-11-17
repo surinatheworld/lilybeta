@@ -38,6 +38,7 @@ TOOL_BRUSH = "brush"
 TOOL_CLONE = "clone"
 TOOL_ERASER = "eraser"
 TOOL_TEXT = "text"
+TOOL_TYPESET = "typeset"
 TOOL_RECT = "rect"  # vẽ khung chữ (Lilyzono) hình chữ nhật
 TOOL_LASSO = "lasso"  # vẽ khung chữ (Lilyzono) tự do
 TOOL_HAND = "hand"
@@ -90,6 +91,7 @@ class CanvasImageItem(QGraphicsItem):
 
 class ImageView(QGraphicsView):
     regionClicked = Signal(int, int)  # chỉ số vùng, phím bổ trợ (Ctrl/Shift) dạng int
+    typesetClicked = Signal(float, float)
     regionDrawn = Signal(tuple)
     lassoDrawn = Signal(list)
     textRectChanged = Signal(tuple)  # khung chữ mới (x1, y1, x2, y2) sau khi kéo/đổi cỡ
@@ -746,6 +748,8 @@ class ImageView(QGraphicsView):
         if self._edit_mode is not None:
             self._drag_edit(pos)
             return
+        if self.tool == TOOL_TYPESET:
+            return
         if self._layer_drag is not None:
             d = pos - self._layer_drag
             self.layerDragged.emit("move", round(d.x()), round(d.y()))
@@ -824,6 +828,8 @@ class ImageView(QGraphicsView):
         return self._preview
 
     def mouseDoubleClickEvent(self, e):
+        if self.tool == TOOL_TYPESET:
+            return
         if e.button() == Qt.LeftButton and self._tf is None:
             idx = self._region_at(e.position().toPoint())
             if idx is not None:
@@ -864,8 +870,16 @@ class ImageView(QGraphicsView):
             return
         if self._press_pos is None:
             return super().mouseReleaseEvent(e)
+        click = (e.position() - self._press_pos).manhattanLength() < CLICK_TOLERANCE
         preview, self._preview = self._preview, None
         self._press_pos = None
+        if self.tool == TOOL_TYPESET:
+            if preview is not None:
+                self.scene().removeItem(preview)
+            elif click and e.button() == Qt.LeftButton:
+                p = self._points[0]
+                self.typesetClicked.emit(p.x(), p.y())
+            return
         mode = self._sel_mode(self._press_mods)
         if preview is None:  # bấm tại chỗ
             if self._press_region is not None:

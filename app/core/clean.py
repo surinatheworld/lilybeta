@@ -4,6 +4,8 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from .screentone import restore_screentone
+
 MARGIN = 20
 FURIGANA_PAD = 10
 
@@ -39,6 +41,14 @@ def easy_only(img: np.ndarray, mask: np.ndarray) -> None:
 easy_only.skip = True
 easy_only.easy_only = True
 
+
+def screentone_only(img: np.ndarray, mask: np.ndarray) -> None:
+    """Giữ nguyên nền khó nếu clean_local không khôi phục được lưới chấm."""
+
+
+screentone_only.skip = True
+screentone_only.easy_only = True
+
 SMALL_SFX_FRAC = 0.004  # SFX có khung ≤ 0,4% diện tích trang coi là nhỏ
 
 
@@ -58,9 +68,10 @@ def opencv_inpaint(img: np.ndarray, mask: np.ndarray) -> None:
     img[y1:y2, x1:x2] = cv2.inpaint(img[y1:y2, x1:x2], mask[y1:y2, x1:x2], 5, cv2.INPAINT_TELEA)
 
 
-def fill_bubble(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int, int]) -> bool:
+def fill_bubble(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int, int], *,
+                preserve_texture: bool = False) -> bool:
     """Xoá chữ nếu nằm trong bóng thoại / hộp dẫn truyện sáng, khép kín; False (không đụng gì) nếu không phải."""
-    return _fill_light_bubble(img, build_text_mask(text_mask, box), box)
+    return _fill_light_bubble(img, build_text_mask(text_mask, box), box, preserve_texture=preserve_texture)
 
 
 def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int, int],
@@ -78,7 +89,8 @@ def clean_region(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, in
 
 
 def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int, int],
-                area_mask: np.ndarray | None = None, inpainter=None, whole_box: bool = False) -> np.ndarray | None:
+                area_mask: np.ndarray | None = None, inpainter=None, whole_box: bool = False, *,
+                sfx: bool = False) -> np.ndarray | None:
     """Phần xoá chữ làm ngay trên máy. Trả về mask (0/255, cỡ ảnh) còn cần AI vẽ lại, hoặc None nếu xong.
 
     Tách riêng để có thể gom nhiều vùng vào một lần gọi AI trên mạng.
@@ -88,13 +100,31 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
     cx1, cy1 = max(0, x1 - MARGIN), max(0, y1 - MARGIN)
     cx2, cy2 = min(w, x2 + MARGIN), min(h, y2 + MARGIN)
 
+    strokes = None
     if area_mask is not None:
         mask = cv2.dilate(area_mask[cy1:cy2, cx1:cx2], np.ones((3, 3), np.uint8))
     else:
-        mask = build_text_mask(text_mask, box)[cy1:cy2, cx1:cx2]
+        strokes = build_text_mask(text_mask, box)
+        mask = strokes[cy1:cy2, cx1:cx2]
     if not mask.any():
         return None
-    if area_mask is None and _fill_light_bubble(img, build_text_mask(text_mask, box), box):
+    tone = inpainter is screentone_only
+    if tone:
+        tone_mask = np.zeros(img.shape[:2], np.uint8)
+        target = tone_mask[cy1:cy2, cx1:cx2]
+        target[:] = (cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+                     if sfx and area_mask is None else mask)
+        if area_mask is None:  # the Photoshop assignment preview also clips redraw to this margin
+            target[:max(0, y1 - 6 - cy1)] = 0
+            target[y2 + 6 - cy1:] = 0
+            target[:, :max(0, x1 - 6 - cx1)] = 0
+            target[:, x2 + 6 - cx1:] = 0
+        detected = text_mask > .15
+        if (area_mask is not None or detected[y1:y2, x1:x2].any()) and restore_screentone(img, tone_mask, detected):
+            return None
+        if sfx and area_mask is None:
+            return tone_mask
+    if strokes is not None and _fill_light_bubble(img, strokes, box, preserve_texture=tone):
         return None
     crop = img[cy1:cy2, cx1:cx2]
 
@@ -108,14 +138,15 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
     if len(border) and getattr(inpainter, "skip", False):
         # Chỉ xoá chỗ dễ: nền đúng một màu trắng hoặc đen; xám, chuyển màu, tranh lộ qua thì để nguyên, đặt chữ đè lên.
         # Bỏ qua nét chữ gốc của câu khác trong cùng ô (cột bên cạnh) và viền mực của bóng / ô sát chữ.
-        flat = one_color_around(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), mask > 0, text_mask[cy1:cy2, cx1:cx2] > 0.3)
+        flat = one_color_around(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), mask > 0,
+                                text_mask[cy1:cy2, cx1:cx2] > 0.3, preserve_texture=tone)
     if flat:
         crop[mask > 0] = med.astype(np.uint8)
-        if area_mask is None:
+        if area_mask is None and not tone:
             # Quét nét sót rộng hơn khung chữ (vd vạch dài phía trên chữ), nhưng chỉ trong lòng bóng.
             ex = max(x2 - x1, y2 - y1) // 2 + MARGIN
             ex1, ey1, ex2, ey2 = max(0, x1 - ex), max(0, y1 - ex), min(w, x2 + ex), min(h, y2 + ex)
-            near = cv2.dilate(build_text_mask(text_mask, box)[ey1:ey2, ex1:ex2], np.ones((15, 15), np.uint8)) > 0
+            near = cv2.dilate(strokes[ey1:ey2, ex1:ex2], np.ones((15, 15), np.uint8)) > 0
             _remove_leftover_strokes(img[ey1:ey2, ex1:ex2], (x1 - ex1, y1 - ey1, x2 - ex1, y2 - ey1), near=near,
                                      limit=(0, 0, ex2 - ex1, ey2 - ey1))
         return None
@@ -143,7 +174,8 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
     return None
 
 
-def _fill_light_bubble(img: np.ndarray, strokes: np.ndarray, box: tuple[int, int, int, int]) -> bool:
+def _fill_light_bubble(img: np.ndarray, strokes: np.ndarray, box: tuple[int, int, int, int], *,
+                       preserve_texture: bool = False) -> bool:
     """Bóng thoại sáng (kể cả bóng tia sáng không có viền kín): tô trắng cả lòng bóng.
 
     Xoá nét chữ, loang màu sáng từ tâm chữ trên ảnh đã làm mờ (lưới chấm bên ngoài thành xám nên không
@@ -193,7 +225,8 @@ def _fill_light_bubble(img: np.ndarray, strokes: np.ndarray, box: tuple[int, int
     # → không xoá, chữ dịch đặt đè lên.
     # Chỉ bóng thoại một màu: sát quanh chữ phải trắng tinh. Chữ trên mảng trắng / chuyển màu của tranh (SFX "ぽた…"),
     # bóng trong suốt có tranh lộ qua thì để nguyên, chữ dịch đặt đè lên.
-    if not one_color_around(cv2.cvtColor(win, cv2.COLOR_BGR2GRAY), strokes & in_box, strokes):
+    if not one_color_around(cv2.cvtColor(win, cv2.COLOR_BGR2GRAY), strokes & in_box, strokes,
+                            preserve_texture=preserve_texture):
         return False
     win[fill] = bg.astype(np.uint8)
     return True
@@ -204,7 +237,8 @@ WHITE, BLACK = 246, 35  # chỉ xoá chữ trên nền trắng tinh / đen tuy�
 ONE_COLOR = 0.95  # …gần như mọi điểm sát quanh chữ đúng màu đó
 
 
-def one_color_around(gray: np.ndarray, text: np.ndarray, all_text: np.ndarray) -> bool:
+def one_color_around(gray: np.ndarray, text: np.ndarray, all_text: np.ndarray, *,
+                     preserve_texture: bool = False) -> bool:
     """Sát quanh nét chữ (3–9px, bỏ nét chữ khác) gần như toàn trắng tinh hoặc toàn đen tuyền (lòng bóng thoại một
     màu); viền mực của bóng / ô khi chữ nằm sát viền không tính."""
     t = text.astype(np.uint8)
@@ -214,6 +248,9 @@ def one_color_around(gray: np.ndarray, text: np.ndarray, all_text: np.ndarray) -
     if px.size < 30:
         return False
     med = np.median(px)
+    if preserve_texture:
+        # Dark pixels may be dots on light screentone, rather than a balloon outline.
+        return bool((med >= WHITE or med <= BLACK) and (np.abs(px - med) <= 9).mean() >= .99)
     if med >= WHITE:
         return bool(((px >= WHITE) | (px < OUTLINE)).mean() >= ONE_COLOR)
     if med <= BLACK:

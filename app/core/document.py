@@ -466,23 +466,28 @@ class Document:
         elif layer.kind == "pixel":
             _over(layer.rgba, color, a[..., 0])
 
-    def content_aware_fill(self, layer: Layer, inpainter, mask: np.ndarray | None = None) -> None:
+    def content_aware_fill(self, layer: Layer, inpainter, mask: np.ndarray | None = None) -> bool:
         """Vẽ lại phần trong vùng chọn (hoặc `mask`) theo nền xung quanh (`inpainter`, mặc định OpenCV)."""
         m = mask if mask is not None else self.selection
         if m is None:
-            return
+            return False
         m = ((m >= 128) * 255).astype(np.uint8)
         if not m.any():
-            return
+            return False
         p = self.page
         if layer.kind == "redraw":
-            inpainter(p.working, m)
+            if inpainter(p.working, m) is False:
+                return False
             p.paint_mask[m > 0] = 255
         elif layer.kind == "pixel":
             img = self.composite(text=False)
-            inpainter(img, m)
+            if inpainter(img, m) is False:
+                return False
             layer.rgba[m > 0, :3] = img[m > 0]
             layer.rgba[m > 0, 3] = 255
+        else:
+            return False
+        return True
 
     # ----------------------------------------------------------------- lịch sử
     def _meta(self) -> dict:

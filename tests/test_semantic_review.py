@@ -35,6 +35,22 @@ class MeaningGateTests(unittest.TestCase):
     def verify(self, models=None):
         return meaning.verify_page(self.project,self.page,models=models or self.models)
 
+    def test_sync_checks_photoshop_layers_without_invalidating_assignments(self):
+        for source, metadata, doc_id, expected in (
+            ("raw", {"has_clean": False, "has_typeset": False}, 1, ("stale", "stale")),
+            ("raw", {"has_clean": True, "has_typeset": True}, 2, ("done", "done")),
+            ("raw", {}, 2, ("stale", "stale")),
+            ("redraw", {"has_clean": False, "has_typeset": False}, 1, ("done", "stale")),
+        ):
+            with self.subTest(source=source, metadata=metadata):
+                self.project.data["source"] = source
+                self.page["doc_id"] = 1
+                for step in ("clean", "match", "typeset"):
+                    self.project.set_status(self.page, step, "done")
+                self.project.sync_documents([{"id": doc_id, "name": self.page["key"], **metadata}])
+                self.assertEqual(tuple(self.project.status(self.page, s)["state"] for s in ("clean", "typeset")), expected)
+                self.assertEqual(self.project.status(self.page, "match")["state"], "done")
+
     def test_consensus_allows_export_gate_and_records_actual_pairs(self):
         self.assertEqual(self.verify(),[])
         with patch.object(meaning,"local_models",side_effect=AssertionError("reuse valid check")):
@@ -107,6 +123,32 @@ class MeaningGateTests(unittest.TestCase):
             meaning.confirm_region(self.project,self.page,r)
         with self.assertRaisesRegex(ValueError,"thiếu, trùng"):
             meaning.require_verified(self.project,self.page)
+
+    def test_known_unplaced_unit_explains_why_step_eight_is_blocked(self):
+        first, second = self.page["regions"]
+        second["lines"] = []
+        self.page["unplaced"] = [{"text": self.page["lines"][1]}]
+        meaning.confirm_region(self.project,self.page,first)
+        with self.assertRaises(meaning.TypesetBlocked) as caught:
+            workflow.typeset(self.project,self.page)
+        self.assertIn(self.page["lines"][1],str(caught.exception))
+        self.assertNotIn("thiếu, trùng",str(caught.exception))
+
+    def test_passing_match_with_empty_split_peer_requires_explicit_review(self):
+        first, second = self.page["regions"]
+        peers = [first["id"], second["id"]]
+        for part, region in enumerate((first, second), 1):
+            region["balloon"] = {"split": True, "part": part, "peers": peers}
+        first["lines"] = list(self.page["lines"])
+        second["lines"] = []
+        first["meaning_review"] = {
+            "state": "passed", "signature": meaning._signature(self.project, self.page, first),
+        }
+        with patch.object(meaning, "local_models", side_effect=AssertionError("avoid redundant inference")):
+            with self.assertRaisesRegex(meaning.TypesetBlocked, "R02 cùng bóng"):
+                meaning.require_verified(self.project, self.page)
+            meaning.confirm_region(self.project, self.page, first)
+            meaning.require_verified(self.project, self.page)
 
     def test_quick_mode_uses_real_gate_before_export(self):
         from app import photoshop

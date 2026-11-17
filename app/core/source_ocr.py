@@ -159,7 +159,7 @@ def prepare(project, page, image, report=None):
     from .semantic_review import _unreliable_japanese
     from .ocr import reader
 
-    if project.data["source"] == "redraw" and not project.has(page,"raw.png"):
+    if project.uses_redraw(page) and not project.has(page,"raw.png"):
         return ["Thiếu Raw; không đọc chữ từ redraw."]
     digest = hashlib.sha256(image.tobytes()).hexdigest()
     cache = page.get("source_evidence",{})

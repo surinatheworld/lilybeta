@@ -15,7 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QPoint, QSettings, Qt
+from PySide6.QtCore import QPoint, QPointF, QSettings, Qt
 from PySide6.QtGui import QCloseEvent, QColor, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QToolBar, QMessageBox
@@ -26,7 +26,7 @@ from app.core.document import BLENDS, Document, _blend, _checker, doc_for
 from app.core.page import Page, Region
 from app.core.typeset import TextStyle
 from app.core.typeset_profiles import FONTS, GAI_BANG, ISSHIKI, ISSHIKI_FONTS, ISSHIKI_KINDS
-from app.ui.image_view import CanvasImageItem
+from app.ui.image_view import CanvasImageItem, TOOL_TYPESET
 from app.ui.main_window import DetectWorker, MainWindow
 from app.ui.theme import apply_dark
 from tools.benchmark_editor import load_offscreen_fonts
@@ -252,6 +252,58 @@ class EditorTests(unittest.TestCase):
         self.assertTrue(window.view._ant_timer.isActive())
         window.deselect()
         self.assertFalse(window.view._ant_timer.isActive())
+
+    def test_typeset_click_uses_contour_and_keeps_repeated_lines_available(self):
+        path = Path(self.temp.name) / "001.png"
+        raw = np.full((360, 520, 3), 160, np.uint8)
+        mask = np.zeros(raw.shape[:2], np.uint8)
+        for x in (140, 380):
+            cv2.ellipse(raw, (x, 140), (88, 62), 0, 0, 360, (255, 255, 255), -1)
+            cv2.ellipse(raw, (x, 140), (88, 62), 0, 0, 360, (0, 0, 0), 2)
+            cv2.putText(mask, "RAW", (x - 24, 146), cv2.FONT_HERSHEY_SIMPLEX, .6, 255, 2)
+        raw[mask > 0] = 0
+        cv2.imencode(".png", raw)[1].tofile(str(path))
+        self.page = Page(str(path))
+        self.page.text_mask = mask.astype(np.float32) / 255
+        self.page.regions = [Region((x - 30, 126, x + 30, 153)) for x in (140, 380)]
+        self.page.detected = True
+        self.doc = doc_for(self.page)
+        window = self.editor()
+        window.resize(1280, 720)
+        window.show()
+        window.view.setFocus()
+        self.app.processEvents()
+        QTest.keyClick(window.view, Qt.Key_G)
+        self.assertEqual(window.view.tool, TOOL_TYPESET)
+        script = path.with_suffix(".txt")
+        script.write_text("1\nĐược rồi.\nĐược rồi.\n", encoding="utf-8")
+        window.load_docs(str(script))
+        self.assertEqual([r.text for r in self.page.regions], ["", ""])
+        window.view.fit_page()
+
+        def click(x, y):
+            QTest.mouseClick(window.view.viewport(), Qt.LeftButton, pos=window.view.mapFromScene(QPointF(x, y)))
+
+        click(140, 99)  # inside the bubble, above the detected text rectangle
+        self.assertEqual([r.text for r in self.page.regions], ["Được rồi.", ""])
+        self.assertIsNotNone(self.page.regions[0].text_shape)
+        self.assertEqual(window.used_lines, {0})
+        self.assertTrue((self.page.working[(mask > 0) & (np.indices(mask.shape)[1] < 250)] == 255).all())
+        click(140, 140)
+        click(250, 280)  # artwork outside the bubble
+        self.assertEqual(window.used_lines, {0})
+        click(380, 140)
+        self.assertEqual(window.used_lines, {0, 1})
+        self.assert_canvas()
+        window.undo()
+        self.assertEqual(window.used_lines, {0})
+        self.assertFalse(self.page.regions[1].cleaned)
+        self.assertTrue((self.page.working[(mask > 0) & (np.indices(mask.shape)[1] > 250)] == 0).all())
+        window.redo()
+        self.assertEqual(window.used_lines, {0, 1})
+        self.assert_canvas()
+        window.set_tool("move")
+        window.hide()
 
     def test_workspace_restores_tools_and_small_window_fits(self):
         window = self.editor()
