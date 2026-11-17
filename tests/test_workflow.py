@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 import urllib.error
 from unittest.mock import patch
@@ -124,12 +125,30 @@ class AIClientTests(unittest.TestCase):
         self.assertEqual(cls["missed"][0]["box"], [0, 0, 100, 50])
         self.assertTrue(any("R02" in w for w in cls["warnings"]))
 
+    def test_text_splits_validate_all_parts_and_parent_ids(self):
+        part = {"box": [600, 100, 700, 200], "bubble": "round", "order": 1, "confidence": .9, "note": ""}
+        outside = {**part, "box": [400, 300, 500, 400], "bubble": "free", "order": 2}
+        data = {"regions": [], "missed": [], "splits": [{"id": "R01", "parts": [outside, part]}]}
+        out = ai.parse_classification(data, ["R01"], (500, 480))
+        self.assertEqual([p["bubble"] for p in out["splits"]["R01"]], ["round", "free"])
+        self.assertEqual(out["splits"]["R01"][0]["box"], [300, 48, 350, 96])
+        for bad in ({**outside, "box": [0, 0, 0, 0]}, {**outside, "box": [0, 0, float("nan"), 100]},
+                    {**outside, "confidence": "sure"}, {**outside, "bubble": "unknown"}):
+            data["splits"] = [{"id": "R01", "parts": [part, bad]}]
+            out = ai.parse_classification(data, ["R01"], (500, 480))
+            self.assertFalse(out["splits"])
+            self.assertTrue(any("R01" in w for w in out["warnings"]))
+        data["splits"] = [{"id": "R99", "parts": [part, outside]}]
+        out = ai.parse_classification(data, ["R01"], (500, 480))
+        self.assertFalse(out["splits"])
+        self.assertTrue(any("R99" in w for w in out["warnings"]))
+
 
 def _classify_reply(bubbles):
     def fake(cfg, step, system, prompt, images, schema, name):
         assert step == "detect" and images and schema is ai.CLASSIFY_SCHEMA
         return {"regions": [{"id": rid, "bubble": b, "order": i + 1, "confidence": .95, "note": ""}
-                            for i, (rid, b) in enumerate(bubbles.items())], "missed": []}
+                            for i, (rid, b) in enumerate(bubbles.items())], "missed": [], "splits": []}
     return fake
 
 
@@ -153,6 +172,32 @@ class WorkflowTests(unittest.TestCase):
     def _detect(self, bubbles):
         with patch("app.core.ai.ask_json", _classify_reply(bubbles)):
             return workflow.detect(self.project, self.page, self.detector, ai.AIConfig())
+
+    def test_clean_panel_restores_screentone_on_enabled_sfx(self):
+        p, page = self.project, self.page
+        self._detect({"R01": "round", "R02": "free", "R03": "sfx"})
+        sfx = p.region(page, "R03")
+        x, y, right, bottom = sfx["box"]
+        yy, xx = np.indices((500, 500))
+        tone = np.where((xx % 8 - 4) ** 2 + (yy % 8 - 4) ** 2 <= 4, 30, 248).astype(np.uint8)
+        original = cv2.cvtColor(tone, cv2.COLOR_GRAY2BGR)
+        mask = np.zeros(tone.shape, np.float32)
+        mask[y + 8:bottom - 8, x + 12:right - 12] = 1
+        raw = original.copy()
+        raw[mask > 0] = 0
+        workflow.imwrite(p.file(page, "work.png"), raw)
+        np.savez_compressed(p.file(page, "mask.npz"), mask=mask)
+        p.data.update(clean_kinds=["sfx"], restore_screentone=True)
+
+        layer, warnings = workflow.clean(p, page)
+
+        self.assertEqual(warnings, [])
+        self.assertTrue(sfx["cleaned"])
+        np.testing.assert_array_equal(workflow.imread(p.file(page, "cleaned.png")), original)
+        patch = cv2.imdecode(np.fromfile(layer, np.uint8), cv2.IMREAD_UNCHANGED)
+        visible = patch[..., 3] == 255
+        np.testing.assert_array_equal(np.where(visible[..., None], patch[..., :3], raw), original)
+        self.assertFalse(visible[:y].any() or visible[bottom:].any())
 
     def test_full_flow_keeps_ids_and_manual_edits(self):
         p, page = self.project, self.page
@@ -226,6 +271,68 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(saved), 3)
         self.assertEqual(saved[0]["bubble_src"], "auto")
 
+    def test_merged_inside_and_outside_text_split_and_keep_ids_on_redetection(self):
+        p, page = self.project, self.page
+        merged = [((100, 100, 401, 181), "text"), BOXES[2]]
+        detector = type("D", (), {"detect": lambda self, img: _fake_detection(merged)})()
+        parts = [{"box": ai._norm(b, (500, 480)), "bubble": bubble, "order": i + 1,
+                  "confidence": .95, "note": ""}
+                 for i, (b, bubble) in enumerate([(BOXES[0][0], "round"), (BOXES[1][0], "free")])]
+
+        def classify(cfg, step, system, prompt, images, schema, name):
+            self.assertEqual(len(images), 2)  # ảnh có ID + ảnh gốc để nhìn viền bóng
+            reply = _classify_reply({"R01": "round", "R02": "sfx"})(cfg, step, system, prompt, images, schema, name)
+            reply["regions"][1]["order"] = 3
+            reply["splits"] = [{"id": "R01", "parts": parts}]
+            return reply
+
+        with patch("app.core.ai.ask_json", classify):
+            warnings = workflow.detect(p, page, detector, ai.AIConfig())
+        self.assertEqual(warnings, [])
+        self.assertEqual([(r["id"], r["bubble"], r["box"]) for r in page["regions"]],
+                         [("R01", "round", list(BOXES[0][0])), ("R03", "free", list(BOXES[1][0])),
+                          ("R02", "sfx", list(BOXES[2][0]))])
+        self.assertFalse(p.region(page, "R01")["cleaned"])
+        p.region(page, "R03")["ja"] = "Giữ chỉnh tay"
+        p.region(page, "R03")["ja_src"] = "manual"
+        # Cùng một khung gộp từ detector vẫn khớp đúng từng ID đã tách, kể cả khi mở lại dự án.
+        p.save()
+        reopened = Project(p.folder)
+        with patch("app.core.ai.ask_json", _classify_reply({"R01": "round", "R03": "free", "R02": "sfx"})):
+            workflow.detect(reopened, reopened.pages[0], detector, ai.AIConfig())
+        self.assertEqual([r["id"] for r in reopened.pages[0]["regions"]], ["R01", "R03", "R02"])
+        self.assertEqual(reopened.region(reopened.pages[0], "R03")["ja"], "Giữ chỉnh tay")
+
+    def test_shared_balloon_keeps_separate_text_ids_and_protects_manual_edits(self):
+        p, page = self.project, self.page
+        parts = [{"box": [360, 100, 401, 130], "bubble": "round", "order": 1, "confidence": .9, "note": ""},
+                 {"box": [360, 150, 401, 181], "bubble": "round", "order": 2, "confidence": .9, "note": ""}]
+        r = workflow.new_region("R01", BOXES[0][0])
+        page["regions"] = [r]
+        _, mask = _fake_detection(BOXES)
+        for field, value in (("ja_src", "manual"), ("bubble_src", "manual"), ("lines_src", "manual"), ("src", "manual")):
+            r[field] = value
+            warnings = workflow._split_text_regions(p, page, page["regions"], {"R01": parts}, None, mask)
+            self.assertEqual(len(page["regions"]), 1)
+            self.assertTrue(warnings)
+            r[field] = "detect" if field == "src" else "auto"
+        self.assertEqual(workflow._split_text_regions(p, page, page["regions"], {"R01": parts}, None, mask), [])
+        self.assertEqual([(r["id"], r["box"], r["bubble"]) for r in page["regions"]],
+                         [("R01", parts[0]["box"], "round"), ("R02", parts[1]["box"], "round")])
+
+    def test_invalid_split_geometry_leaves_original_region_intact(self):
+        p, page = self.project, self.page
+        _, mask = _fake_detection(BOXES)
+        for second in ([360, 120, 401, 181], [20, 150, 401, 181]):
+            r = workflow.new_region("R01", BOXES[0][0])
+            page["regions"] = [r]
+            parts = [{"box": b, "bubble": "round", "order": i + 1, "confidence": .9, "note": ""}
+                     for i, b in enumerate(([360, 100, 401, 140], second))]
+            warnings = workflow._split_text_regions(p, page, page["regions"], {"R01": parts}, None, mask)
+            self.assertTrue(warnings)
+            self.assertEqual(len(page["regions"]), 1)
+            self.assertEqual(r["box"], list(BOXES[0][0]))
+
     def test_redraw_marks_unerased_text_and_finds_missed_erased_text(self):
         p, page = self.project, self.page
         p.data["source"] = "redraw"
@@ -282,6 +389,63 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual([Path(f).name for f in files], ["004.jpg", "003.jpg"])
         self.assertEqual([Path(f).name for f in workflow.raw_files_for("05.png", str(folder))], ["005.jpg"])
         self.assertEqual(workflow.raw_files_for("09.png", str(folder)), [])
+
+    def test_redraw_upload_matches_ranges_and_rejects_ambiguous_images(self):
+        pages = [{"id": 1, "name": "15.psd"}, {"id": 2, "name": "03-04.psd"},
+                 {"id": 3, "name": "016.psd"}, {"id": 4, "name": "16 copy.psd"}]
+        jobs, rejected = workflow.redraw_targets(
+            ["015.jpg", "03-04.jpg", "04.jpg", "16.jpg", "42.jpg"], pages, active="15.psd")
+        self.assertEqual([(d["id"], name) for d, name in jobs], [(1, "015.jpg"), (2, "03-04.jpg")])
+        self.assertEqual(len(rejected), 3)
+        self.assertFalse(workflow.redraw_targets(["15.jpg", "015.png"], pages)[0])
+        self.assertEqual(workflow.redraw_targets(["redraw.jpg"], pages, active="15.psd")[0], [(pages[0], "redraw.jpg")])
+        self.assertFalse(workflow.redraw_targets(["42.jpg"], pages, active="15.psd")[0])
+
+    def test_redraw_upload_preserves_verified_raw_and_updates_only_matched_pages(self):
+        from app.panel import PhotoshopError, Runner
+
+        p, page = self.project, self.page
+        docs = [{"id": 1, "name": page["key"]}, {"id": 2, "name": "14.jpg"}]
+        p.sync_documents(docs)
+        second = p.page("14.jpg")
+        original = workflow.imread(p.file(page, "work.png"))
+        raw = p.file(page, "raw.png")
+        workflow.imwrite(raw, original)
+        raw_bytes = raw.read_bytes()
+        r = workflow.new_region("R01", BOXES[0][0])
+        r.update(ja="ありがとう", ja_src="manual", lines=["Cảm ơn"], lines_src="manual")
+        page["regions"] = [r]
+        for step in ("match", "typeset"):
+            p.set_status(page, step, "done")
+        for name in ("cleaned.png", "assignment-preview.png", "preview.png"):
+            p.file(page, name).write_bytes(b"old")
+
+        def call(command, *, layer, folder, id, name):
+            self.assertEqual(command, "replace_redraw")
+            if id == 2:
+                raise PhotoshopError("ảnh sai tỉ lệ")
+            self.assertEqual((name, layer), (page["key"], "13.jpg"))
+            folder = Path(folder)
+            inputs = {"raw": folder / "raw.png", "work": folder / "work.png", "preview": folder / "preview.png"}
+            cv2.imencode(".png", original, [cv2.IMWRITE_PNG_COMPRESSION, 9])[1].tofile(inputs["raw"])
+            workflow.imwrite(inputs["work"], np.full_like(original, 255))
+            workflow.imwrite(inputs["preview"], np.full_like(original, 200))
+            return {**inputs, "size": [original.shape[1], original.shape[0]]}
+
+        runner = Runner(SimpleNamespace(project=p, ps=SimpleNamespace(call=call)))
+        runner.redraw_done = []
+        runner._run_redraw([(docs[0], "13.jpg"), (docs[1], "14.png")])
+        self.assertEqual(runner.redraw_done, [page["key"]])
+        self.assertTrue(p.uses_redraw(page))
+        self.assertFalse(p.uses_redraw(second))
+        self.assertEqual(raw.read_bytes(), raw_bytes)
+        self.assertEqual(page["regions"], [r])
+        self.assertEqual(p.status(page, "match")["state"], "done")
+        self.assertEqual(p.status(page, "typeset")["state"], "done")
+        self.assertTrue(np.all(workflow.imread(p.file(page, "work.png")) == 255))
+        self.assertTrue(np.all(workflow.imread(p.file(page, "preview.png")) == 200))
+        self.assertFalse(p.has(page, "cleaned.png"))
+        self.assertFalse(p.has(page, "assignment-preview.png"))
 
 
 if __name__ == "__main__":

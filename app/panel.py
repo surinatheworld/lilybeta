@@ -26,12 +26,13 @@ from PySide6.QtWidgets import (
 )
 
 from .core import ai, secrets, workflow
+from .core.semantic_review import TypesetBlocked
 from .core.workflow import BUBBLES, STEPS, STATES, Project
 
 INSTANCE = "LilyzonoPanel-" + hashlib.md5(os.environ.get("USERNAME", "").encode()).hexdigest()[:8]
-ICONS = {"done": "✓", "warn": "!", "error": "✗", "stale": "↻", "pending": "·", "running": "…"}
+ICONS = {"done": "✓", "warn": "!", "error": "✗", "stale": "↻", "pending": "·", "running": "…", "blocked": "!"}
 COLORS = {"done": "#3fb950", "warn": "#d29922", "error": "#f85149", "stale": "#58a6ff", "pending": "#8b949e",
-          "running": "#c9d1d9"}
+          "running": "#c9d1d9", "blocked": "#d29922"}
 BUBBLE_COLORS = {"round": "#2f81f7", "square": "#a371f7", "ray": "#f0883e", "cloud": "#3fb950", "sfx": "#db61a2",
                  "free": "#e3b341", "skip": "#6e7681"}
 REQUIRES = {"detect": ["open"], "setup": ["detect"], "raw": ["open"], "ocr": ["raw", "detect"],
@@ -39,6 +40,16 @@ REQUIRES = {"detect": ["open"], "setup": ["detect"], "raw": ["open"], "ocr": ["r
 COLS = ["ID", "Loại bóng", "Kiểu chữ", "Font", "Cỡ", "Chữ Nhật (OCR)", "Việt tham chiếu (AI)",
         "Bản dịch (mỗi câu một dòng)", "Đối chiếu nghĩa", "Tin cậy", "Ghi chú"]
 C_ID, C_BUBBLE, C_KIND, C_FONT, C_SIZE, C_JA, C_VI, C_LINES, C_MEANING, C_CONF, C_NOTE = range(len(COLS))
+
+
+def _batch_status(names: list[str]) -> str:
+    complete = names.count("done") + names.count("warn")
+    details = [f"Xong {complete}/{len(names)} trang"]
+    for state, label in (("blocked", "cần đối chiếu"), ("error", "lỗi"), ("stale", "cần chạy lại"),
+                         ("running", "đang chạy"), ("pending", "chưa chạy"), ("warn", "có cảnh báo")):
+        if count := names.count(state):
+            details.append(f"{count} {label}")
+    return " · ".join(details)
 
 
 # --- Photoshop qua COM ----------------------------------------------------------------------------
@@ -322,6 +333,9 @@ class KindsDialog(QDialog):
                 grid.addWidget(w, i + 1, c)
             self.rows[bubble] = (kind, italic, cl)
         lay.addLayout(grid)
+        self.screentone = QCheckBox("Khôi phục lưới chấm khi xoá chữ (offline)")
+        self.screentone.setChecked(bool(project.data.get("restore_screentone")))
+        lay.addWidget(self.screentone)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         lay.addWidget(buttons)
         buttons.accepted.connect(self.accept)
@@ -351,7 +365,8 @@ class KindsDialog(QDialog):
                 self.fonts.pop(bubble, None)
             if cl.isChecked():
                 clean.append(bubble)
-        self.project.data.update(kind_map=kind_map, kind_fonts=self.fonts, clean_kinds=clean)
+        self.project.data.update(kind_map=kind_map, kind_fonts=self.fonts, clean_kinds=clean,
+                                 restore_screentone=self.screentone.isChecked())
 
 
 # --- xem trang -----------------------------------------------------------------------------------
@@ -491,8 +506,51 @@ class Runner:
     def start(self, steps: list[str], keys: list[str]) -> None:
         self.cancel = False
         self.steps = list(steps)
+        self.keys = list(keys)
         self.thread = threading.Thread(target=self._run, args=(steps, keys), daemon=True)
         self.thread.start()
+
+    def start_redraw(self, jobs) -> None:
+        self.cancel = False
+        self.steps = ["replace_redraw"]
+        self.keys = [doc["name"] for doc, _ in jobs]
+        self.redraw_done = []
+        self.thread = threading.Thread(target=self._run_redraw, args=(jobs,), daemon=True)
+        self.thread.start()
+
+    def _run_redraw(self, jobs) -> None:
+        project = self.w.project
+        try:
+            for doc, path in jobs:
+                if self.cancel:
+                    break
+                key = doc["name"]
+                page = project.page(key)
+                self.signals.progress.emit(f"{key} · Đang thay bản redraw…")
+                try:
+                    with tempfile.TemporaryDirectory() as folder:
+                        out = self.w.ps.call("replace_redraw", layer=path, folder=folder, id=doc.get("id"), name=key)
+                        self.redraw_done.append(key)
+                        page["has_redraw"] = True
+                        for name in ("cleaned.png", "assignment-preview.png", "preview.png"):
+                            project.file(page, name).unlink(missing_ok=True)
+                        raw_changed = out["raw"] and workflow.copy_image(
+                            out["raw"], project.file(page, "raw.png"), compare_pixels=True)
+                        if raw_changed:
+                            project.invalidate(page, "open")
+                        workflow.copy_image(out["work"], project.file(page, "work.png"))
+                        if out.get("preview"):
+                            workflow.copy_image(out["preview"], project.file(page, "preview.png"))
+                        page["size"] = out["size"]
+                        project.set_status(page, "open", "done")
+                    self.signals.log.emit("ok", f"{key} · Đã thay bản redraw.")
+                except (PhotoshopError, OSError, ValueError) as exc:
+                    label = "Đã thay redraw, chưa cập nhật ảnh xem trước" if key in self.redraw_done else "Chưa thay redraw"
+                    self.signals.log.emit("error", f"{key} · {label}. {exc}")
+                self.signals.page.emit(key)
+        finally:
+            project.save()
+            self.signals.finished.emit()
 
     def detector(self):
         if self._detector is None:
@@ -540,6 +598,9 @@ class Runner:
             for wmsg in warnings:
                 self.signals.log.emit("warn", f"{key} · {name}: {wmsg}")
             self.signals.log.emit("ok", f"{key} · {name}: xong")
+        except TypesetBlocked as exc:
+            p.set_status(page, step, "blocked", str(exc))
+            self.signals.log.emit("warn", f"{key} · {name}: {exc}")
         except (ai.AIError, PhotoshopError, ValueError, OSError) as exc:
             p.set_status(page, step, "error", str(exc))
             self.signals.log.emit("error", f"{key} · {name}: {exc}")
@@ -556,15 +617,17 @@ class Runner:
             with tempfile.TemporaryDirectory() as tmp:
                 out = ps.call("snapshot", folder=tmp, **doc)
                 changed = workflow.copy_image(out["work"], p.file(page, "work.png"))
-                raw_src = out["work"] if p.data["source"] == "raw" else out["raw"]
+                raw_src = out["raw"] if p.uses_redraw(page) else out["work"]
+                if page.get("has_redraw"):
+                    changed = False  # chỉ thay nền, vẫn dùng cùng ảnh Nhật để đối chiếu
                 if raw_src:
-                    changed |= workflow.copy_image(raw_src, p.file(page, "raw.png"))
+                    changed |= workflow.copy_image(raw_src, p.file(page, "raw.png"), compare_pixels=bool(page.get("has_redraw")))
             page["size"] = out["size"]
             if changed:
                 p.invalidate(page, "open")
             return [] if changed else ["Ảnh không đổi so với lần trước"]
         if step == "raw":
-            if p.data["source"] == "raw":
+            if not p.uses_redraw(page):
                 workflow.copy_image(p.file(page, "work.png"), p.file(page, "raw.png"))
                 return ["Ảnh đang mở là raw: dùng luôn ảnh này"]
             files = workflow.raw_files_for(page["key"], p.data.get("raw_folder", ""), p.data["right_to_left"])
@@ -652,6 +715,8 @@ class PanelWindow(QMainWindow):
         self.source.addItem("Bản Redraw (chữ đã xoá)", "redraw")
         get_docs = QPushButton("Lấy ảnh đang mở trong Photoshop")
         open_files = QPushButton("Mở ảnh…")
+        self.upload_redraw_btn = QPushButton("Nạp bản redraw…")
+        self.upload_redraw_btn.setToolTip("Chọn một hoặc nhiều ảnh redraw để thay nền các trang đang mở theo số trang.")
         self.raw_label = QLabel("—")
         pick_raw = QPushButton("Chọn folder raw…")
         self.tl_label = QLabel("—")
@@ -690,6 +755,7 @@ class PanelWindow(QMainWindow):
         grid.addWidget(QLabel("Dự án"), 5, 0)
         grid.addWidget(self.folder_label, 5, 1, 1, 2)
         grid.addWidget(open_folder, 5, 3)
+        grid.addWidget(self.upload_redraw_btn, 6, 3)
         grid.setColumnStretch(1, 1)
 
         # các bước
@@ -821,6 +887,7 @@ class PanelWindow(QMainWindow):
         # sự kiện
         get_docs.clicked.connect(self.load_documents)
         open_files.clicked.connect(self.open_images)
+        self.upload_redraw_btn.clicked.connect(self.upload_redraw)
         pick_raw.clicked.connect(self.pick_raw)
         pick_tl.clicked.connect(self.pick_translation)
         kinds_btn.clicked.connect(self.edit_kinds)
@@ -909,7 +976,7 @@ class PanelWindow(QMainWindow):
             name = workflow.slug(Path(first["name"]).stem)
         return workflow.projects_root() / name
 
-    def load_documents(self) -> None:
+    def load_documents(self) -> list[dict] | None:
         if self.runner.busy:
             return
         try:
@@ -925,14 +992,17 @@ class PanelWindow(QMainWindow):
         if self.project is None or self.project.folder != folder:
             self.open_project(folder)
         self.project.sync_documents(docs)
-        if any(d["has_raw"] or d["has_redraw"] for d in docs) and not any(p["status"] for p in self.project.pages):
-            self.project.data["source"] = "redraw"  # tài liệu đã có layer raw / bản redraw: mặc định là bản redraw
+        if all(d["has_raw"] for d in docs) and not any(p["status"] for p in self.project.pages):
+            self.project.data["source"] = "redraw"  # tất cả tài liệu đã có raw gắn riêng
         self.project.save()
         self._update_inputs()
         self.refresh_pages()
         self.log("info", f"{len(docs)} ảnh đang mở · dự án {folder}")
+        return docs
 
     def open_images(self) -> None:
+        if self.runner.busy:
+            return
         files, _ = QFileDialog.getOpenFileNames(self, "Mở ảnh (bản Redraw hoặc Raw)", "",
                                                 "Ảnh (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.psd)")
         if not files:
@@ -943,6 +1013,24 @@ class PanelWindow(QMainWindow):
             self.log("error", str(exc))
             return
         self.load_documents()
+
+    def upload_redraw(self) -> None:
+        if self.runner.busy:
+            return
+        files, _ = QFileDialog.getOpenFileNames(self, "Chọn bản redraw để thay layer", "",
+                                                "Ảnh (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff)")
+        if not files:
+            return
+        self.commit_editors()
+        docs = self.load_documents()
+        if not docs:
+            return
+        jobs, rejected = workflow.redraw_targets(files, docs, self.current)
+        for reason in rejected:
+            self.log("warn", f"Bỏ qua {reason}.")
+        if jobs:
+            self._busy(True)
+            self.runner.start_redraw(jobs)
 
     def pick_raw(self) -> None:
         if self.project is None:
@@ -1070,6 +1158,7 @@ class PanelWindow(QMainWindow):
         for lab, btn in self.step_status.values():
             btn.setEnabled(not busy)
         self.run_all_btn.setEnabled(not busy)
+        self.upload_redraw_btn.setEnabled(not busy)
         self.stop_btn.setEnabled(busy)
         self.table.setEnabled(not busy)
 
@@ -1078,7 +1167,13 @@ class PanelWindow(QMainWindow):
         self.progress.setText("")
         self.refresh_pages()
         page = self.page_obj()
-        if page and "match" in getattr(self.runner, "steps", []):
+        steps = getattr(self.runner, "steps", [])
+        keys = getattr(self.runner, "keys", [])
+        if page and page["key"] in getattr(self.runner, "redraw_done", []) and "replace_redraw" in steps:
+            name = ("preview.png" if self.project.has(page, "preview.png")
+                    and self.project.status(page, "typeset")["state"] in ("done", "warn") else "work.png")
+            self.view_kind.setCurrentIndex(self.view_kind.findData(name))
+        elif page and page["key"] in keys and ("match" in steps or "typeset" in steps):
             name = ("preview.png" if self.project.status(page, "typeset")["state"] in ("done", "warn")
                     else "assignment-preview.png")
             if self.project.has(page, name):
@@ -1086,7 +1181,13 @@ class PanelWindow(QMainWindow):
                 self.view_kind.setCurrentIndex(self.view_kind.findData(name))
                 self.view_kind.blockSignals(False)
         self.show_page(self.current)
-        self.log("info", "Xong.")
+        if "replace_redraw" in steps:
+            self.log("info", f"Đã thay bản redraw cho {len(self.runner.redraw_done)}/{len(keys)} trang.")
+        elif not self.runner.cancel and "typeset" in steps:
+            statuses = [self.project.status(self.project.page(key), "typeset")["state"] for key in keys]
+            self.log("info", "Bước 8 · " + _batch_status(statuses))
+        elif not self.runner.cancel:
+            self.log("info", "Xong.")
 
     def _page_changed(self, key):
         self.refresh_pages(keep_view=True)
@@ -1108,10 +1209,13 @@ class PanelWindow(QMainWindow):
                 if not page.get("open", True):
                     item.setText(item.text() + "  (đã đóng)")
                     item.setForeground(QColor("#6e7681"))
-                errors = [f"{_num(s)}: {p.status(page, s)['msg']}" for s, _ in STEPS if p.status(page, s)["state"] == "error"]
-                item.setToolTip("\n".join(errors) or "1 Mở · 2 Nhận diện · 3 Thiết lập · 4 Raw · 5 OCR · 6 Xoá chữ · 7 Ghép · 8 Typeset")
-                if errors:
+                issues = [(s, p.status(page, s)) for s, _ in STEPS if p.status(page, s)["state"] in ("error", "blocked")]
+                item.setToolTip("\n".join(f"{_num(s)}: {status['msg']}" for s, status in issues)
+                                or "1 Mở · 2 Nhận diện · 3 Thiết lập · 4 Raw · 5 OCR · 6 Xoá chữ · 7 Ghép · 8 Typeset")
+                if any(status["state"] == "error" for _, status in issues):
                     item.setForeground(QColor(COLORS["error"]))
+                elif issues and page.get("open", True):
+                    item.setForeground(QColor(COLORS["blocked"]))
                 self.pages.addItem(item)
                 if page["key"] == self.current:
                     self.pages.setCurrentItem(item)
@@ -1132,13 +1236,12 @@ class PanelWindow(QMainWindow):
                 continue
             states = [p.status(p.page(k), step) for k in keys]
             names = [s["state"] for s in states]
-            for state in ("running", "error", "stale", "warn"):
+            for state in ("running", "error", "blocked", "stale", "warn"):
                 if state in names:
                     break
             else:
                 state = "done" if all(n == "done" for n in names) else "pending"
-            n = sum(x in ("done", "warn") for x in names)
-            text = STATES[state] + (f" ({n}/{len(keys)} trang)" if len(keys) > 1 else "")
+            text = _batch_status(names) if len(keys) > 1 else STATES[state]
             lab.setText(f"<span style='color:{COLORS[state]}'>{ICONS[state]} {text}</span>")
             lab.setToolTip("\n".join(f"{k}: {s['msg']}" for k, s in zip(keys, states) if s.get("msg")))
 
@@ -1192,6 +1295,11 @@ class PanelWindow(QMainWindow):
             self.view.show_page(None, [])
             return
         name = self.view_kind.currentData()
+        if name == "preview.png" and self.project.status(page, "typeset")["state"] not in ("done", "warn"):
+            name = "assignment-preview.png" if self.project.has(page, "assignment-preview.png") else "work.png"
+            self.view_kind.blockSignals(True)
+            self.view_kind.setCurrentIndex(self.view_kind.findData(name))
+            self.view_kind.blockSignals(False)
         path = self.project.file(page, name)
         if not path.exists():
             path = self.project.file(page, "work.png")

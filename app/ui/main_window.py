@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections import Counter
 from dataclasses import asdict
 
 from PySide6.QtCore import QEventLoop, QSettings, QSize, Qt, QThread, QTimer, Signal
@@ -43,12 +44,12 @@ from ..core.assign import apply_plan, assign_lines
 from ..core import project
 from ..core.chapter import Chapter
 from ..core.document import Stroke, affine, doc_for
-from ..core.clean import opencv_inpaint, skip_hard
+from ..core.clean import opencv_inpaint, restore_screentone, screentone_only, skip_hard, text_area
 from ..core.docs import load_lines, load_pages, page_number
 from ..core.psd_export import PhotoshopExporter, export_without_photoshop, photoshop_available
 from ..core.page import Page, Region
 from ..core.typeset import SOFT_BREAK, TextStyle, layout, make_font, missing_chars, raw_text, split_lines
-from ..core.typeset_profiles import (CUSTOM, GAI_BANG, PROFILES, apply_profile, fonts_for, is_italic, kinds_for, profile_style,
+from ..core.typeset_profiles import (CUSTOM, GAI_BANG, PROFILES, REN_AI, apply_profile, fonts_for, is_italic, kinds_for, profile_style,
                                      region_kind, split_mark)
 from ..core import manual_ai
 from .ai_bridge import AiBridgeDialog
@@ -67,6 +68,7 @@ from .image_view import (
     TOOL_MOVE,
     TOOL_RECT,
     TOOL_TEXT,
+    TOOL_TYPESET,
     TOOL_WAND,
     TOOL_ZOOM,
     ImageView,
@@ -144,6 +146,7 @@ class CleanWorker(QThread):
 
 ENGINES = [
     ("simple", "Chỉ xoá chỗ đơn giản – nền khó (SFX, tranh) để nguyên, chữ đặt đè lên"),
+    ("screentone", "Giữ lưới chấm (offline)"),
     ("opencv", "Thường (OpenCV) – nhanh, nền tranh hơi mờ"),
     ("gemini", "AI Google Gemini – cần API key"),
     ("openai", "AI OpenAI (ChatGPT) – cần API key"),
@@ -160,6 +163,7 @@ TOOLS = [
     (TOOL_CLONE, "⎘", "Clone Stamp – Alt+bấm lấy điểm mẫu rồi tô", "S"),
     (TOOL_ERASER, "⌫", "Eraser – tẩy (trên layer Redraw: trả về ảnh raw)", "E"),
     (TOOL_TEXT, "T", "Type – bấm vào bóng thoại để gõ chữ, kéo để tạo khung đoạn văn", "T"),
+    (TOOL_TYPESET, "G", "Đặt bản dịch theo lượt – bấm bóng thoại để đặt câu kế tiếp", "G"),
     (TOOL_RECT, "▣", "Khung chữ – vẽ khung để xoá chữ gốc & đặt bản dịch", "K"),
     (TOOL_LASSO, "◌", "Khung chữ lasso – khoanh tự do quanh chữ/SFX", "Shift+K"),
     (TOOL_HAND, "✋", "Hand – kéo ảnh (hoặc giữ Space)", "H"),
@@ -237,6 +241,7 @@ class MainWindow(QMainWindow):
         self.view.strokeEnded.connect(self._stroke_ended)
         self.view.cloneSourceSet.connect(self._clone_source)
         self.view.textClicked.connect(self._text_clicked)
+        self.view.typesetClicked.connect(self._typeset_clicked)
         self.view.textBoxDrawn.connect(self._text_box_drawn)
         self.view.zoomChanged.connect(lambda z: self.lbl_zoom.setText(f"{z * 100:.0f}%"))
         self.view.cursorMoved.connect(lambda x, y: self.lbl_pos.setText(f"X {x}  Y {y}"))
@@ -456,6 +461,7 @@ class MainWindow(QMainWindow):
         A(m, "Chọn mọi khung đã có bản dịch", self.select_translated, "Ctrl+Shift+A")
         A(m, "Khung tiếp theo", lambda: self._step_region(1), "Tab")
         A(m, "Tự điền bản dịch cho trang này", self._auto_fill)
+        A(m, "Đặt bản dịch theo lượt", lambda: self.set_tool(TOOL_TYPESET))
         A(m, "Typeset Gái Băng", self._enable_gai_bang)
         m.addSeparator()
         self.act_process_all = A(m, "Xử lý cả chương", self.process_chapter)
@@ -576,6 +582,9 @@ class MainWindow(QMainWindow):
                       hint("Bấm vào bóng thoại để tạo chữ rồi gõ ở ô nội dung (panel Lilyzono) · kéo chuột để tạo "
                            "khung đoạn văn · font/cỡ/căn lề ở panel Character / Paragraph"), "|",
                       button("Xử lý (Ctrl+Enter)", self.process_selected))
+        self.lbl_next_line = hint("")
+        self.lbl_next_line.setTextFormat(Qt.PlainText)
+        i_typeset = page(button("Mở bản dịch…", self.open_docs), "|", self.lbl_next_line)
         # Khung chữ
         i_region = page(button("Nhận diện chữ (F5)", self.run_detect), button("Xử lý (Ctrl+Enter)", self.process_selected),
                         button("Chỉ xoá chữ", self.clean_selected), "|",
@@ -584,7 +593,7 @@ class MainWindow(QMainWindow):
         i_view = page(button("100%", lambda: self.view.zoom_to(1.0)), button("Vừa màn hình", self.view.fit_page),
                       button("Vừa chiều ngang", self.view.fit_width))
         self._opt_pages = {TOOL_MOVE: i_move, TOOL_MARQUEE: i_sel, TOOL_LASSO_SEL: i_sel, TOOL_WAND: i_wand,
-                           TOOL_TEXT: i_text, TOOL_RECT: i_region, TOOL_LASSO: i_region, TOOL_HAND: i_view,
+                           TOOL_TEXT: i_text, TOOL_TYPESET: i_typeset, TOOL_RECT: i_region, TOOL_LASSO: i_region, TOOL_HAND: i_view,
                            TOOL_ZOOM: i_view, **{t: i_paint for t in PAINT_TOOLS}}
 
     def _reset_workspace(self):
@@ -597,6 +606,10 @@ class MainWindow(QMainWindow):
     def set_tool(self, tool: str):
         if tool not in self.tool_actions:
             tool = TOOL_MOVE
+        if tool == TOOL_TYPESET:
+            self.view.end_text_edit()
+            self._sync_used_lines()
+            self._fill_lines()
         self.view.set_tool(tool)
         self.tool_actions[tool].setChecked(True)
         if tool == TOOL_TEXT and self.region is not None and self.region.cleaned and not self.view.editing_text \
@@ -616,7 +629,7 @@ class MainWindow(QMainWindow):
                 TOOL_BRUSH: "Vẽ màu trước lên layer đang chọn · [ ]: đổi cỡ",
                 TOOL_ERASER: "Layer Redraw: tẩy = trả về ảnh raw · layer ảnh: xoá thành trong suốt",
                 TOOL_CLONE: "Alt+bấm để lấy điểm mẫu, rồi tô (giữ khoảng cách mẫu giữa các nét)",
-                TOOL_HEAL: "Tô kín chỗ cần xoá (chữ, SFX…), nhả chuột: vẽ lại theo nền xung quanh (OpenCV)",
+                TOOL_HEAL: "Tô kín chỗ cần xoá (chữ, SFX…), nhả chuột để vẽ lại theo nền xung quanh",
             }[tool])
 
     def _paint_opts_changed(self, *_):
@@ -861,8 +874,8 @@ class MainWindow(QMainWindow):
         self.engine_box = QComboBox()
         for eid, label in ENGINES:
             self.engine_box.addItem(label, eid)
-        self.engine_box.setToolTip("Cách vẽ lại nền sau khi xoá chữ. Bóng thoại trắng / nền trơn luôn được tô màu "
-                                   "nền (tức thì); nền có hoạ tiết (tranh, lưới chấm, SFX) để nguyên, chữ đặt đè lên.")
+        self.engine_box.setToolTip("Giữ lưới chấm: khôi phục hoạ tiết lặp trên máy. "
+                                   "Vùng nền khó còn lại được đánh dấu cần redraw.")
         idx = self.engine_box.findData(self.settings.value("ai/engine", "simple"))
         self.engine_box.setCurrentIndex(max(0, idx))
         self.engine_box.currentIndexChanged.connect(self._engine_changed)
@@ -1156,6 +1169,8 @@ class MainWindow(QMainWindow):
         """Hàm vẽ lại nền theo lựa chọn hiện tại (None = OpenCV)."""
         if self.engine == "simple":
             return skip_hard
+        if self.engine == "screentone":
+            return screentone_only
         if self.engine in PROVIDERS:
             key = secrets.get_key(self.engine)
             if not key:
@@ -1166,13 +1181,15 @@ class MainWindow(QMainWindow):
     def _clean_then(self, r, after):
         """Xoá chữ (1 vùng hoặc danh sách vùng) ở luồng nền, xong thì gọi `after()`.
         Trong lúc chờ khoá thao tác để không sửa trang song song."""
-        if all(x.cleaned for x in (r if isinstance(r, list) else [r])):
+        if self.clean_worker is not None or self._busy:
+            return
+        regions = r if isinstance(r, list) else [r]
+        retry = [x for x in regions if x.cleaned and x.needs_redraw and self.engine != "simple"]
+        if not retry and all(x.cleaned for x in regions):
             with self.doc.step("Xử lý"):
-                for x in (r if isinstance(r, list) else [r]):
+                for x in regions:
                     self.page.clean(x, fit_bubble=self.chk_bubble.isChecked())
             after()
-            return
-        if self.clean_worker is not None:
             return
         try:
             self.page.inpainter = self._make_inpainter()
@@ -1186,10 +1203,23 @@ class MainWindow(QMainWindow):
         self.centralWidget().setEnabled(False)
         QApplication.setOverrideCursor(Qt.WaitCursor)
         fit = self.chk_bubble.isChecked()
-        regions = r if isinstance(r, list) else [r]
         doc = self.doc
         doc.begin("Xử lý", ["redraw"])
-        self.clean_worker = CleanWorker(self, lambda: self.page.clean_many(regions, fit))
+        completed = False
+
+        def clean():
+            nonlocal completed
+            for x in retry:
+                x.cleaned = False
+            try:
+                doc.page.clean_many(regions, fit)
+                completed = True
+            finally:
+                for x in retry:
+                    if not x.cleaned:
+                        x.cleaned = x.needs_redraw = True
+
+        self.clean_worker = CleanWorker(self, clean)
         self.clean_worker.failed.connect(lambda msg: QMessageBox.warning(self, "Lỗi khi xoá chữ", msg))
 
         def finished():
@@ -1198,7 +1228,7 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
             self.centralWidget().setEnabled(True)
             self.statusBar().clearMessage()
-            if all(x.cleaned for x in regions):
+            if completed and all(x.cleaned for x in regions):
                 after()
                 hard = sum(x.needs_redraw for x in regions)
                 if hard:
@@ -1338,7 +1368,7 @@ class MainWindow(QMainWindow):
         w, h = self.page.size
         self.lbl_size.setText(f"{w} × {h} px")
         self._lines_for_page()
-        if self.page.detected:
+        if self.page.detected and self.view.tool != TOOL_TYPESET:
             self._auto_fill()
         self.refresh()
         if state.transform is None:
@@ -1381,6 +1411,7 @@ class MainWindow(QMainWindow):
             self.page = self.doc = self.chapter = self.project_path = None
             self.selected, self.selection = -1, []
             self.lines, self.used_lines = [], set()
+            self._fill_lines()
             self._doc_pages, self._doc_flat = {}, None
             self.page_lines = False
             self._loading_ui = True
@@ -1505,9 +1536,16 @@ class MainWindow(QMainWindow):
         self._fill_lines()
 
     def _sync_used_lines(self):
-        """Câu đã nằm trong một khung thì đánh dấu đã dùng."""
-        texts = [t for r in (self.page.regions if self.page else []) for t in split_lines(r.text) if t.strip()]
-        self.used_lines = {i for i, line in enumerate(self.lines) if line in texts}
+        """Mỗi lần đặt một câu chỉ đánh dấu một mục, kể cả khi bản dịch có câu lặp."""
+        brackets = self.page is not None and self.page.typeset_profile == REN_AI
+        texts = Counter(t.strip() for r in (self.page.regions if self.page else [])
+                        for t in split_lines(r.text) if t.strip())
+        self.used_lines = set()
+        for i, line in enumerate(self.lines):
+            parts = Counter(split_mark(t, brackets)[1].strip() for t in split_lines(line) if t.strip())
+            if parts and parts <= texts:
+                self.used_lines.add(i)
+                texts.subtract(parts)
 
     def _auto_fill(self):
         """Docs chia theo trang: tự ghép câu của trang vào các khung theo thứ tự đọc."""
@@ -1544,11 +1582,12 @@ class MainWindow(QMainWindow):
             self.chapter.translations = pages
             self.chapter.filled.clear()
         self._doc_pages, self._doc_flat = (pages if by_page else {}), flat
-        info = (f"{len(pages)} trang / {sum(map(len, pages.values()))} câu – tự điền theo trang"
+        info = (f"{len(pages)} trang / {sum(map(len, pages.values()))} câu"
                 if by_page else f"{len(flat)} câu")
         self.lbl_docs.setText(f"{os.path.basename(path)} – {info}")
         self._lines_for_page()
-        if by_page and self.page and self.page.detected and not any(r.text for r in self.page.regions):
+        if (by_page and self.view.tool != TOOL_TYPESET and self.page and self.page.detected
+                and not any(r.text for r in self.page.regions)):
             self._auto_fill()
         self.refresh()
 
@@ -1561,6 +1600,15 @@ class MainWindow(QMainWindow):
                 item.setForeground(QColor("#999"))
                 item.setText(f"✓ {i + 1}. {line}")
             self.list_lines.addItem(item)
+        nxt = self._next_unused_line()
+        if nxt is None:
+            message = "Đã đặt hết câu trên trang." if self.lines else "Mở bản dịch để bắt đầu."
+        else:
+            line = split_mark(self.lines[nxt], self.page is not None and self.page.typeset_profile == REN_AI)[1]
+            line = " ".join(line.split())
+            excerpt = line if len(line) <= 50 else line[:47] + "…"
+            message = f"Câu {nxt + 1}/{len(self.lines)} · {excerpt} · Bấm vào bóng thoại"
+        self.lbl_next_line.setText(message)
 
     def dragEnterEvent(self, e):
         if e.mimeData().hasUrls():
@@ -1624,6 +1672,8 @@ class MainWindow(QMainWindow):
 
         Những chi tiết tranh nhỏ có thể bị nhận nhầm thành SFX, nên không tự xoá chúng chỉ vì vừa mở ảnh.
         """
+        if self.engine == "screentone":
+            return (screentone_only, False, self.chk_bubble.isChecked())
         if self.engine in PROVIDERS or self.engine == "simple":
             return (skip_hard, False, self.chk_bubble.isChecked())
         return (None, False, self.chk_bubble.isChecked())
@@ -1637,7 +1687,8 @@ class MainWindow(QMainWindow):
         k = worker.cleaned
         self.statusBar().showMessage(f"Tìm thấy {n} vùng chữ, đã tự xoá chữ {k} bóng thoại / SFX nhỏ. "
                                      "Chọn khung rồi gõ bản dịch; chỗ còn lại: Xử lý (Ctrl+Enter) hoặc upload bản redraw.")
-        self._auto_fill()
+        if self.view.tool != TOOL_TYPESET:
+            self._auto_fill()
         self.refresh()
         self.select_region(0 if n else -1)
 
@@ -2099,6 +2150,8 @@ class MainWindow(QMainWindow):
         n = len(self.page.regions)
         sel = [i for i in self.selection if i < n]
         active = self.doc.active  # layer đang chọn theo trạng thái vừa khôi phục, giữ nguyên
+        self._sync_used_lines()
+        self._fill_lines()
         self.refresh()
         self.select_region(self.selected if self.selected < n else (sel[0] if sel else -1), sel or None)
         if active in self.doc.layers and self.doc.active is not active:
@@ -2247,14 +2300,26 @@ class MainWindow(QMainWindow):
         self._busy = True
         QApplication.setOverrideCursor(Qt.WaitCursor)
         self.statusBar().showMessage(f"{name}: đang vẽ lại…")
-        worker = CleanWorker(self, lambda: doc.content_aware_fill(L, opencv_inpaint, mask))
+        tone = self.engine == "screentone"
+        result = None
+
+        def fill():
+            nonlocal result
+            result = doc.content_aware_fill(L, restore_screentone if tone else opencv_inpaint, mask)
+
+        worker = CleanWorker(self, fill)
         worker.failed.connect(lambda msg: QMessageBox.warning(self, name, msg))
 
         def finished():
             self._busy = False
             doc.end()
             QApplication.restoreOverrideCursor()
-            self.statusBar().showMessage(f"{name}: xong.", 4000)
+            if result:
+                self.statusBar().showMessage(f"{name}: xong.", 4000)
+            elif result is False and tone:
+                self.statusBar().showMessage("Không khớp được lưới chấm quanh vùng chọn.", 5000)
+            else:
+                self.statusBar().clearMessage()
             self.refresh()
 
         worker.finished.connect(finished)
@@ -2305,6 +2370,68 @@ class MainWindow(QMainWindow):
             self.refresh()
 
     # --- công cụ chữ ---------------------------------------------------------------------
+    def _typeset_clicked(self, x: float, y: float):
+        if self.page is None or not self._can_switch_document() or self._page_detecting(self.page):
+            return
+        self._sync_used_lines()
+        nxt = self._next_unused_line()
+        if nxt is None:
+            self._fill_lines()
+            return
+
+        w, h = self.page.size
+        if not (0 <= x < w and 0 <= y < h):
+            return
+        x, y = int(x), int(y)
+        idx = self._region_at_point(x, y, pad=0)
+        if idx is None:
+            # Chấp nhận bấm trong lòng bóng khi xác định được duy nhất một khung.
+            radius = max(12, round(min(w, h) * .025))
+            _, shape = text_area(self.page.working, (max(0, x - radius), max(0, y - radius),
+                                                      min(w, x + radius), min(h, y + radius)))
+            if shape:
+                rows = {row: (left, right) for row, left, right in shape[2]}
+                hits = []
+                for i, r in enumerate(self.page.regions):
+                    x1, y1, x2, y2 = r.box
+                    left, right = rows.get((y1 + y2) // 2, (0, 0))
+                    if left <= (x1 + x2) / 2 < right:
+                        hits.append(i)
+                if len(hits) == 1:
+                    idx = hits[0]
+        if idx is None:
+            self.statusBar().showMessage("Bấm vào khung chữ cần đặt câu. Dùng K để thêm khung nếu thiếu.", 4000)
+            return
+        r = self.page.regions[idx]
+        if r.text.strip():
+            self.statusBar().showMessage("Khung này đã có bản dịch. Chọn khung trống để đặt câu kế tiếp.", 4000)
+            return
+
+        redraw = not r.cleaned or (r.needs_redraw and self.engine == "screentone")
+        fit = redraw or not r.text_rects
+        with self.doc.step("Đặt bản dịch theo lượt", ["redraw"] if redraw else []):
+            apply_plan(self.page, [(r, [self.lines[nxt]])], self.current_style())
+            if fit:
+                previous = self.page.inpainter
+                self.page.inpainter = screentone_only if self.engine == "screentone" else skip_hard
+                try:
+                    if redraw:
+                        r.cleaned = False
+                    self.page.clean(r, self.chk_bubble.isChecked())
+                finally:
+                    self.page.inpainter = previous
+            else:
+                self.page._contrast(r)
+        self._sync_used_lines()
+        self._fill_lines()
+        if fit:
+            self.refresh()
+        else:
+            self._refresh_text([r])
+        self.select_region(idx)
+        self.statusBar().showMessage(
+            "Đã đặt câu, nền còn cần redraw (khung vàng)." if r.needs_redraw else f"Đã đặt câu {nxt + 1}.", 2500)
+
     def _text_clicked(self, x: float, y: float):
         """Bấm vào chỗ trống bằng công cụ chữ: tạo khung chữ theo lòng bóng thoại tại đó (không xoá gì)."""
         if self.page is None:

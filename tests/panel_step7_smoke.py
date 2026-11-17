@@ -13,7 +13,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QTableWidget, QHeaderView, QMessageBox, QComboBox
 
 from app.core import workflow, match_text
-from app.panel import PanelWindow, COLS, C_JA, C_VI, C_LINES, C_MEANING
+from app.panel import PanelWindow, COLS, C_JA, C_VI, C_LINES, C_MEANING, _batch_status
 from app.core.semantic_review import confirm_region
 
 
@@ -67,7 +67,10 @@ with tempfile.TemporaryDirectory() as folder:
     window.view_kind=QComboBox()
     window.view_kind.addItem("Raw","raw.png")
     window.view_kind.addItem("Bản gán thử","assignment-preview.png")
+    window.view_kind.addItem("Kết quả typeset","preview.png")
     window.runner.steps=["match"]
+    window.runner.keys=[page["key"]]
+    window.runner.cancel=False
     window.current=page["key"]
     window._busy=lambda value:None
     window.progress=SimpleNamespace(setText=lambda text:None)
@@ -80,5 +83,12 @@ with tempfile.TemporaryDirectory() as folder:
     window.view=SimpleNamespace(show_page=lambda *args:captures.append(args))
     PanelWindow.refresh_view(window)
     assert captures[-1][1]==[],"Draft text must be visible without ID boxes over it"
+    project.file(page,"preview.png").write_bytes(b"older export")
+    project.set_status(page,"typeset","error","Dừng trước typeset — còn câu chưa gán")
+    window.view_kind.setCurrentIndex(window.view_kind.findData("preview.png"))
+    PanelWindow.refresh_view(window)
+    assert window.view_kind.currentData()=="assignment-preview.png"
+    assert project.status(page,"typeset")["state"]=="blocked"
+    assert _batch_status(["done","warn","blocked","error"]) == "Xong 2/4 trang · 1 cần đối chiếu · 1 lỗi · 1 có cảnh báo"
     table.close()
 print("PASS: Vietnamese reference column, read-only flags, Japanese/translation editing, stale reference hiding")

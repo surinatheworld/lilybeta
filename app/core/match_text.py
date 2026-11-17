@@ -32,7 +32,7 @@ def read_missing(project, page, regions, image, report=None) -> list[str]:
             cleared = True
     if cleared:
         project.save()
-    if project.data["source"] == "redraw" and not project.has(page, "raw.png"):
+    if project.uses_redraw(page) and not project.has(page, "raw.png"):
         return ["Bước 7: bản redraw thiếu Raw; nạp Raw ở bước 4 để đọc đúng tiếng Nhật."]
     from .ocr import reader
 

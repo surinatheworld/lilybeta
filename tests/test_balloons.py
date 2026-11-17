@@ -325,6 +325,35 @@ class StepTwoBalloonTests(unittest.TestCase):
             self.assertEqual(page["regions"][0]["bubble"],"square")
             self.assertTrue(all(r["balloon"] for r in page["regions"]))
 
+    def test_style_only_parent_splits_but_hand_entered_text_keeps_its_box(self):
+        image, mask, boxes = fixture([(160,230),(325,230)], merged=True)
+        b = boxes[0]
+        box = [b.x1,b.y1,b.x2,b.y2]
+        for locked in (False, True):
+            with self.subTest(locked=locked), tempfile.TemporaryDirectory() as folder:
+                project = workflow.Project(folder)
+                project.sync_documents([{"id":1,"name":"001.png"}])
+                page = project.pages[0]
+                parent = workflow.new_region(project.next_id(page), box)
+                parent.update(bubble="round", bubble_src="manual", style_kind="normal", font={"family":"Arial"},
+                              size=18, ja="結合文字", ja_src="ocr", lines=["Câu cũ"],
+                              lines_src="manual" if locked else "auto", cleaned=True)
+                page["regions"] = [parent]
+                workflow.imwrite(project.file(page,"work.png"), image)
+                detector = type("Detector",(),{"detect":lambda self, image:(boxes,mask)})()
+                workflow.detect(project,page,detector,ai.AIConfig(provider="none"))
+                rows = page["regions"]
+                if locked:
+                    self.assertEqual([(r["box"],r["lines"]) for r in rows], [(box,["Câu cũ"])])
+                else:
+                    self.assertEqual(len(rows),2)
+                    self.assertEqual(rows[0]["id"], parent["id"])
+                    for r in rows:
+                        self.assertEqual((r["style_kind"],r["font"],r["size"],r["bubble_src"]),
+                                         ("normal",{"family":"Arial"},18,"manual"))
+                        self.assertEqual((r["lines"],r["ja"],r["cleaned"]),([],"",False))
+                    self.assertIsNot(rows[0]["font"],rows[1]["font"])
+
     def test_ai_receives_per_lobe_evidence_and_original_input_is_unchanged(self):
         image, mask, boxes = fixture([(160,230),(325,230)])
         with tempfile.TemporaryDirectory() as folder:

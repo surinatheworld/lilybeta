@@ -178,6 +178,10 @@ def tool_icon(tool: str, size: int = 22) -> QIcon:
         line(19, 5, 19, 8)
         line(12, 5, 12, 20)
         line(9, 20, 15, 20)
+    elif tool == "typeset":
+        path([(5, 5), (19, 5), (19, 15), (12, 15), (8, 19), (8, 15), (5, 15)], True)
+        line(8, 8, 16, 8)
+        line(8, 11, 13, 11)
     elif tool == "rect":
         p.drawRect(QRectF(4, 4, 16, 16))
         line(8, 8, 16, 8)

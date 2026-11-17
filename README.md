@@ -12,16 +12,17 @@ bình thường; chạy lại script chỉ đưa cửa sổ lên trước). Gi�
 | Bước | Làm gì | Kết quả trong Photoshop |
 |---|---|---|
 | 1 Mở ảnh | “Lấy ảnh đang mở” / “Mở ảnh…”, chọn **Bản Raw** hoặc **Bản Redraw** | – |
-| 2 Nhận diện & phân loại (AI) | model comic-text-detector tìm vùng chữ, gán ID (R01, R02…); model AI xem ảnh có đánh số ID → loại bóng (tròn kín, vuông kín, có tia, mây suy nghĩ, SFX, ngoài khung, không dịch), thứ tự đọc, chữ bị sót | – |
+| 2 Nhận diện & phân loại (AI) | model comic-text-detector tìm vùng chữ, gán ID (R01, R02…); model AI xem ảnh có ID và ảnh gốc → tách cụm thoại bị gộp, xác định loại bóng từng ID (tròn kín, vuông kín, có tia, mây suy nghĩ, SFX, ngoài khung, không dịch), thứ tự đọc, chữ bị sót | – |
 | 3 Thiết lập bảng thoại | sửa loại bóng, kiểu chữ của preset, font riêng (danh sách font của Photoshop), cỡ chữ cho từng ID; “Loại bóng → font…” cho cả chương | – |
 | 4 Nạp Raw | bản redraw: “Chọn folder raw…” (tên ảnh có số trang; trang đôi `03-04` lấy raw 4 trái + 3 phải) | layer ẩn **Raw gốc (Lilyzono)** |
 | 5 OCR Raw | đọc chữ Nhật từng ID (model manga-ocr trên máy) | – |
-| 6 Xoá chữ | chỉ xoá chữ trong bóng kín (loại chọn trong “Loại bóng → font…”), chỉ chỗ nền một màu; bản redraw: bỏ qua | layer **Xoá chữ (Lilyzono)** |
+| 6 Xoá chữ | xoá nền trơn trong các loại bóng được bật. Trong “Loại bóng → font…”, có thể bật khôi phục lưới chấm offline và chọn thêm SFX. Trang dùng bản redraw sẽ bỏ qua bước này. | layer **Xoá chữ (Lilyzono)** |
 | 7 Ghép bản dịch (AI) | model AI đọc chữ Nhật + loại bóng + vị trí từng ID và câu dịch của trang → câu nào vào ID nào (một ID nhận được nhiều câu); câu chưa chắc tô vàng, câu không có chỗ vào “Câu chưa có vùng” | – |
 | 8 Typeset | dàn chữ theo bảng thoại | nhóm **Lilyzono · …**, mỗi câu một layer chữ tên `R03 · câu…`; nhóm lần trước đổi thành “(bản trước)” và ẩn |
 
 - Mỗi bước có nút **Chạy** riêng; **Chạy toàn bộ** chạy hết (bản redraw: bước 4 chạy trước bước 2 vì chữ Nhật trên redraw đã bị
   xoá). Phạm vi: trang đang chọn hoặc tất cả trang. Trạng thái từng trang: ✓ xong · ! cần kiểm tra · ✗ lỗi · ↻ cần chạy lại.
+- **Mỗi cụm thoại một khung chữ / ID**: khung ôm phần chữ, không ôm cả bóng. Các cụm thoại tách biệt trong cùng bóng hoặc bóng đôi vẫn có ID riêng; các cột Nhật của cùng một câu liên tục giữ chung một cụm. Thoại ngoài bóng, câu cảm thán ngắn và dấu câu đứng riêng được tách khỏi thoại trong bóng. Loại bóng dựa vào viền bóng gốc, không dựa vào khung đánh dấu hay độ đậm của chữ. Khi AI tách khung bị gộp, phần đầu giữ ID cũ, các phần còn lại được cấp ID mới; nhận diện lại giữ các ID đã tách. Vùng đã sửa tay chỉ báo đề nghị tách để bạn kiểm tra. Chức năng tách bổ sung này cần bật AI.
 - **Chỉnh tay được giữ**: ô sửa tay (loại bóng, chữ Nhật, câu dịch, kiểu chữ, font, cỡ) in đậm và không bị bước 2 / 5 / 7 ghi đè
   khi chạy lại; nhận diện lại giữ ID cho vùng trùng chỗ cũ. “Bỏ khoá chỉnh tay” trả vùng về cho AI. Kéo trên ảnh để thêm vùng.
 - Bản redraw có raw: vùng mà bản redraw không xoá chữ (logo, chữ ký) tự thành “Không dịch”; chữ đã xoá mà model nhận diện bỏ sót
@@ -230,6 +231,14 @@ trạng thái chưa lưu, lưu/mở `.lzp`, cache Layers, gõ trực tiếp và 
 Không cần giao diện: `python tools/run_chapter.py <thư mục raw> <file docs> <thư mục PSD> --font "000 WildWords2 TB"`
 (thêm `--engine simple` và/hoặc `--redrawn <thư mục>` cho hai cách bên dưới).
 
+### Đặt bản dịch theo lượt
+
+Trong ứng dụng Lilyzono, bấm **G** trước khi mở bản dịch để tự chọn bóng nhận từng câu.
+Thanh công cụ hiện câu kế tiếp. Bấm vào một khung trống hoặc lòng bóng có một khung để đặt câu theo kiểu chữ đang dùng và
+tự căn theo lòng bóng. Với bóng có nhiều khung, bấm trực tiếp khung cần đặt. Dùng **K** để thêm khung bị sót.
+**Ctrl+Z** trả câu về hàng đợi và khôi phục phần nền vừa sửa. Chế độ G xử lý nền trơn và dùng lưới chấm nếu đã bật.
+Với khung vàng còn cần redraw, có thể chọn cách vẽ nền khác rồi bấm **Ctrl+Enter** để xử lý lại.
+
 ### Nền khó: để lại tự redraw, hoặc nạp bản đã redraw
 Redraw tranh tự động chưa đẹp bằng tay, nên có hai cách chỉ để tool lo phần chắc ăn:
 - **Chỉ xoá chỗ đơn giản**: ở mục **Vẽ lại nền** chọn *Chỉ xoá chỗ đơn giản*. Tool xoá chữ trong bóng thoại / nền trơn /
@@ -245,6 +254,9 @@ Redraw tranh tự động chưa đẹp bằng tay, nên có hai cách chỉ đ�
 - **Trong Photoshop**: *Upload ảnh redraw…* (chọn được nhiều ảnh) hoặc *Upload folder redraw…*: mỗi ảnh vào trang đang
   mở cùng số trang (`012.png` ↔ `12.psd`), thành layer "Bản redraw" ngay trên raw. Từ đó type trang này là type trên
   bản redraw: tool không tự xoá chữ trên raw nữa (lớp "Redraw" tool đã xoá trước đó được ẩn đi).
+- **Trong bảng điều khiển Lilyzono**, bấm **Nạp bản redraw…** và chọn các ảnh. Tool ghép theo số trang hoặc dải trang
+  (`03-04.jpg` ↔ `03-04.psd`), co ảnh cùng tỉ lệ về cỡ PSD và thay layer **Bản redraw**. Các layer chữ hiện có giữ
+  nguyên. Trang chưa có ảnh khớp, trùng số hoặc sai tỉ lệ được báo trong nhật ký.
 - **Mở thẳng bản redraw**: mở các trang redraw trong Photoshop, bấm *Upload folder raw…*: mỗi ảnh raw (cùng số trang,
   khác cỡ thì tự co) thành layer ẩn "Raw gốc (Lilyzono)". Sau đó mở bản dịch và type như thường: tool đọc chữ Nhật trên
   raw để ghép câu, chữ đặt lên bản redraw, không xoá gì.
@@ -285,6 +297,10 @@ vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. C
    - Nền có hoạ tiết (tranh, lưới chấm, SFX đè lên tranh): vẽ lại theo lựa chọn ở mục **Vẽ lại nền**:
      - *Chỉ xoá chỗ đơn giản* (mặc định): không vẽ lại nền khó nào – SFX, chữ trên tranh giữ nguyên, chữ dịch đặt
        đè lên (layer tên `REDRAW · …` nếu muốn tự redraw sau).
+     - *Giữ lưới chấm (offline)*: lấy mẫu nền quanh chữ để tái tạo lưới chấm đúng vị trí. Vùng hoạ tiết không khớp
+       được đánh dấu cần redraw. Chọn chế độ này trước khi mở ảnh để tự xoá ban đầu kiểm tra nền chặt hơn.
+       Có thể thử trên vùng chọn với **Content-Aware Fill** hoặc tô mask bằng **Spot Healing (J)**.
+       Khi chạy cả chương bằng dòng lệnh, chọn `--engine screentone`.
      - *Thường (OpenCV)*: nhanh, nền tranh hơi mờ.
      - *AI Google Gemini* / *AI OpenAI (ChatGPT)*: bấm **API key…** để nhập key và chọn model, có nút *Kiểm tra key*.
        Gửi một vùng rộng quanh chữ (≥ 768px, giữ tỉ lệ khung, xin ảnh 2K) để AI vẽ lại cả mảng tranh; ảnh trả về
@@ -330,6 +346,7 @@ Chọn **1** vùng đã xử lý → hiện khung tím quanh chữ:
 | V / M / L / W | Move / Rectangular Marquee / Lasso / Magic Wand |
 | J / B / S / E | Spot Healing (AI) / Brush / Clone Stamp (Alt+bấm lấy mẫu) / Eraser |
 | T | Type – bấm vào bóng thoại để gõ chữ ngay trong bóng, kéo để tạo khung đoạn văn |
+| G | Đặt bản dịch theo lượt – bấm bóng thoại để đặt câu tiếp theo |
 | K / Shift+K | Khung chữ chữ nhật / lasso (xoá chữ gốc & đặt bản dịch) |
 | H / Z, giữ Space | Hand / Zoom, kéo ảnh tạm thời |
 | [ ] · D · X | Đổi cỡ cọ · màu đen/trắng · đổi chỗ màu trước/nền |

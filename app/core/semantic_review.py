@@ -73,6 +73,10 @@ class LocalMeaningModels:
 _MODELS = None
 
 
+class TypesetBlocked(ValueError):
+    """Trang chưa đủ dữ liệu đã đối chiếu để tạo layer."""
+
+
 def local_models():
     global _MODELS
     if _MODELS is None:
@@ -93,8 +97,31 @@ def _signature(project, page, region):
 
 def current_review(project, page, region):
     review = region.get("meaning_review")
-    if isinstance(review, dict) and review.get("signature") == _signature(project, page, region):
+    if not isinstance(review, dict) or review.get("signature") != _signature(project, page, region):
+        review = None
+    if review and review.get("state") == "confirmed":
         return review
+    peer = _unassigned_split_peer(page, region)
+    if peer:
+        return {"state": "review", "method": "unassigned-split-peer",
+                "reason": f"{region['id']} chứa nhiều câu, nhưng phần {peer['id']} cùng bóng chưa có câu dịch "
+                          f"cho “{peer['ja']}”"}
+    return review
+
+
+def _unassigned_split_peer(page, region):
+    balloon = region.get("balloon") or {}
+    if (len(translation_units(region["lines"])) < 2 or not balloon.get("split")
+            or balloon.get("uncertain")):
+        return None
+    for peer in page["regions"]:
+        geometry = peer.get("balloon") or {}
+        ja = peer.get("ja", "")
+        if (peer is not region and peer["id"] in balloon.get("peers", ()) and peer["bubble"] != "skip"
+                and not peer["lines"] and geometry.get("split") and not geometry.get("uncertain")
+                and geometry.get("part") != balloon.get("part")
+                and len(normalize(ja)) >= 6 and not _unreliable_japanese(ja)):
+            return peer
     return None
 
 
@@ -137,7 +164,7 @@ def valid_provenance(project, page):
 def review_local_assignments(project, page):
     from .semantic_match import VERSION as MATCH_VERSION
     from .match_language import lexical
-    source_present=project.has(page,'raw.png') or (project.data['source']!='redraw' and project.has(page,'work.png'))
+    source_present=project.has(page,'raw.png') or (not project.uses_redraw(page) and project.has(page,'work.png'))
     valid=source_present and valid_provenance(project,page)
     for region in page['regions']:
         if not region['lines'] or region['lines_src']=='manual':continue
@@ -166,8 +193,13 @@ def verify_page(project, page, report=None, models=None):
     translation unit. Low scores, short replies and missing OCR remain pending.
     """
     regions = [r for r in page["regions"] if r["bubble"] != "skip"]
-    pending = [r for r in regions if r["lines"] and
-               (current_review(project,page,r) or {}).get("state") not in ("passed","confirmed")]
+    pending = []
+    for region in regions:
+        if not region["lines"]:
+            continue
+        review = current_review(project, page, region) or {}
+        if review.get("state") not in ("passed", "confirmed") and review.get("method") != "unassigned-split-peer":
+            pending.append(region)
     japanese = [r.get("ja", "") for r in regions]
     texts = list(dict.fromkeys(TAG.sub("", s).strip() for r in pending for s in translation_units(r["lines"])))
     scores, error = {}, ""
@@ -175,7 +207,7 @@ def verify_page(project, page, report=None, models=None):
         if report:
             report("Đối chiếu nghĩa Nhật–Việt trên máy trước khi typeset…")
         try:
-            if not project.has(page,"raw.png") and (project.data["source"]=="redraw" or not project.has(page,"work.png")):
+            if not project.has(page,"raw.png") and (project.uses_redraw(page) or not project.has(page,"work.png")):
                 raise ValueError("Thiếu ảnh gốc Raw để đối chiếu")
             scores = (models or local_models()).compare(japanese, texts)
             if set(scores) != set(MODEL_FILES) or any(
@@ -229,20 +261,33 @@ def verify_page(project, page, report=None, models=None):
 def require_verified(project, page, report=None):
     pending = verify_page(project,page,report)
     problems = []
-    if pending:
-        problems.append("chưa xác minh nghĩa: " + ", ".join(pending))
-    if page.get("unplaced"):
-        problems.append(f"{len(page['unplaced'])} câu chưa có vùng")
-    expected = translation_units(project.page_lines(page))
-    actual = translation_units([s for r in page["regions"] if r["bubble"]!="skip" for s in r["lines"]])
-    conserved=Counter(expected)==Counter(actual)
-    if not conserved and valid_provenance(project,page):
+    ordinary = []
+    for region in page["regions"]:
+        if region["id"] not in pending:
+            continue
+        review = current_review(project, page, region) or {}
+        if review.get("method") == "unassigned-split-peer":
+            problems.append(review["reason"])
+        else:
+            ordinary.append(region["id"])
+    if ordinary:
+        problems.append("chưa xác minh nghĩa: " + ", ".join(ordinary))
+    unplaced = page.get("unplaced", [])
+    if unplaced:
+        examples = ", ".join(f'“{item["text"]}”' for item in unplaced[:3])
+        suffix = ", …" if len(unplaced) > 3 else ""
+        problems.append(f"{len(unplaced)} câu chưa có vùng ({examples}{suffix})")
+    inputs = project.page_lines(page)
+    expected = Counter(translation_units(inputs))
+    actual = Counter(translation_units([s for r in page["regions"] if r["bubble"]!="skip" for s in r["lines"]]))
+    if actual != expected and valid_provenance(project,page):
         used={u['index'] for u in page['assignment_units']}
         covered={p['id'] for u in page['assignment_units'] for p in u['parts']}
         manual=translation_units([s for r in page['regions'] if r['lines_src']=='manual' and r['bubble']!='skip' and r['id'] not in covered for s in r['lines']])
-        conserved=Counter(inputs for i,inputs in enumerate(project.page_lines(page)) if i not in used)==Counter(manual)
-    if expected and not conserved:
+        actual = Counter(inputs[i] for i in used) + Counter(manual)
+    known_missing = Counter(translation_units([u["text"] for u in unplaced]))
+    if expected and ((actual - expected) or (expected - actual) != known_missing):
         problems.append("câu đã gán không khớp danh sách đầu vào (thiếu, trùng hoặc còn bản cũ)")
     if problems:
-        raise ValueError("Dừng trước typeset — " + "; ".join(problems) +
-                         ". Xem cột Đối chiếu nghĩa, sửa/gán lại câu và xác nhận từng vùng sau khi đối chiếu Nhật–Việt.")
+        raise TypesetBlocked("Dừng trước typeset — " + "; ".join(problems) +
+                             ". Xem cột Đối chiếu nghĩa, sửa/gán lại câu và xác nhận từng vùng sau khi đối chiếu Nhật–Việt.")

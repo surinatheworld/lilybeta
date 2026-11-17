@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
-from app.core.balloon_layout import constrain_lobes
+from app.core.balloon_layout import constrain_lobes, constrain_panel_rects
 from app.core.page import Region,Page
 from app.core.typeset import block_box
 from app.core.psd_export import text_spec
@@ -61,6 +61,17 @@ class BalloonLayoutTests(unittest.TestCase):
         page.regions.append(second)
         constrain_lobes(page,{r.uid:owner})
         self.assertIsNone(r.manual_rect);self.assertIsNone(second.manual_rect)
+
+    def test_free_text_within_a_panel_does_not_extend_across_its_border(self):
+        page,r,owner,_=self.fixture()
+        page.original=np.full((400,400,3),255,np.uint8)
+        cv2.line(page.original,(230,0),(230,399),(0,0,0),4)
+        r.box=(182,80,220,180)
+        r.text_rects=[(100,80,275,180)]
+        owner.update(bubble='free',balloon=None)
+        constrain_panel_rects(page,{r.uid:owner})
+        self.assertLess(r.text_rect[2],230)
+        self.assertLess(text_spec(r)['left']+text_spec(r)['width'],230)
 
     def test_rejoining_cramped_parts_keeps_the_source_layer_id_and_font_override(self):
         a=Region((10,10,40,60),text='Tên của tôi.',cleaned=True,group=77,typeset_kind='thought',override={'family':'Arial'})

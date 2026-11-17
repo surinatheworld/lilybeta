@@ -42,7 +42,7 @@ ERASED_DIFF = 60  # bản redraw khác raw > 60 mức sáng: chỗ chữ đã b�
 ERASED_MIN = 0.25  # vùng có ≥ 25% nét chữ bị xoá trong bản redraw: vùng cần dịch
 ERASED_MAX_PAGE = 0.25  # khác nhau > 25% trang: hai ảnh lệch khung, không dùng phép so
 STATES = {"pending": "Chưa chạy", "done": "Xong", "warn": "Xong · cần kiểm tra", "error": "Lỗi", "stale": "Cần chạy lại",
-          "running": "Đang chạy"}
+          "running": "Đang chạy", "blocked": "Cần đối chiếu"}
 
 
 def projects_root() -> Path:
@@ -73,6 +73,18 @@ def manual(r: dict) -> bool:
     """Vùng có phần người dùng sửa tay (giữ lại khi nhận diện lại)."""
     return (r["src"] == "manual" or "manual" in (r["bubble_src"], r["ja_src"], r["lines_src"])
             or bool(r["style_kind"] or r["font"] or r["size"]))
+
+
+def _content_locked(region: dict) -> bool:
+    """Định dạng có thể chuyển sang các thuỳ; khung và nội dung đặt tay thì giữ nguyên."""
+    return (region["src"] == "manual" or "manual" in (region["ja_src"], region["lines_src"])
+            or (region["bubble_src"] == "manual" and region["bubble"] == "skip"))
+
+
+def _keep_style(source: dict, target: dict) -> None:
+    target.update(style_kind=source["style_kind"], font=dict(source["font"]), size=source["size"])
+    if source["bubble_src"] == "manual":
+        target.update(bubble=source["bubble"], bubble_src="manual")
 
 
 def iou(a, b) -> float:
@@ -143,6 +155,9 @@ class Project:
     def has(self, page: dict, name: str) -> bool:
         return self.file(page, name).exists()
 
+    def uses_redraw(self, page: dict) -> bool:
+        return self.data["source"] == "redraw" or bool(page.get("has_redraw") or page.get("has_raw"))
+
     def sync_documents(self, docs: list[dict]) -> None:
         """Danh sách trang theo các tài liệu đang mở: giữ dữ liệu trang cũ (khớp theo tên), thêm trang mới."""
         old = {p["key"]: p for p in self.pages}
@@ -150,6 +165,16 @@ class Project:
         for d in docs:
             p = old.get(d["name"]) or {"key": d["name"], "regions": [], "lines": [], "lines_manual": False,
                                        "tl_page": None, "unplaced": [], "status": {}, "next_id": 1, "size": None}
+            reopened = p.get("doc_id") is not None and d.get("id") is not None and p["doc_id"] != d["id"]
+            if "has_redraw" in d:
+                p["has_redraw"] = d["has_redraw"]
+            if "has_raw" in d:
+                p["has_raw"] = d["has_raw"]
+            if not d.get("has_typeset", not reopened) and self.status(p, "typeset")["state"] in ("done", "warn"):
+                self.set_status(p, "typeset", "stale", "Tài liệu Photoshop đang mở chưa có nhóm layer chữ Lilyzono.")
+            if (not self.uses_redraw(p) and not d.get("has_clean", not reopened)
+                    and self.status(p, "clean")["state"] in ("done", "warn")):
+                self.set_status(p, "clean", "stale", "Tài liệu Photoshop đang mở chưa có layer xoá chữ Lilyzono.")
             p["doc_id"], p["doc_name"], p["open"] = d.get("id"), d["name"], True
             pages.append(p)
         rest = [p for k, p in old.items() if k not in {d["name"] for d in docs}]  # trang đã đóng: giữ lại, để cuối
@@ -159,7 +184,10 @@ class Project:
 
     # --- trạng thái từng bước --------------------------------------------------------------------
     def status(self, page: dict, step: str) -> dict:
-        return page["status"].get(step) or {"state": "pending", "msg": ""}
+        status = page["status"].get(step) or {"state": "pending", "msg": ""}
+        if step == "typeset" and status["state"] == "error" and status.get("msg", "").startswith("Dừng trước typeset"):
+            return {**status, "state": "blocked"}
+        return status
 
     def set_status(self, page: dict, step: str, state: str, msg: str = "") -> None:
         page["status"][step] = {"state": state, "msg": msg, "at": time.strftime("%H:%M:%S")}
@@ -167,7 +195,7 @@ class Project:
     def invalidate(self, page: dict, step: str) -> None:
         """Kết quả bước `step` đã đổi: các bước sau đã chạy thì thành “cần chạy lại”."""
         for s in DOWNSTREAM.get(step, []):
-            if self.status(page, s)["state"] in ("done", "warn"):
+            if self.status(page, s)["state"] in ("done", "warn", "blocked"):
                 self.set_status(page, s, "stale", f"{STEP_NAMES[step]} đã đổi")
 
     # --- bản dịch ---------------------------------------------------------------------------
@@ -232,6 +260,42 @@ def _page_sort(name: str):
     return (int(nums[0]) if nums else 10 ** 6, name)
 
 
+def _page_range(name: str) -> tuple[int, int] | None:
+    m = re.search(r"(\d+)\s*[-–_~]\s*(\d+)\s*$", Path(name).stem)
+    if m:
+        first, last = map(int, m.groups())
+        if 0 < last - first < 4:
+            return first, last
+    n = page_number(name)
+    return (n, n) if n is not None else None
+
+
+def redraw_targets(files: list[str], docs: list[dict], active: str = "") -> tuple[list, list[str]]:
+    """Ghép ảnh và tab theo số trang hoặc dải trang, báo mọi trường hợp mơ hồ."""
+    choices, rejected = {}, []
+    for path in files:
+        name = Path(path).name
+        pages = _page_range(name)
+        if pages is not None:
+            matches = [d for d in docs if _page_range(d["name"]) == pages]
+        else:
+            matches = [d for d in docs if Path(d["name"]).stem.casefold() == Path(name).stem.casefold()]
+            if not matches and len(files) == 1:
+                matches = docs if len(docs) == 1 else [d for d in docs if d["name"] == active]
+        if len(matches) != 1 or sum(d["name"] == matches[0]["name"] for d in docs) != 1:
+            rejected.append(f"{name} ({'trùng trang' if matches else 'không có trang khớp'})")
+            continue
+        doc = matches[0]
+        choices.setdefault(doc["name"], []).append((doc, path))
+    jobs = []
+    for candidates in choices.values():
+        if len(candidates) == 1:
+            jobs.extend(candidates)
+        else:
+            rejected.extend(f"{Path(path).name} (nhiều ảnh cho {doc['name']})" for doc, path in candidates)
+    return jobs, rejected
+
+
 # --- bước 2: nhận diện + phân loại ----------------------------------------------------------------
 def heuristic_bubble(img: np.ndarray, mask: np.ndarray, box, det_kind: str) -> str:
     """Loại bóng đoán bằng hình học (khi chưa có / không có câu trả lời của model)."""
@@ -294,6 +358,86 @@ def _snap(mask: np.ndarray, box, size) -> list[int]:
     return [int(x1 + xs.min()), int(y1 + ys.min()), int(x1 + xs.max() + 1), int(y1 + ys.max() + 1)]
 
 
+def _keep_text_parts(found: list, old: list[dict]) -> list:
+    """Model nhận diện vẫn gộp khung cũ: giữ các phần AI đã tách để ID không đổi khi chạy lại."""
+    out = []
+    for box, kind, src in found:
+        parts = [r for r in old if r.get("split_parent_box") and iou(r["split_parent_box"], box) >= .8
+                 and box[0] - 2 <= r["box"][0] < r["box"][2] <= box[2] + 2
+                 and box[1] - 2 <= r["box"][1] < r["box"][3] <= box[3] + 2]
+        if len(parts) >= 2:
+            out.extend((r["box"], r["det_kind"], r["src"]) for r in parts)
+        else:
+            out.append((box, kind, src))
+    return out
+
+
+def _merged_predecessors(found: list, old: list[dict], evidence: dict) -> dict:
+    """Nhận dạng khung cũ bao nhiều thuỳ mà bước nhận diện vừa tách có bằng chứng."""
+    groups = {}
+    for box, _, _ in found:
+        key = tuple(box)
+        info = evidence.get(key, {})
+        if info.get("split") and not info.get("uncertain") and info.get("parts", 1) > 1:
+            groups.setdefault(info["parent"], []).append((key, info["part"]))
+    result = {}
+    for parent in old:
+        if _content_locked(parent):
+            continue
+        x, y, right, bottom = parent["box"]
+        for children in groups.values():
+            inside = [(box, part) for box, part in children if box not in result
+                      and x - 6 <= box[0] < box[2] <= right + 6 and y - 6 <= box[1] < box[3] <= bottom + 6
+                      and not any(other is not parent and iou(other["box"], box) >= MATCH_IOU for other in old)]
+            if len({part for _, part in inside}) < 2:
+                continue
+            for index, (box, _) in enumerate(inside):
+                result[box] = parent, index == 0
+            break
+    return result
+
+
+def _split_text_regions(project: Project, page: dict, regions: list[dict], splits: dict,
+                        erased: np.ndarray | None, mask: np.ndarray) -> list[str]:
+    """Mỗi cụm chữ một ID, dù chung bóng; phần đầu giữ ID cũ. Không tự tách vùng đã sửa tay."""
+    warnings = []
+    for r in list(regions):
+        parts = splits.get(r["id"])
+        if not parts:
+            continue
+        if manual(r):
+            warnings.append(f"{r['id']}: AI đề nghị tách cụm thoại; vùng đã sửa tay, kiểm tra và tách thủ công")
+            continue
+        parent = list(r["box"])
+        boxes = [p["box"] for p in parts]
+        # Sai toạ độ / chồng chữ ID khác: giữ nguyên toàn bộ, tránh mất một phần câu.
+        invalid = any(not (parent[0] - 2 <= b[0] < b[2] <= parent[2] + 2 and
+                           parent[1] - 2 <= b[1] < b[3] <= parent[3] + 2) for b in boxes)
+        for i, b in enumerate(boxes):
+            for c in boxes[i + 1:] + [o["box"] for o in regions if o is not r]:
+                overlap = max(0, min(b[2], c[2]) - max(b[0], c[0])) * max(0, min(b[3], c[3]) - max(b[1], c[1]))
+                area = min((b[2] - b[0]) * (b[3] - b[1]), (c[2] - c[0]) * (c[3] - c[1]))
+                invalid |= overlap > .05 * max(1, area)
+        if invalid:
+            warnings.append(f"{r['id']}: đề xuất tách vượt khung hoặc chồng vùng khác, giữ khung cũ")
+            continue
+        parent_box = r.get("split_parent_box", parent)
+        for i, part in enumerate(parts):
+            rid = r["id"] if i == 0 else project.next_id(page)
+            child = new_region(rid, part["box"], "sfx" if part["bubble"] == "sfx" else "text", "ai")
+            child.update(bubble=part["bubble"], bubble_src="ai", order=part["order"],
+                         confidence=part["confidence"], uncertain=part["confidence"] < ai.UNSURE,
+                         note=part["note"], split_parent_box=list(parent_box))
+            if erased is not None:
+                child["erased"] = _erased_fraction(erased, mask, child["box"]) >= ERASED_MIN
+            if i == 0:
+                r.clear()
+                r.update(child)
+            else:
+                regions.append(child)
+    return warnings
+
+
 def detect(project: Project, page: dict, detector, cfg: ai.AIConfig, report=None) -> list[str]:
     """Nhận diện vùng chữ (model comic-text-detector) rồi gửi ảnh có đánh số ID cho model AI phân loại bóng, xếp thứ tự
     đọc, tìm chữ bị sót. Vùng nhận diện được luôn được lưu; model AI lỗi thì ném AIError sau khi lưu."""
@@ -302,7 +446,7 @@ def detect(project: Project, page: dict, detector, cfg: ai.AIConfig, report=None
     from .balloons import refine
 
     report = report or (lambda s: None)
-    redraw = project.data["source"] == "redraw"
+    redraw = project.uses_redraw(page)
     has_raw = project.has(page, "raw.png")
     img = imread(project.file(page, "raw.png" if has_raw else "work.png"))
     warnings = []
@@ -312,7 +456,7 @@ def detect(project: Project, page: dict, detector, cfg: ai.AIConfig, report=None
     boxes, mask = detector.detect(img)
     mask = np.maximum(mask, color_text_mask(img))
     report("Kiểm tra bóng đôi, chỗ thắt và khung chữ bị gộp…")
-    boxes, balloon_evidence = refine(img, mask, boxes, [r["box"] for r in page["regions"] if manual(r)])
+    boxes, balloon_evidence = refine(img, mask, boxes, [r["box"] for r in page["regions"] if _content_locked(r)])
     boxes = sort_reading_order(boxes, project.data["right_to_left"], img)
     np.savez_compressed(project.file(page, "mask.npz"), mask=mask.astype(np.float16))
     h, w = img.shape[:2]
@@ -326,14 +470,27 @@ def detect(project: Project, page: dict, detector, cfg: ai.AIConfig, report=None
             found += [(b, "text", "diff") for b in _missed_blobs(erased, [f[0] for f in found], (w, h))]
     # Ghép với vùng cũ: giữ ID và phần sửa tay.
     old, used, regions = list(page["regions"]), set(), []
+    found = _keep_text_parts(found, old)
+    predecessors = _merged_predecessors(found, old, balloon_evidence)
+    split_ids = {parent["id"] for parent, _ in predecessors.values()}
     for box, det_kind, src in found:
-        best = max((o for o in old if o["id"] not in used), key=lambda o: iou(o["box"], box), default=None)
+        if tuple(box) in predecessors:
+            parent, first = predecessors[tuple(box)]
+            r = new_region(parent["id"] if first else project.next_id(page), box, det_kind, src)
+            _keep_style(parent, r)
+            regions.append(r)
+            used.add(parent["id"])
+            continue
+        best = max((o for o in old if o["id"] not in used | split_ids), key=lambda o: iou(o["box"], box), default=None)
         if best is not None and iou(best["box"], box) >= MATCH_IOU:
             used.add(best["id"])
             r = best
-            if r["src"] != "manual":
-                if list(r["box"]) != [int(v) for v in box] and r["ja_src"] != "manual":
+            if not _content_locked(r):
+                if list(r["box"]) != [int(v) for v in box]:
                     r["ja"], r["ja_src"] = "", ""  # step 7 must reread a moved/split text block
+                    r["cleaned"] = False
+                    for key in ("ocr_checked", "ja_variants", "source_ocr_confidence"):
+                        r.pop(key, None)
                 r["box"], r["det_kind"], r["src"] = [int(v) for v in box], det_kind, src
         else:
             r = new_region(project.next_id(page), box, det_kind, src)
@@ -390,6 +547,7 @@ def detect(project: Project, page: dict, detector, cfg: ai.AIConfig, report=None
                 r["note"] = hint + (" · " + r["note"] if r["note"] else "")
         if got["order"]:
             r["order"] = got["order"]
+    warnings += _split_text_regions(project, page, regions, result.get("splits", {}), erased, mask)
     for m in result["missed"]:
         box = _snap(mask, m["box"], (w, h))
         if any(iou(box, r["box"]) > 0.3 for r in regions):
@@ -441,15 +599,13 @@ def raw_files_for(page_name: str, folder: str, right_to_left: bool = True) -> li
             n = page_number(f.name)
             if n is not None:
                 by_number.setdefault(n, str(f))
-    stem = Path(page_name).stem
-    m = re.search(r"(\d+)\s*[-–_~]\s*(\d+)\s*$", stem)
-    if m and 0 < int(m.group(2)) - int(m.group(1)) < 4:
-        first, last = int(m.group(1)), int(m.group(2))
-        order = range(last, first - 1, -1) if right_to_left else range(first, last + 1)
-        files = [by_number.get(k) for k in order]
-        return files if all(files) else []
-    n = page_number(page_name)
-    return [by_number[n]] if n in by_number else []
+    pages = _page_range(page_name)
+    if pages is None:
+        return []
+    first, last = pages
+    order = range(last, first - 1, -1) if right_to_left else range(first, last + 1)
+    files = [by_number.get(k) for k in order]
+    return files if all(files) else []
 
 
 # --- bước 5: OCR ---------------------------------------------------------------------------
@@ -488,13 +644,13 @@ def _page_object(project: Project, page: dict):
 
 # --- bước 6: xoá chữ ---------------------------------------------------------------------------
 def clean(project: Project, page: dict) -> tuple[str | None, list[str]]:
-    """Chỉ xoá chữ Nhật trong bóng thoại kín (loại trong `clean_kinds`), chỉ chỗ nền một màu. Trả về (layer PNG, cảnh báo).
+    """Xoá chữ Nhật theo `clean_kinds`, có thể phục hồi screentone. Trả về (layer PNG, cảnh báo).
     Bản redraw: chữ đã xoá sẵn, không làm gì."""
-    from .clean import easy_only
+    from .clean import easy_only, screentone_only
     from .page import Region
     from .psd_export import clean_layer
 
-    if project.data["source"] == "redraw":
+    if project.uses_redraw(page):
         for r in page["regions"]:
             r["cleaned"] = False
         return None, ["Bản redraw: chữ đã được xoá sẵn, bỏ qua bước này."]
@@ -503,8 +659,8 @@ def clean(project: Project, page: dict) -> tuple[str | None, list[str]]:
     pairs = [(rd, Region(tuple(rd["box"]), kind="sfx" if rd["bubble"] == "sfx" else "text"))
              for rd in page["regions"] if rd["bubble"] in kinds]
     pg.regions = [r for _, r in pairs]
-    pg.inpainter = easy_only
-    for r in pg.regions:  # như luồng type cũ: bóng sáng khép kín, hoặc nền đúng một màu quanh chữ
+    pg.inpainter = screentone_only if project.data.get("restore_screentone") else easy_only
+    for r in pg.regions:
         if pg._clean_local(r) is None and not r.needs_redraw:
             r.cleaned = True
     for rd in page["regions"]:
@@ -516,7 +672,7 @@ def clean(project: Project, page: dict) -> tuple[str | None, list[str]]:
     imwrite(layer, clean_layer(pg))
     project.save()
     left = [rd["id"] for rd, r in pairs if not r.cleaned]
-    return str(layer), (["Nền không trơn, để nguyên chữ gốc (chữ dịch đặt đè, viền trắng): " + ", ".join(left)]
+    return str(layer), (["Nền cần redraw, giữ nguyên chữ gốc: " + ", ".join(left)]
                         if left else [])
 
 
@@ -623,9 +779,12 @@ def _match_locally(project: Project, page: dict, cands: list[dict], lines: list[
 # --- bước 8: typeset ---------------------------------------------------------------------------
 def typeset(project: Project, page: dict, report=None) -> tuple[str, list[str]]:
     """Dàn chữ theo bảng thoại; ghi typeset.json (thông số layer chữ cho Photoshop) và preview.png."""
+    from .semantic_review import TypesetBlocked, require_verified
+
     if not any(r["lines"] and r["bubble"] != "skip" for r in page["regions"]):
-        raise ValueError("Chưa có vùng nào có câu dịch (chạy bước 7 hoặc nhập câu dịch trong bảng thoại).")
-    from .semantic_review import require_verified
+        if not project.page_lines(page):
+            raise TypesetBlocked("Trang này chưa có bản dịch. Kiểm tra file bản dịch và số trang tương ứng.")
+        raise TypesetBlocked("Chưa có vùng nào có câu dịch. Chạy Bước 7 hoặc nhập câu dịch trong bảng thoại.")
     require_verified(project, page, report)
     return _render_assignments(project, page, report, draft=False)
 
@@ -653,7 +812,7 @@ def _render_assignments(project: Project, page: dict, report, *, draft: bool) ->
     profile = project.data["profile"]
     kinds = kinds_for(profile)
     pg = _page_object(project, page)
-    redraw = project.data["source"] == "redraw"
+    redraw = project.uses_redraw(page)
     if redraw:
         pg.set_redrawn(str(project.file(page, "work.png")))
     elif project.has(page, "cleaned.png"):
@@ -668,8 +827,8 @@ def _render_assignments(project: Project, page: dict, report, *, draft: bool) ->
     pg.regions = [reg for reg, _ in plan]
     draft_cleaned = {}
     if draft and not redraw:
-        from .clean import easy_only
-        pg.inpainter = easy_only
+        from .clean import easy_only, screentone_only
+        pg.inpainter = screentone_only if project.data.get("restore_screentone") else easy_only
         before_clean = pg.working.copy()
         erase_guard = np.zeros(pg.working.shape[:2], bool)
         clean_kinds = set(project.data.get("clean_kinds") or CLEAN_KINDS)
@@ -682,7 +841,8 @@ def _render_assignments(project: Project, page: dict, report, *, draft: bool) ->
                 from .clean import fill_bubble
                 # A missed classification must not leave Japanese under the
                 # translation when geometry proves a closed white balloon.
-                done = fill_bubble(pg.working, pg.text_mask, tuple(rd["box"]))
+                done = fill_bubble(pg.working, pg.text_mask, tuple(rd["box"]),
+                                   preserve_texture=pg.inpainter is screentone_only)
             if not done and rd["bubble"] in clean_kinds:
                 original = Region(tuple(rd["box"]), kind="sfx" if rd["bubble"] == "sfx" else "text")
                 done = pg._clean_local(original) is None and not original.needs_redraw
@@ -705,12 +865,13 @@ def _render_assignments(project: Project, page: dict, report, *, draft: bool) ->
             if draft:
                 cleaned = draft_cleaned.get(rd["id"], False)
             r.cleaned, r.needs_redraw = True, not cleaned
-    from .balloon_layout import constrain_lobes
+    from .balloon_layout import constrain_lobes, constrain_panel_rects
     constrain_lobes(pg, owner)
     for r in pg.regions:
         if r.kind == "sfx":
             pg.clean(r)
     pg.clean_many([r for r in pg.regions if r.kind != "sfx"])
+    constrain_panel_rects(pg, owner)
     translated = [r for r in pg.regions if r.cleaned and r.text.strip()]
     specs = layer_specs(pg)
     for r, spec in zip(translated, specs):
@@ -743,9 +904,11 @@ def _render_assignments(project: Project, page: dict, report, *, draft: bool) ->
     return str(out), warnings
 
 
-def copy_image(src, dst) -> bool:
+def copy_image(src, dst, *, compare_pixels=False) -> bool:
     """Chép ảnh; trả về True nếu nội dung đổi so với bản cũ."""
     dst = Path(dst)
+    if compare_pixels and dst.is_file() and np.array_equal(imread(src), imread(dst)):
+        return False  # giữ file Raw cũ để chữ ký đối chiếu nghĩa không đổi theo metadata PNG
     before = file_hash(dst) if dst.exists() else None
     shutil.copyfile(src, dst)
     return file_hash(dst) != before
