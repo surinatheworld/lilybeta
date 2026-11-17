@@ -16,7 +16,7 @@ bình thường; chạy lại script chỉ đưa cửa sổ lên trước). Gi�
 | 3 Thiết lập bảng thoại | sửa loại bóng, kiểu chữ của preset, font riêng (danh sách font của Photoshop), cỡ chữ cho từng ID; “Loại bóng → font…” cho cả chương | – |
 | 4 Nạp Raw | bản redraw: “Chọn folder raw…” (tên ảnh có số trang; trang đôi `03-04` lấy raw 4 trái + 3 phải) | layer ẩn **Raw gốc (Lilyzono)** |
 | 5 OCR Raw | đọc chữ Nhật từng ID (model manga-ocr trên máy) | – |
-| 6 Xoá chữ | xoá nền trơn trong các loại bóng được bật. Trong “Loại bóng → font…”, có thể bật khôi phục lưới chấm offline và chọn thêm SFX. Trang dùng bản redraw sẽ bỏ qua bước này. | layer **Xoá chữ (Lilyzono)** |
+| 6 Xoá chữ | bật “Giữ lưới chấm khi xoá chữ (offline)” ở đầu bảng điều khiển. Chọn loại bóng được xoá, gồm cả SFX nếu cần, trong “Loại bóng → font…”. Trang dùng bản redraw sẽ bỏ qua bước này. | layer **Xoá chữ (Lilyzono)** |
 | 7 Ghép bản dịch (AI) | model AI đọc chữ Nhật + loại bóng + vị trí từng ID và câu dịch của trang → câu nào vào ID nào (một ID nhận được nhiều câu); câu chưa chắc tô vàng, câu không có chỗ vào “Câu chưa có vùng” | – |
 | 8 Typeset | dàn chữ theo bảng thoại | nhóm **Lilyzono · …**, mỗi câu một layer chữ tên `R03 · câu…`; nhóm lần trước đổi thành “(bản trước)” và ẩn |
 
@@ -48,7 +48,7 @@ nhà cung cấp, “Kiểm tra kết nối” gửi thử một câu hỏi nhỏ
 ### Hộp thoại nhanh (giữ Shift)
 
 1. Mở ảnh trong Photoshop, giữ Shift và chạy **`photoshop/Lilyzono.jsx`**.
-2. Dán bản dịch, chọn chế độ xoá chữ rồi **Nhận diện và xem trước**.
+2. Dán bản dịch, bật **Giữ lưới chấm khi xoá chữ (offline)** nếu cần, rồi **Nhận diện và xem trước**.
 3. Bấm **Tạo layer trong Photoshop**: thêm một nhóm gồm layer **Redraw** trong suốt và mỗi câu một **layer chữ thật sửa được**.
 
 Tool giữ các layer có sẵn, kích thước và độ phân giải của tài liệu. Undo một lần để bỏ nhóm vừa thêm.
@@ -287,6 +287,7 @@ vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. C
        kéo lệch), căn giữa theo nét chữ thật – khoảng hở tới mép bóng bằng nhau 4 phía. Chữ chỉ phủ khoảng
        70% bề ngang lòng bóng, chừa lề xung quanh; bóng hẹp được phủ nhiều hơn để chữ không teo dưới 85% cỡ chuẩn;
        câu ngắn ("Ừ.", "Vâng") được to tới 1,5 lần cỡ chuẩn cho khỏi lọt thỏm; dòng trên/dưới dài cân nhau.
+       Khi dùng cỡ tự động, bộ dàn chữ kiểm tra nét, dấu và viền chữ sau khi xoay để điều chỉnh cỡ trong bóng chật.
      - *Đều dòng*: các dòng dài gần bằng nhau – tự dùng cho khung ô vuông (bộ font Gái Băng).
      - *Lấp đầy dòng*: cách cũ, mỗi dòng nhét nhiều chữ nhất.
      Không cắt đôi từ ghép thông dụng ("cảm ơn", "trân trọng", "kiểm soát"…), ưu tiên xuống dòng sau dấu phẩy/chấm;
@@ -297,8 +298,10 @@ vùng đã dịch, 43/44 bóng có cỡ chữ lệch < 25% so với bản tay. C
    - Nền có hoạ tiết (tranh, lưới chấm, SFX đè lên tranh): vẽ lại theo lựa chọn ở mục **Vẽ lại nền**:
      - *Chỉ xoá chỗ đơn giản* (mặc định): không vẽ lại nền khó nào – SFX, chữ trên tranh giữ nguyên, chữ dịch đặt
        đè lên (layer tên `REDRAW · …` nếu muốn tự redraw sau).
-     - *Giữ lưới chấm (offline)*: lấy mẫu nền quanh chữ để tái tạo lưới chấm đúng vị trí. Vùng hoạ tiết không khớp
-       được đánh dấu cần redraw. Chọn chế độ này trước khi mở ảnh để tự xoá ban đầu kiểm tra nền chặt hơn.
+     - *Giữ lưới chấm (offline)*: lấy mẫu nền quanh chữ để tái tạo lưới chấm đúng vị trí, kể cả khi ảnh đã co khiến
+       chu kỳ lưới lệch một phần điểm ảnh. SFX trên nền trơn cũng được xoá khi màu quanh nét đồng nhất.
+       Tool kiểm tra vùng sát mép mask trước khi vẽ lại. Nền không khớp được đánh dấu cần redraw.
+       Chọn chế độ này trước khi mở ảnh để tự xoá ban đầu kiểm tra nền chặt hơn.
        Có thể thử trên vùng chọn với **Content-Aware Fill** hoặc tô mask bằng **Spot Healing (J)**.
        Khi chạy cả chương bằng dòng lệnh, chọn `--engine screentone`.
      - *Thường (OpenCV)*: nhanh, nền tranh hơi mờ.

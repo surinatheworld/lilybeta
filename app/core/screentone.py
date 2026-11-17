@@ -15,6 +15,7 @@ SHIFTS = sorted(
      for dx in range(-MAX_PERIOD, MAX_PERIOD + 1)
      if 9 <= dx * dx + dy * dy <= MAX_PERIOD ** 2 and (dy or dx > 0))
 )
+OFFSETS = np.array([(dy, dx) for _, dy, dx in SHIFTS], dtype=np.int32)
 
 
 def restore_screentone(img: np.ndarray, mask: np.ndarray, excluded: np.ndarray | None = None) -> bool:
@@ -86,19 +87,121 @@ def restore_screentone(img: np.ndarray, mask: np.ndarray, excluded: np.ndarray |
                 crop[hole] = np.round(tone[target]).astype(np.uint8)
                 return True
         repeats.append((bx, by))
-    return False
+    return _restore_resampled(crop, gray, hole, train, check)
 
 
 def _repeat_vectors(gray, sample, sy, sx, values, limit):
+    # Score several candidate offsets in one array operation. Work in small
+    # batches so exact screens can stop at the first valid lattice.
+    pixels = np.pad(gray, MAX_PERIOD)
+    valid = np.pad(sample, MAX_PERIOD)
+    sy, sx = sy + MAX_PERIOD, sx + MAX_PERIOD
+    for start in range(0, len(OFFSETS), 40):
+        offsets = OFFSETS[start:start + 40]
+        yy, xx = sy + offsets[:, :1], sx + offsets[:, 1:]
+        use = valid[yy, xx]
+        other = pixels[yy, xx]
+        delta = other - values
+        count = use.sum(axis=1)
+        error = np.sum(delta * delta, axis=1, where=use)
+        for i in np.flatnonzero((count >= .45 * len(sx)) & (error <= (limit ** 2) * count)):
+            if min(values[use[i]].std(), other[i, use[i]].std()) >= 7:
+                dy, dx = offsets[i]
+                yield int(dx), int(dy)
+
+
+def _screen_frequencies(gray, known):
+    """Find periodic components including fractional pixel pitches."""
     h, w = gray.shape
-    for _, dy, dx in SHIFTS:
-        yy, xx = sy + dy, sx + dx
-        inside = (yy < h) & (xx >= 0) & (xx < w)
-        idx = np.flatnonzero(inside)
-        idx = idx[sample[yy[idx], xx[idx]]]
-        if len(idx) < .45 * len(sx):
-            continue
-        first, second = values[idx], gray[yy[idx], xx[idx]]
-        diff = first - second
-        if np.mean(diff * diff) <= limit ** 2 and min(first.std(), second.std()) >= 7:
-            yield dx, dy
+    weight = known.astype(np.float32)
+    slow = cv2.GaussianBlur(gray * weight, (0, 0), 5)
+    slow /= np.maximum(cv2.GaussianBlur(weight, (0, 0), 5), .001)
+    window = np.hanning(h)[:, None] * np.hanning(w)
+    spectrum = np.abs(np.fft.rfft2((gray - slow) * weight * window))
+    # Move negative y frequencies to the first half. Exclude DC and retain
+    # one of each conjugate pair along the vertical and Nyquist axes.
+    spectrum = np.fft.fftshift(spectrum, axes=0)
+    fy, fx = np.fft.fftshift(np.fft.fftfreq(h)), np.fft.rfftfreq(w)
+    allowed = np.hypot(fx[None, :], fy[:, None]) >= .07
+    allowed[:, 0] &= fy > 0
+    if w % 2 == 0:
+        allowed[:, -1] &= fy >= 0
+    maxima = spectrum >= cv2.dilate(spectrum, np.ones((3, 3), np.uint8))
+    yy, xx = np.nonzero(allowed & maxima)
+    if not len(xx):
+        return []
+    power = spectrum[yy, xx]
+    noise = np.median(power)
+    order = np.argsort(power)[::-1][:14]
+
+    def offset(a, b, c):
+        # Interpolate the log peak instead of snapping to the nearest FFT bin.
+        a, b, c = np.log(np.maximum([a, b, c], .001))
+        return 0.0 if a - 2 * b + c >= 0 else float(np.clip(.5 * (a - c) / (a - 2 * b + c), -.5, .5))
+
+    peaks = []
+    for i in order:
+        y, x, energy = yy[i], xx[i], power[i]
+        if energy < max(7 * noise, .09 * power[order[0]]):
+            break
+        dx = offset(*spectrum[y, x - 1:x + 2]) if 0 < x < len(fx) - 1 else 0.0
+        dy = offset(*spectrum[y - 1:y + 2, x]) if 0 < y < h - 1 else 0.0
+        peaks.append((fx[x] + dx / w, fy[y] + dy / h, energy))
+    if len(peaks) < 2:
+        return []
+    a, b, high = peaks[0]
+    if not any(energy >= .17 * high and abs(a * y - b * x) >= .4 * np.hypot(a, b) * np.hypot(x, y)
+               for x, y, energy in peaks[1:]):
+        return []
+    return np.array([(x, y) for x, y, _ in peaks], dtype=np.float32)
+
+
+def _restore_resampled(crop, gray, hole, train, check):
+    """Reconstruct lightly resized/compressed dots, with a held-out border check."""
+    if min(gray.shape) < 24:
+        return False
+    frequencies = _screen_frequencies(gray, train | check)
+    if not len(frequencies):
+        return False
+    ty, tx = np.nonzero(train)
+    vy, vx = np.nonzero(check)
+    if len(tx) < 240 or len(vx) < 120:
+        return False
+    if len(tx) > 1800:
+        keep = np.random.default_rng(1).choice(len(tx), 1800, replace=False)
+        ty, tx = ty[keep], tx[keep]
+    h, w = gray.shape
+
+    def features(x, y):
+        coordinates = np.column_stack((x, y)).astype(np.float32)
+        angle = (2 * np.pi) * (coordinates @ frequencies.T)
+        trend = coordinates / np.array([w, h], np.float32)
+        return np.column_stack((np.ones(len(x), np.float32), trend, np.cos(angle), np.sin(angle)))
+
+    ok, model = cv2.solve(features(tx, ty), crop[ty, tx].astype(np.float32), flags=cv2.DECOMP_QR)
+    if not ok:
+        return False
+    rim = crop[vy, vx]
+    predicted = np.clip(features(vx, vy) @ model, 0, 255)
+    residual = np.abs(predicted - rim).max(axis=1)
+    # Require the same screen immediately next to the actual cutout. Large,
+    # connected discrepancies usually mean a contour crosses the mask.
+    deviation = gray[vy, vx].std()
+    if deviation < 8 or (residual @ residual) / len(residual) > min(24, .48 * deviation) ** 2:
+        return False
+    outlier = residual > 48
+    if outlier.mean() > .035:
+        return False
+    if outlier.any():
+        defects = np.zeros_like(hole, dtype=np.uint8)
+        defects[vy[outlier], vx[outlier]] = 1
+        _, _, stats, _ = cv2.connectedComponentsWithStats(defects)
+        if stats[1:, cv2.CC_STAT_AREA].max() >= 8:
+            return False
+    # Limit temporary allocations when the mask contains a broad lettering block.
+    hy, hx = np.nonzero(hole)
+    for start in range(0, len(hx), 16384):
+        sl = slice(start, start + 16384)
+        values = np.clip(features(hx[sl], hy[sl]) @ model, 0, 255)
+        crop[hy[sl], hx[sl]] = np.round(values).astype(np.uint8)
+    return True

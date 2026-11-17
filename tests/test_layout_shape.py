@@ -185,6 +185,21 @@ class BubbleShapeTests(unittest.TestCase):
         self.assertGreater(size, 20)  # "Ừ." không lọt thỏm giữa bóng to…
         self.assertLessEqual(size, 30)  # …nhưng không to quá 1,5 lần cỡ chuẩn
 
+    def test_rotated_outlined_ink_stays_inside_a_low_bubble(self):
+        img = _bubble(w=350, h=300, center=(170, 140), axes=(110, 52), tail=False)
+        _, shape = text_area(img, (155, 130, 185, 150))
+        text = "Cậu nhấc chiếc hộp ấy lên à?"
+        style = TextStyle(max_size=45, rotation=40, stroke_width=6, italic=True, baseline_shift=4)
+        x, y, right, bottom = place_in_shape(text, style, shape, (170, 140))
+        qimage = QImage(350, 300, QImage.Format_ARGB32)
+        qimage.fill(0)
+        painter = QPainter(qimage)
+        draw_text(painter, text, style, QRectF(x, y, right - x, bottom - y))
+        painter.end()
+        alpha = np.frombuffer(qimage.constBits(), np.uint8).reshape(300, 350, 4)[..., 3]
+        self.assertTrue((alpha > 60).any())
+        self.assertFalse(((alpha > 60) & (img[..., 0] != 255)).any())
+
     def test_narrow_bubble_keeps_a_readable_size(self):
         img = _bubble(axes=(55, 80), tail=False)
         _, shape = text_area(img, (185, 160, 215, 200))

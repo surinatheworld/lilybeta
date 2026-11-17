@@ -9,8 +9,8 @@ Ba chế độ (request["mode"]):
 - "batch": cả chương – mọi ảnh đang mở trong Photoshop, thoại lấy theo số trang trong file bản dịch.
 - "sfx": ảnh người dùng đã redraw SFX → layer chỉ chứa phần khác ảnh gốc (chỗ SFX đã xoá).
 
-Luật xoá chữ: chỉ chỗ dễ (bóng thoại / hộp sáng khép kín, nền trơn một màu). Không vẽ lại tranh, lưới chấm, nền
-chuyển màu; SFX không xoá – chữ dịch đặt đè lên bản gốc (layer tên "REDRAW · …").
+Luật xoá chữ: xử lý bóng thoại và nền trơn; chế độ screentone thử phục hồi thêm lưới chấm và SFX.
+Vùng nền khó giữ nguyên để người dùng redraw (layer tên "REDRAW · …").
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ import numpy as np
 
 from .core import project
 from .core.assign import apply_plan, assign_lines
-from .core.clean import easy_only
+from .core.clean import easy_only, screentone_only
 from .core.docs import clean_line, load_pages, page_number
 from .core.detect import TextDetector
 from .core.document import Document
@@ -66,7 +66,7 @@ def load_request(path: Path) -> dict:
     request = json.loads(path.read_text(encoding="utf-8-sig"))
     if request.get("protocol") != PROTOCOL:
         raise ValueError("Phiên bản công cụ và bộ xử lý không khớp.")
-    if request.get("engine", "simple") not in ("opencv", "simple"):
+    if request.get("engine", "simple") not in ("opencv", "simple", "screentone"):
         raise ValueError("Chế độ xoá chữ không hợp lệ.")
     mode = request.get("mode", "page")
     if mode == "sfx":
@@ -152,7 +152,7 @@ def _lines_for(pages: dict[int, list[str]], doc_name: str, single: bool) -> list
     return []
 
 
-def _verify_quick_plan(page, plan, lines, folder, prefix, report, document=None):
+def _verify_quick_plan(page, plan, lines, folder, prefix, report, document=None, *, engine="simple"):
     """Quick mode has the same meaning gate as the panel, before any drawing/export."""
     from .core import workflow
     from .core.match_text import read_missing
@@ -179,6 +179,10 @@ def _verify_quick_plan(page, plan, lines, folder, prefix, report, document=None)
     workflow.imwrite(review.file(data, "work.png"), page.original)
     data["size"] = [page.original.shape[1], page.original.shape[0]]
     review.data.update(profile=getattr(page,"typeset_profile",GAI_BANG), kind_fonts=getattr(page,"custom_fonts",{}))
+    if engine == "screentone":
+        review.data["restore_screentone"] = True
+        clean_kinds = review.data.get("clean_kinds") or workflow.CLEAN_KINDS
+        review.data["clean_kinds"] = list(dict.fromkeys([*clean_kinds, "sfx"]))
     np.savez_compressed(review.file(data,"mask.npz"),
                         mask=getattr(page,"text_mask",np.zeros(page.original.shape[:2],np.float32)))
     review.set_status(data,"open","done")
@@ -192,8 +196,8 @@ def _verify_quick_plan(page, plan, lines, folder, prefix, report, document=None)
 
 def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", size=None, right_to_left: bool = True,
                  detector=None, report=None, profile: str = GAI_BANG, redrawn: str | None = None,
-                 custom_fonts: dict | None = None, review_document: dict | None = None) -> dict:
-    """Một trang: nhận diện, ghép thoại, xoá chữ theo luật "chỉ chỗ dễ", dàn chữ; ghi ảnh Redraw/xem trước.
+                 custom_fonts: dict | None = None, review_document: dict | None = None, *, engine: str = "simple") -> dict:
+    """Một trang: nhận diện, ghép thoại, xoá chữ và dàn chữ; ghi ảnh Redraw/xem trước.
 
     `redrawn`: ảnh đã redraw sẵn (cùng khung): làm nền thay cho phần xoá chữ của tool; chữ vẫn nhận diện trên raw."""
     report = report or (lambda step: None)
@@ -202,6 +206,7 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
         raise ValueError("Kích thước ảnh chụp không khớp tài liệu Photoshop.")
     page.typeset_profile = profile
     page.custom_fonts = custom_fonts or {}
+    page.inpainter = screentone_only if engine == "screentone" else easy_only
     report("Nhận diện chữ…")
     page.detect(detector or TextDetector(), right_to_left=right_to_left)
     if redrawn:
@@ -209,22 +214,17 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
     plan = assign_lines(page, page.regions, lines)
     if not plan and not page.regions:
         raise ValueError("Không nhận diện được khung chữ. Hãy dùng ảnh rõ nét hơn.")
-    _verify_quick_plan(page, plan, lines, folder, prefix, report, review_document)
+    _verify_quick_plan(page, plan, lines, folder, prefix, report, review_document, engine=engine)
     apply_plan(page, plan, TextStyle())
     translated = [r for r in page.regions if r.text.strip()]
-    report(f"Xoá chữ ở chỗ dễ ({len(translated)} khung)…")
-    page.inpainter = easy_only
-    for r in translated:
-        if r.kind == "sfx":  # SFX không xoá: chữ dịch đặt đè lên bản gốc (có bản redraw thì dùng nguyên bản redraw)
-            r.cleaned, r.needs_redraw = True, not page.redrawn_covers(r)
-            page.clean(r)
-    page.clean_many([r for r in translated if r.kind != "sfx"])
+    report(f"Xoá chữ ({len(translated)} khung)…")
+    page.clean_many(translated)
     # Hai câu chung bóng có thể đã gộp lại thành một vùng: lấy lại đúng danh sách như layer_specs.
     translated = [r for r in page.regions if r.cleaned and r.text.strip()]
     report("Dựng bản xem trước…")
     page.doc = Document(page)
-    page.doc.export(str(folder / f"{prefix}preview.png"))
     preview = page.doc.composite()
+    cv2.imencode(".png", preview)[1].tofile(folder / f"{prefix}preview.png")
     scale = min(420 / page.size[0], 560 / page.size[1], 1)
     thumb = cv2.resize(preview, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     cv2.imencode(".png", thumb)[1].tofile(folder / f"{prefix}preview-ui.png")
@@ -354,10 +354,11 @@ def process_job(path: Path, report=None) -> dict:
     register_fonts([*fonts_for(profile).values(), *(c.get("family", "") for c in custom.values() if c.get("family"))])
     detector = TextDetector()
     rtl = request.get("right_to_left", True)
+    engine = request.get("engine", "simple")
     if mode == "scan":
         # Bước 1 của "tự chọn font": báo các loại khung có trong chương; ảnh đã chụp được dùng lại khi type.
         keep = {k: request[k] for k in ("script", "translation_file", "translation_text") if request.get(k)}
-        return {**base, **keep, "right_to_left": rtl, "pages": request["pages"],
+        return {**base, **keep, "right_to_left": rtl, "engine": engine, "pages": request["pages"],
                 "kinds": scan_kinds(request["pages"], folder, detector, rtl, report)}
     if mode == "batch":
         pages = _translations(request)
@@ -374,7 +375,7 @@ def process_job(path: Path, report=None) -> dict:
             try:
                 res = typeset_page(item["image"], lines, folder, f"p{i}_", item.get("size"), rtl, detector,
                                    lambda text, step=step: report(step + text), profile, item.get("redrawn"),
-                                   custom_fonts=custom, review_document=item)
+                                   custom_fonts=custom, review_document=item, engine=engine)
                 out.append({"ok": True, "doc_id": item.get("doc_id"), "doc_name": name, **res})
             except Exception as exc:  # noqa: BLE001 - trang lỗi không làm hỏng cả chương
                 out.append({"ok": False, "doc_id": item.get("doc_id"), "doc_name": name, "error": str(exc)})
@@ -385,7 +386,7 @@ def process_job(path: Path, report=None) -> dict:
         if not lines:
             raise ValueError(f"Bản dịch không có trang {page_number(request.get('doc_name', ''))}.")
     return {**base, **typeset_page(request["image"], lines, folder, "", request.get("size"), rtl, detector, report, profile,
-                                 request.get("redrawn"), custom_fonts=custom, review_document=request)}
+                                 request.get("redrawn"), custom_fonts=custom, review_document=request, engine=engine)}
 
 
 def _failure(job: Path, exc: Exception) -> dict:

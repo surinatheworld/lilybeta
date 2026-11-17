@@ -18,9 +18,10 @@ trong tài liệu đang mở:
 - Mỗi câu thoại/SFX là **layer chữ Photoshop thật**, sửa được nội dung, font và vị trí.
 - Giữ các layer, kích thước và độ phân giải của tài liệu; Undo một lần để bỏ nhóm vừa tạo.
 
-**Luật xoá chữ:** chỉ xoá chỗ dễ – chữ trong bóng thoại / hộp sáng khép kín và nền trơn một màu. Không vẽ lại tranh,
-lưới chấm, nền chuyển màu; **SFX không xoá**, chữ dịch đặt đè lên bản gốc. Những layer chữ này có tên bắt đầu bằng
-`REDRAW · ` – redraw tay, hoặc dùng **Upload bản redraw SFX**.
+**Xoá chữ offline.** Trong bảng điều khiển 8 bước, bật **Giữ lưới chấm khi xoá chữ (offline)** rồi chạy lại Bước 6.
+**Loại bóng → font…** xác định vùng được xoá, gồm cả SFX nếu bạn bật loại này. Trong hộp thoại nhanh, tuỳ chọn cùng
+tên áp dụng cho những vùng đã ghép bản dịch. Chế độ này khôi phục lưới chấm hoặc nền đồng màu khi khớp được mẫu quanh
+chữ. Vùng nền khó được đánh dấu bằng tên layer bắt đầu với `REDRAW · `.
 
 **Căn chữ:** chữ dàn theo đúng hình lòng bóng, phủ khoảng 70% bề ngang bóng và đặt chính giữa (khoảng hở tới
 mép bóng bằng nhau 4 phía); tự xuống dòng cho khối chữ bo tròn (dòng
@@ -33,7 +34,7 @@ layer chữ, kerning Optical; sửa tay trong Photoshop như thường.
 
 1. Mở ảnh trong Photoshop.
 2. **File → Scripts → Browse…**, chọn `Lilyzono.jsx` trong thư mục này.
-3. Dán bản dịch, **mỗi câu một dòng theo thứ tự đọc**, không thêm số thứ tự; hoặc **Mở bản dịch (.txt / .docx)**
+3. Để dùng hộp thoại nhanh, giữ **Shift** khi chạy script. Dán bản dịch, **mỗi câu một dòng theo thứ tự đọc**, hoặc **Mở bản dịch (.txt / .docx)**
    (file chia theo trang: dòng chỉ có số trang, các dòng sau là thoại của trang đó – tool tự lấy đúng trang theo tên ảnh).
 4. Bấm **Nhận diện và xem trước**. Hộp thoại đóng ngay và **Photoshop dùng tiếp được bình thường**; bộ xử lý chạy
    riêng với cửa sổ tiến độ (bấm **Huỷ** để dừng bất cứ lúc nào), khoảng 10–15 giây.
@@ -88,8 +89,7 @@ Câu dịch không khớp bóng nào (chữ vẽ tay nhỏ tool không nhận ra
 đen) tự đổi sang màu trắng. Trang nền đen: khe đen giữa các panel cũng được dùng để xác định thứ tự đọc.
 
 Nhận dạng và ghép thoại là tự động, có thể sai với bố cục khó. Luôn xem trước, đặc biệt SFX và chữ ngoài khung.
-SFX và chữ trên tranh không bị xoá: chữ dịch đặt đè lên, layer chữ đánh dấu `REDRAW` nếu muốn tự redraw sau.
-Chỉ xoá những vùng có bản dịch; các SFX chưa ghép và chi tiết bị nhận nhầm được giữ nguyên.
+Ở chế độ chạy nhanh, Lilyzono chỉ xoá những vùng đã ghép bản dịch. Vùng cần xử lý thêm dùng lớp chữ đánh dấu `REDRAW`.
 
 ## Kiểm thử tích hợp ngầm
 

@@ -339,22 +339,28 @@ class Page:
             return not any(p[0] < q[2] + gap and q[0] < p[2] + gap and p[1] < q[3] + gap and q[1] < p[3] + gap
                            for p in a[5] for q in b[5])
 
-        def options(r):
-            """(khung, có giữ dáng bóng không, khung khối chữ) – khung đang dùng đứng đầu."""
-            current = r.text_rect
-            if r.manual_rect:
-                return [(current, True, block_box(r.text, r.effective_style, current))]
-            rects = [current] + [c for c in r.text_rects if c != current]
-            return [(c, bool(r.text_shape) and i == 0, block_box(r.text, r.effective_style, c))
-                    for i, c in enumerate(rects)]
+        def current(r):
+            rect = r.text_rect
+            return rect, bool(r.manual_rect or r.text_shape), block_box(r.text, r.effective_style, rect)
 
+        def options(r, first):
+            """(khung, có giữ dáng bóng không, khung khối chữ) – khung đang dùng đứng đầu."""
+            if r.manual_rect:
+                return [first]
+            style = r.effective_style
+            return [first] + [(c, False, block_box(r.text, style, c)) for c in r.text_rects if c != first[0]]
+
+        first = None
         for other in self.regions:
             if (other is region or other.kind == "sfx" or other.orphan or not other.cleaned
                     or not other.text.strip() or not (other.text_rects or other.text_shape or other.manual_rect)):
                 continue
-            mine, theirs = options(region), options(other)
-            if apart(mine[0][2], theirs[0][2]):
+            if first is None:
+                first = current(region)
+            second = current(other)
+            if apart(first[2], second[2]):
                 continue
+            mine, theirs = options(region, first), options(other, second)
             pairs = [(a, b) for a in mine for b in theirs if apart(a[2], b[2])]
             # Khung to bị khối kia chiếm một góc: cắt bỏ phần đó (khối trước nhích lên, khối sau nhích xuống).
             big = lambda opts: sorted(opts, key=lambda o: -o[2][4])[:TRIM_OPTIONS]  # noqa: E731
@@ -387,6 +393,7 @@ class Page:
             for r, (rect, keep, _) in ((region, a), (other, b)):
                 if not keep:
                     r.text_shape, r.text_rects = None, [rect]
+            first = current(region)
 
     def _shared_shape(self, region: Region, shape, span):
         """Dáng đặt chữ khi bóng chứa cả chữ của câu khác: bóng đôi thì lấy thuỳ của câu này (tách tại chỗ thắt),

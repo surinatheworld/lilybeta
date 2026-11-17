@@ -25,7 +25,7 @@ from . import ai
 from .docs import load_pages, page_number, translation_units
 
 STEPS = [("open", "Mở ảnh"), ("detect", "Nhận diện & phân loại bóng (AI)"), ("setup", "Thiết lập bảng thoại"),
-         ("raw", "Nạp bản Raw"), ("ocr", "OCR bản Raw"), ("clean", "Xoá chữ (bóng kín)"),
+         ("raw", "Nạp bản Raw"), ("ocr", "OCR bản Raw"), ("clean", "Xoá chữ"),
          ("match", "Dịch tham chiếu & ghép thoại"), ("typeset", "Typeset")]
 STEP_NAMES = dict(STEPS)
 # Thứ tự chạy "toàn bộ": cần raw trước khi nhận diện (bản redraw đã xoá chữ Nhật, không còn gì để nhận).
