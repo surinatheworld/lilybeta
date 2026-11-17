@@ -66,9 +66,8 @@ hoặc trong thư mục `photoshop` của repo khi chạy từ mã nguồn.
 
 ## Bộ xử lý
 
-- Từ mã nguồn: giữ cấu trúc repo, cài môi trường bằng `run.bat`. JSX (trong `photoshop/` hoặc
-  `dist/LilyzonoPhotoshop/`) ưu tiên `.venv/Scripts/pythonw.exe` của dự án – luôn chạy code mới nhất và không bị
-  Smart App Control chặn như exe tự build.
+- Từ mã nguồn: giữ cấu trúc repo và [chuẩn bị bộ xử lý một lần](../README.md#chuẩn-bị-bộ-xử-lý-photoshop-từ-mã-nguồn).
+  Sau đó mở `photoshop/Lilyzono.jsx` từ Photoshop. JSX tự gọi `.venv/Scripts/pythonw.exe` của dự án.
 - Dán bản dịch: nếu các câu bị dính liền thành một dòng (một số nguồn copy chỉ xuống dòng kiểu LF), copy lại từ
   Notepad / Word, hoặc dùng **Mở bản dịch (.txt / .docx)**.
 - Bản độc lập: chạy `build_photoshop.bat`, gửi cả thư mục `dist/LilyzonoPhotoshop`. Không cần Python trên máy dùng.

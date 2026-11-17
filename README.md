@@ -56,17 +56,6 @@ Typeset Gái Băng / Isshiki tự chọn font theo loại thoại và hình khun
 Chạy `build_photoshop.bat` để đóng gói bản không cần Python, rồi giữ cả thư mục `dist/LilyzonoPhotoshop`.
 Chi tiết: [hướng dẫn Photoshop](photoshop/README.md). Bộ xử lý chạy trên máy, không cần mở ứng dụng Lilyzono riêng.
 
-## Chạy bằng Lilyzono.exe (không cần cài Python)
-
-1. Bấm đúp **`build_exe.bat`** (một lần, trên máy có Python) → tạo thư mục `dist\Lilyzono\`.
-2. Mở **`dist\Lilyzono\Lilyzono.exe`**. Có thể chuột phải → *Send to → Desktop (create shortcut)* để có biểu tượng ngoài màn hình.
-3. Muốn dùng trên máy khác: nén cả thư mục `dist\Lilyzono` thành .zip rồi gửi, giải nén ra là chạy (không cần Python).
-   Thư mục `models` bên trong chứa sẵn model AI; nếu thiếu, tool tự tải lần đầu.
-
-Gặp lỗi trên máy khác: chạy `Lilyzono.exe --selftest` (có thể thêm đường dẫn một ảnh) rồi xem file `selftest.log` cạnh exe.
-Nếu bản exe cũ báo lỗi DLL khi khởi động, đóng gói lại bằng `build_exe.bat`: bước build ưu tiên DLL của Windows,
-tránh lấy nhầm `icuuc.dll` từ phần mềm khác trong `PATH` gây lỗi import QtGui.
-
 ## Card đồ hoạ và đọc chữ Nhật
 
 - Có card đồ hoạ (DirectX 12, vd RTX 4060) thì nhận diện chữ chạy trên card qua ONNX Runtime DirectML: ~0,1 giây/trang
@@ -77,18 +66,19 @@ tránh lấy nhầm `icuuc.dll` từ phần mềm khác trong `PATH` gây lỗi 
   `decoder_model.onnx`, `vocab.txt` từ [mayocream/manga-ocr-onnx](https://huggingface.co/mayocream/manga-ocr-onnx)
   (Apache-2.0). Trên card ~0,4 giây/bóng, CPU ~2 giây/bóng.
 
-## Cài đặt & chạy từ mã nguồn (Windows)
+## Chuẩn bị bộ xử lý Photoshop từ mã nguồn
 
-Cần Python 3.10 trở lên ([python.org](https://www.python.org/downloads/), nhớ tick *Add Python to PATH*).
+Trên máy mới, cài Python 3.10 trở lên và chạy một lần trong thư mục dự án.
 
-Bấm đúp **`run.bat`**. Lần đầu tool tự cài thư viện và tự tải model nhận diện chữ (~95MB) về thư mục `models/`.
-
-Hoặc chạy tay:
-```bash
+```powershell
 python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-.venv\Scripts\python -m app.main
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
+
+Trong Photoshop, mở **File → Scripts → Browse…** và chọn **`photoshop/Lilyzono.jsx`**. Script tự gọi bộ xử lý trong
+`.venv`. Model nhận diện chữ được tải vào `models/` khi chạy nhận diện lần đầu nếu máy chưa có.
+
+## Tham khảo trình chỉnh sửa độc lập
 
 ## Giao diện kiểu Photoshop
 

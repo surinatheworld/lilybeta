@@ -2,8 +2,7 @@
 setlocal
 cd /d "%~dp0"
 if not exist .venv\Scripts\python.exe (
-  echo Hay chay run.bat de cai moi truong Python truoc.
-  exit /b 1
+  python -m venv .venv || exit /b 1
 )
 .venv\Scripts\python -m pip install -r requirements.txt pyinstaller || exit /b 1
 set "PATH=%SystemRoot%\System32;%SystemRoot%;%PATH%"
