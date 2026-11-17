@@ -32,4 +32,60 @@ for (const [s, n] of [['13', '13'], ['Trang 13', '13'], ['TR.13', '13'], ['page 
 // Bảng điều khiển gọi bridge: lệnh lạ / lỗi trả về JSON {error}, không ném lỗi ra ngoài Photoshop.
 assert.equal(JSON.parse(tool.bridge('nope', '{}')).error, 'Không có lệnh nope');
 assert.ok(JSON.parse(tool.bridge('docs', '{bad')).error);
-console.log('Photoshop script: JSON, invalid data rejection, Unicode launcher and page translations passed.');
+
+function control(kind, label) {
+  const widget = {
+    kind, label, text: label || '', children: [],
+    add(type, _, text) {
+      const child = control(type, text);
+      this.children.push(child);
+      return child;
+    },
+    close() {},
+  };
+  Object.defineProperty(widget, 'selection', {
+    get() { return this.selected; },
+    set(index) { this.selected = {index}; },
+  });
+  return widget;
+}
+function controls(widget) {
+  return [widget, ...widget.children.flatMap(controls)];
+}
+const dimensions = {value:480};
+const doc = {name:'013.psd', width:dimensions, height:dimensions};
+let preferences;
+sandbox.Window = function (kind, name) { return control(kind, name); };
+sandbox.ActionDescriptor = function () {
+  const data = {};
+  this.putString = (name, value) => { data[name] = value; };
+  this.getString = (name) => data[name];
+};
+sandbox.stringIDToTypeID = (name) => name;
+sandbox.Units = {PIXELS:'px'};
+sandbox.app = {
+  documents:[doc],
+  preferences:{rulerUnits:'pt'},
+  getCustomOptions() { if (!preferences) throw new Error('Missing settings'); return preferences; },
+  putCustomOptions(_, value) { preferences = value; },
+};
+let quick = tool.options(doc, false);
+let widgets = controls(quick);
+let mode = widgets.find((c) => c.kind === 'checkbox' && c.label.includes('Giữ lưới chấm'));
+assert.equal(mode.value, false);
+mode.value = true;
+widgets.find((c) => c.kind === 'edittext').text = 'Cảm ơn anh.';
+widgets.find((c) => c.label === 'Nhận diện và xem trước').onClick();
+assert.equal(quick.result.engine, 'screentone');
+assert.equal(quick.result.mode, 'page');
+quick = tool.options(doc, false);
+widgets = controls(quick);
+mode = widgets.find((c) => c.kind === 'checkbox' && c.label.includes('Giữ lưới chấm'));
+assert.equal(mode.value, true);
+widgets.find((c) => c.kind === 'edittext').text = '13\nCảm ơn anh.';
+const profiles = widgets.find((c) => c.kind === 'dropdownlist');
+profiles.selection = profiles.label.indexOf('Tự chọn font theo loại khung');
+widgets.find((c) => c.kind === 'button' && c.label.startsWith('Làm cả chương')).onClick();
+assert.equal(quick.result.mode, 'scan');
+assert.equal(quick.result.engine, 'screentone');
+console.log('Photoshop script: JSON, Unicode, page translations, and quick redraw settings passed.');

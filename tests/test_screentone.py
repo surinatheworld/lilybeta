@@ -36,6 +36,30 @@ class ScreentoneTests(unittest.TestCase):
         self.assertFalse(restore_screentone(page, self.mask))
         np.testing.assert_array_equal(page, before)
 
+    def test_recovers_resampled_screentone_with_fractional_spacing(self):
+        y, x = np.indices((260, 320))
+        dots = np.where((x % 11 - 5) ** 2 + (y % 11 - 5) ** 2 <= 7, 20, 250).astype(np.uint8)
+        original = cv2.cvtColor(cv2.resize(dots, (259, 224), interpolation=cv2.INTER_AREA), cv2.COLOR_GRAY2BGR)
+        mask = np.zeros(original.shape[:2], np.uint8)
+        cv2.putText(mask, "FX", (53, 125), cv2.FONT_HERSHEY_SIMPLEX, 1.7, 255, 8)
+        page = original.copy()
+        page[mask > 0] = 0
+        smooth = cv2.inpaint(page, mask, 5, cv2.INPAINT_TELEA)
+
+        self.assertTrue(restore_screentone(page, mask))
+
+        error = lambda image: np.abs(image[mask > 0].astype(float) - original[mask > 0]).mean()
+        self.assertLess(error(page), 16)
+        self.assertLess(error(page), error(smooth) / 3)
+        np.testing.assert_array_equal(page[mask == 0], original[mask == 0])
+
+        # Leave the cutout alone if a clearly visible ink line crosses it.
+        cv2.line(original, (60, 50), (105, 172), (0, 0, 0), 5)
+        original[mask > 0] = 0
+        before = original.copy()
+        self.assertFalse(restore_screentone(original, mask))
+        np.testing.assert_array_equal(original, before)
+
     def test_clean_local_uses_screentone_for_sfx_and_leaves_unsupported_art_pending(self):
         box = (55, 57, 160, 109)
         mask = self.mask.astype(np.float32) / 255
@@ -49,3 +73,14 @@ class ScreentoneTests(unittest.TestCase):
         before = page.copy()
         self.assertIsNotNone(clean_local(page, mask, box, inpainter=screentone_only, sfx=True))
         np.testing.assert_array_equal(page, before)
+
+    def test_sfx_on_solid_panel_clears_the_lettering_without_changing_art(self):
+        box = (55, 57, 160, 109)
+        original = np.full((*self.x.shape, 3), (125, 123, 119), np.uint8)
+        cv2.line(original, (170, 56), (198, 132), (0, 0, 0), 4)
+        page = original.copy()
+        page[self.mask > 0] = 255
+
+        self.assertIsNone(clean_local(page, self.mask.astype(np.float32) / 255, box,
+                                     inpainter=screentone_only, sfx=True))
+        np.testing.assert_array_equal(page, original)

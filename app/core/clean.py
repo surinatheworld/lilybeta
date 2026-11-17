@@ -8,6 +8,7 @@ from .screentone import restore_screentone
 
 MARGIN = 20
 FURIGANA_PAD = 10
+TEXT_DILATE = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
 
 def build_text_mask(text_mask: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
@@ -19,11 +20,14 @@ def build_text_mask(text_mask: np.ndarray, box: tuple[int, int, int, int]) -> np
     out = np.zeros((h, w), np.uint8)
     # Ngưỡng thấp: chữ màu, chữ nhỏ (vd dòng tiếng Anh trên bìa) chỉ được model đánh dấu mờ.
     out[y1:y2, x1:x2] = (text_mask[y1:y2, x1:x2] > 0.15).astype(np.uint8) * 255
-    if out[y1:y2, x1:x2].sum() == 0:
+    if not out[y1:y2, x1:x2].any():
         bx1, by1, bx2, by2 = box
         out[by1:by2, bx1:bx2] = 255  # model không ra nét chữ: xoá cả khung
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    return cv2.dilate(out, k, iterations=2)
+    # Two dilations add at most four pixels on each side of the strokes.
+    roi = out[max(0, y1 - 4):y2 + 4, max(0, x1 - 4):x2 + 4]
+    if roi.size:
+        roi[:] = cv2.dilate(roi, TEXT_DILATE, iterations=2)
+    return out
 
 
 def skip_hard(img: np.ndarray, mask: np.ndarray) -> None:
@@ -120,9 +124,20 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
             target[:, :max(0, x1 - 6 - cx1)] = 0
             target[:, x2 + 6 - cx1:] = 0
         detected = text_mask > .15
-        if (area_mask is not None or detected[y1:y2, x1:x2].any()) and restore_screentone(img, tone_mask, detected):
+        trusted = area_mask is not None or detected[y1:y2, x1:x2].any()
+        if trusted and restore_screentone(img, tone_mask, detected):
             return None
         if sfx and area_mask is None:
+            # On a solid panel, erase only the detected strokes and outline.
+            # Requiring a uniform surrounding ring protects nearby line art.
+            patch = img[cy1:cy2, cx1:cx2]
+            ring = (cv2.dilate(target, np.ones((13, 13), np.uint8)) > 0) & ~(target > 0)
+            edge = patch[ring]
+            if trusted and len(edge) >= 30:
+                color = np.median(edge, axis=0)
+                if (np.abs(edge - color).max(axis=1) <= 9).mean() >= .99:
+                    patch[target > 0] = color.astype(np.uint8)
+                    return None
             return tone_mask
     if strokes is not None and _fill_light_bubble(img, strokes, box, preserve_texture=tone):
         return None
@@ -201,11 +216,10 @@ def _fill_light_bubble(img: np.ndarray, strokes: np.ndarray, box: tuple[int, int
     ff = np.zeros((soft.shape[0] + 2, soft.shape[1] + 2), np.uint8)
     flags = 4 | cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE | (255 << 8)
     seed = int(soft[sy, sx])
-    cv2.floodFill(soft, ff, (sx, sy), 0, seed - 222, 255, flags)  # mọi điểm ≥ 222 (đã làm mờ)
+    count, _, _, (rx, ry, rw, rh) = cv2.floodFill(soft, ff, (sx, sy), 0, seed - 222, 255, flags)
     region = ff[1:-1, 1:-1] > 0
-    ys, xs = np.nonzero(region)
-    if (len(xs) == 0 or xs.min() == 0 or ys.min() == 0 or xs.max() == region.shape[1] - 1
-            or ys.max() == region.shape[0] - 1 or len(xs) > 0.25 * w * h):
+    if (not count or rx == 0 or ry == 0 or rx + rw == region.shape[1]
+            or ry + rh == region.shape[0] or count > 0.25 * w * h):
         return False  # không khép kín trong cửa sổ: nền trắng của trang/panel, không phải bóng
     interior = _fill_holes(region.astype(np.uint8))
     # Bóng thật bao trọn khung chữ và có lề quanh chữ; viền trắng của chữ đè lên tranh (tên tác giả…) thì bám sát chữ.
@@ -324,40 +338,44 @@ def text_area(img: np.ndarray, box: tuple[int, int, int, int], area_mask: np.nda
     """
     x1, y1, x2, y2 = (int(v) for v in box)
     seed = ((x1 + x2) // 2, (y1 + y2) // 2)
-    region = _bubble_region(img, box, area_mask)
-    if region is None:
+    found = _bubble_region(img, box, area_mask)
+    if found is None:
         return [box], None
-    ys, xs = np.nonzero(region)
-    bx1, by1, bx2, by2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
+    region, (bx1, by1) = found
 
     pad = 3
     cands = []
     seed_rel = (seed[0] - bx1, seed[1] - by1)
-    for rx1, ry1, rx2, ry2 in _inner_rects(region[by1:by2, bx1:bx2], seed_rel):
+    for rx1, ry1, rx2, ry2 in _inner_rects(region, seed_rel):
         r = (int(bx1 + rx1 + pad), int(by1 + ry1 + pad), int(bx1 + rx2 - pad), int(by1 + ry2 - pad))
         if r[2] - r[0] > 8 and r[3] - r[1] > 8:
             cands.append(r)
     # Khung chữ gốc có thể chòi ra ngoài lòng bóng (bóng đôi, bóng méo) nên chỉ dùng khi không còn cách khác.
-    return cands or [box], _bubble_shape(region[by1:by2, bx1:bx2], (bx1, by1), seed, pad)
+    return cands or [box], _bubble_shape(region, (bx1, by1), seed, pad)
 
 
-def _bubble_region(img: np.ndarray, box, area_mask: np.ndarray | None = None) -> np.ndarray | None:
-    """Lòng bóng chứa `box`: loang màu từ tâm khung; không giống bóng (tràn mép ảnh, quá lớn) thì vùng lasso."""
+def _bubble_region(img: np.ndarray, box, area_mask: np.ndarray | None = None):
+    """Lòng bóng hoặc lasso, cắt theo khung bao và trả kèm toạ độ gốc."""
     h, w = img.shape[:2]
     x1, y1, x2, y2 = (int(v) for v in box)
     ff_mask = np.zeros((h + 2, w + 2), np.uint8)
     flags = 4 | cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE | (255 << 8)
-    cv2.floodFill(img.copy(), ff_mask, ((x1 + x2) // 2, (y1 + y2) // 2), (0, 0, 0), (12, 12, 12), (12, 12, 12), flags)
-    region = _fill_holes(ff_mask[1:-1, 1:-1])
-    n = int(region.sum())
-    ys, xs = np.nonzero(region) if n else (np.array([0]), np.array([0]))
-    if (n > 0 and xs.min() > 0 and ys.min() > 0 and xs.max() < w - 1 and ys.max() < h - 1
-            and n <= 0.3 * w * h and n <= 80 * max(1, (x2 - x1) * (y2 - y1))):
-        return region
+    # MASK_ONLY leaves the image intact. Flood fill reports the exact bounds
+    # before hole filling, so the second pass only visits the balloon.
+    pixels = np.ascontiguousarray(img) if img.flags.writeable else img.copy()
+    n, _, _, (x, y, rw, rh) = cv2.floodFill(pixels, ff_mask, ((x1 + x2) // 2, (y1 + y2) // 2),
+                                            (0, 0, 0), (12, 12, 12), (12, 12, 12), flags)
+    limit = min(.3 * w * h, 80 * max(1, (x2 - x1) * (y2 - y1)))
+    if 0 < n <= limit and 0 < x and 0 < y and x + rw < w and y + rh < h:
+        region = _fill_holes(ff_mask[y + 1:y + rh + 1, x + 1:x + rw + 1])
+        if region.sum() <= limit:
+            return region, (x, y)
     if area_mask is None:
         return None
-    region = _fill_holes(area_mask)
-    return region if region.any() else None
+    x, y, rw, rh = cv2.boundingRect(area_mask.astype(np.uint8, copy=False))
+    if rw and rh:
+        return _fill_holes(area_mask[y:y + rh, x:x + rw]), (x, y)
+    return None
 
 
 NECK = 0.75  # chỗ nối hẹp hơn 75% bề dày thuỳ nhỏ hơn: bóng đôi (hai bóng dính nhau), không phải một bóng to
@@ -371,12 +389,11 @@ def lobe_shape(img: np.ndarray, box, anchors, area_mask: np.ndarray | None = Non
     `anchors` = khung chữ gốc của các câu khác. Bề dày bóng = khoảng cách tới mép bóng; chỗ thắt giữa hai câu là
     chỗ mỏng nhất trên đường dày nhất nối chữ của chúng. Gọt bóng mỏng hơn chỗ thắt thì còn lại các lõi rời nhau,
     mỗi điểm trong bóng thuộc thuỳ của lõi gần nhất."""
-    region = _bubble_region(img, box, area_mask)
-    if region is None:
+    found = _bubble_region(img, box, area_mask)
+    if found is None:
         return None
-    ys, xs = np.nonzero(region)
-    bx1, by1, bx2, by2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
-    crop = region[by1:by2, bx1:bx2].astype(np.uint8)
+    region, (bx1, by1) = found
+    crop = region.astype(np.uint8)
     dist = cv2.distanceTransform(cv2.copyMakeBorder(crop, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0),
                                  cv2.DIST_L2, 5)[1:-1, 1:-1]
     poles = []  # chỗ dày nhất của bóng dưới chữ gốc mỗi câu

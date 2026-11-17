@@ -265,10 +265,19 @@ var LilyzonoPS = (function () {
         catch (error) { return PROFILES[0].key; }
     }
 
-    function saveProfile(key) {
+    function savedEngine() {
         try {
-            var desc = new ActionDescriptor();
+            return app.getCustomOptions(SETTINGS).getString(stringIDToTypeID("engine")) === "screentone"
+                ? "screentone" : "simple";
+        } catch (error) { return "simple"; }
+    }
+
+    function saveOptions(key, engine) {
+        try {
+            var desc;
+            try { desc = app.getCustomOptions(SETTINGS); } catch (error) { desc = new ActionDescriptor(); }
             desc.putString(stringIDToTypeID("profile"), key);
+            desc.putString(stringIDToTypeID("engine"), engine);
             app.putCustomOptions(SETTINGS, desc, true);
         } catch (error) {}
     }
@@ -376,7 +385,8 @@ var LilyzonoPS = (function () {
         }
         if (missing.length) { alert("Photoshop không có font: " + missing.join(", ") + ". Chọn bằng nút Chọn…"); return "cancel"; }
         saveFonts(fonts);
-        var request = {protocol:1, profile:"custom", mode:"batch", right_to_left:data.right_to_left, engine:"simple",
+        var request = {protocol:1, profile:"custom", mode:"batch", right_to_left:data.right_to_left,
+                       engine:data.engine === "screentone" ? "screentone" : "simple",
                        custom_fonts:fonts, pages:data.pages};
         if (data.translation_file) request.translation_file = data.translation_file;
         else request.translation_text = data.translation_text || "";
@@ -422,8 +432,9 @@ var LilyzonoPS = (function () {
         };
         input.onChanging = function () { if (translationFile && input.text) { translationFile = null; fileLabel.text = ""; } };
         var rtl = win.add("checkbox", undefined, "Đọc manga: phải → trái"); rtl.value = true;
-        win.add("statictext", undefined, "Xoá chữ: chỉ chỗ dễ (bóng thoại, nền trơn). Chữ trên tranh và SFX đặt đè lên " +
-                "bản gốc – layer tên REDRAW; redraw tay hoặc Upload bản redraw SFX.", {multiline:true});
+        var redraw = win.add("checkbox", undefined, "Giữ lưới chấm khi xoá chữ (offline)");
+        redraw.value = savedEngine() === "screentone";
+        redraw.helpTip = "Khôi phục lưới chấm và xoá SFX trên nền đồng nhất. Vùng khó được đánh dấu REDRAW.";
         var pick = win.add("group");
         pick.add("statictext", undefined, "Bộ font:");
         var names = [], chosen = savedProfile(), i;
@@ -435,10 +446,12 @@ var LilyzonoPS = (function () {
         };
         profileBox.selection = 0;
         for (i = 0; i < PROFILES.length; i++) if (PROFILES[i].key === chosen) profileBox.selection = i;
-        function profile() {
+        function typesetRequest(mode) {
             var key = PROFILES[profileBox.selection ? profileBox.selection.index : 0].key;
-            saveProfile(key);
-            return key;
+            var engine = redraw.value ? "screentone" : "simple";
+            saveOptions(key, engine);
+            return {protocol:1, profile:key, mode:mode === "batch" && key === "custom" ? "scan" : mode,
+                    right_to_left:rtl.value, engine:engine};
         }
         var buttons = win.add("group"); buttons.alignment = "fill";
         var sfx = buttons.add("button", undefined, "Upload ảnh redraw…");
@@ -535,14 +548,12 @@ var LilyzonoPS = (function () {
                 if (missing.length === app.documents.length) { alert("Bản dịch không có số trang khớp tên ảnh nào (vd 013.jpg ↔ 13)."); return; }
                 if (missing.length && !confirm("Không có thoại cho: " + missing.join(", ") + ". Bỏ qua các trang này?")) return;
             }
-            var key = profile();
             // Tự chọn font: quét các loại khung trước, chọn font cho từng loại rồi mới type (finishScan).
-            win.result = translation({protocol:1, profile:key, mode:key === "custom" ? "scan" : "batch",
-                                      right_to_left:rtl.value, engine:"simple"});
+            win.result = translation(typesetRequest("batch"));
             win.close(1);
         };
         go.onClick = function () {
-            var request = {protocol:1, profile:profile(), mode:"page", right_to_left:rtl.value, engine:"simple"};
+            var request = typesetRequest("page");
             if (request.profile === "custom") request.custom_fonts = savedFonts();
             if (translationFile) { win.result = translation(request); win.close(1); return; }
             var lines;
@@ -699,9 +710,14 @@ var LilyzonoPS = (function () {
                 text.font = layer.font;
                 // Preserve the document's resolution: typography is measured in pixels.
                 text.size = new UnitValue(layer.size * 72 / doc.resolution, "pt");
-                text.useAutoLeading = true;  // khoảng cách dòng luôn Auto (120%)
-                text.autoLeadingAmount = 120;
+                text.useAutoLeading = layer.auto_leading !== false;
+                if (text.useAutoLeading) text.autoLeadingAmount = 120;
+                else text.leading = new UnitValue(layer.leading * 72 / doc.resolution, "pt");
                 text.fauxBold = layer.faux_bold; text.fauxItalic = layer.faux_italic;
+                if (layer.tracking) text.tracking = layer.tracking;
+                if (layer.hscale && layer.hscale !== 100) text.horizontalScale = layer.hscale;
+                if (layer.vscale && layer.vscale !== 100) text.verticalScale = layer.vscale;
+                if (layer.baseline_shift) text.baselineShift = new UnitValue(layer.baseline_shift * 72 / doc.resolution, "pt");
                 text.autoKerning = AutoKernType[layer.kerning || "OPTICAL"];
                 text.justification = Justification[layer.justification];
                 text.antiAliasMethod = AntiAlias[layer.antialias] || AntiAlias.STRONG;
@@ -718,6 +734,7 @@ var LilyzonoPS = (function () {
                     doc.activeLayer = art; fallbackRuns(layer.fallback, layer.fallback_font);
                 }
                 if (layer.stroke > 0) { doc.activeLayer = art; addStroke(layer.stroke, layer.stroke_color || "ffffff"); }
+                if (layer.rotation) art.rotate(layer.rotation, AnchorPosition.MIDDLECENTER);
             }
             doc.activeLayer = group;
         } finally {

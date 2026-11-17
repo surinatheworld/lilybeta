@@ -333,9 +333,6 @@ class KindsDialog(QDialog):
                 grid.addWidget(w, i + 1, c)
             self.rows[bubble] = (kind, italic, cl)
         lay.addLayout(grid)
-        self.screentone = QCheckBox("Khôi phục lưới chấm khi xoá chữ (offline)")
-        self.screentone.setChecked(bool(project.data.get("restore_screentone")))
-        lay.addWidget(self.screentone)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         lay.addWidget(buttons)
         buttons.accepted.connect(self.accept)
@@ -365,8 +362,7 @@ class KindsDialog(QDialog):
                 self.fonts.pop(bubble, None)
             if cl.isChecked():
                 clean.append(bubble)
-        self.project.data.update(kind_map=kind_map, kind_fonts=self.fonts, clean_kinds=clean,
-                                 restore_screentone=self.screentone.isChecked())
+        self.project.data.update(kind_map=kind_map, kind_fonts=self.fonts, clean_kinds=clean)
 
 
 # --- xem trang -----------------------------------------------------------------------------------
@@ -728,6 +724,8 @@ class PanelWindow(QMainWindow):
         for k, v in PROFILES.items():
             self.profile.addItem(v, k)
         self.rtl = QCheckBox("Đọc phải → trái")
+        self.screentone = QCheckBox("Giữ lưới chấm khi xoá chữ (offline)")
+        self.screentone.setToolTip("Áp dụng khi chạy Bước 6. Chọn loại bóng được xoá trong “Loại bóng → font…”.")
         kinds_btn = QPushButton("Loại bóng → font…")
         ai_btn = QPushButton("Cấu hình AI…")
         self.ai_label = QLabel()
@@ -755,6 +753,7 @@ class PanelWindow(QMainWindow):
         grid.addWidget(QLabel("Dự án"), 5, 0)
         grid.addWidget(self.folder_label, 5, 1, 1, 2)
         grid.addWidget(open_folder, 5, 3)
+        grid.addWidget(self.screentone, 6, 0, 1, 3)
         grid.addWidget(self.upload_redraw_btn, 6, 3)
         grid.setColumnStretch(1, 1)
 
@@ -897,6 +896,7 @@ class PanelWindow(QMainWindow):
         self.numbering.currentIndexChanged.connect(lambda: self._setting("numbering", self.numbering.currentData(), ["match"]))
         self.profile.currentIndexChanged.connect(lambda: self._setting("profile", self.profile.currentData(), ["setup"]))
         self.rtl.toggled.connect(lambda v: self._setting("right_to_left", v, ["detect"]))
+        self.screentone.toggled.connect(lambda v: self._setting("restore_screentone", v, ["clean"]))
         run_all.clicked.connect(lambda: self.run(workflow.RUN_ORDER))
         self.stop_btn.clicked.connect(self.stop)
         self.pages.currentItemChanged.connect(lambda cur, _: cur and self.show_page(cur.data(Qt.UserRole)))
@@ -936,7 +936,7 @@ class PanelWindow(QMainWindow):
         p = self.project
         self._filling = True
         try:
-            for w in (self.source, self.numbering, self.profile, self.rtl):
+            for w in (self.source, self.numbering, self.profile, self.rtl, self.screentone):
                 w.setEnabled(p is not None)
             if p is None:
                 self.folder_label.setText("chưa có – lấy ảnh từ Photoshop để tạo")
@@ -945,6 +945,7 @@ class PanelWindow(QMainWindow):
             self.numbering.setCurrentIndex(max(0, self.numbering.findData(p.data["numbering"])))
             self.profile.setCurrentIndex(max(0, self.profile.findData(p.data["profile"])))
             self.rtl.setChecked(p.data["right_to_left"])
+            self.screentone.setChecked(bool(p.data.get("restore_screentone")))
             self.raw_label.setText(p.data.get("raw_folder") or ("không cần (ảnh đang mở là raw)"
                                                                  if p.data["source"] == "raw" else "chưa chọn"))
             tl = p.data.get("translation_file")
@@ -1159,6 +1160,7 @@ class PanelWindow(QMainWindow):
             btn.setEnabled(not busy)
         self.run_all_btn.setEnabled(not busy)
         self.upload_redraw_btn.setEnabled(not busy)
+        self.screentone.setEnabled(not busy and self.project is not None)
         self.stop_btn.setEnabled(busy)
         self.table.setEnabled(not busy)
 

@@ -163,6 +163,25 @@ class PhotoshopModesTests(unittest.TestCase):
             self.assertTrue(Path(ok[0]["redraw"]).is_file() and Path(ok[1]["redraw"]).is_file())
             self.assertNotEqual(ok[0]["redraw"], ok[1]["redraw"])
 
+    def test_screentone_reaches_page_batch_and_custom_font_scan(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            path = folder / "013.png"
+            cv2.imencode(".png", _page_image())[1].tofile(path)
+            page = {"image": str(path), "size": [500, 480], "doc_name": "013.png"}
+            lines = ["Cảm ơn anh.", "Không có gì.", "Ôm chặt."]
+            direct = self._run(folder, {**page, "engine": "screentone", "lines": lines})
+            chapter = {"engine": "screentone", "pages": [page], "translation_text": "13\n" + "\n".join(lines)}
+            scan = self._run(folder, {**chapter, "mode": "scan", "profile": "custom"})
+            self.assertEqual(scan["engine"], "screentone")
+            batch = self._run(folder, {**chapter, "engine": scan["engine"], "mode": "batch"})["pages"][0]
+            for result in (direct, batch):
+                self.assertTrue(result["ok"])
+                sfx = next(spec for spec in result["layers"] if spec["kind"] == "sfx")
+                self.assertFalse(sfx["redraw"])
+                redraw = cv2.imdecode(np.fromfile(result["redraw"], np.uint8), cv2.IMREAD_UNCHANGED)
+                self.assertTrue((redraw[345:385, 345:435] == 255).all())
+
     def test_uploaded_redraw_becomes_the_whole_page_aligned_to_the_raw(self):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)

@@ -5,10 +5,11 @@ Các thông số chữ theo kiểu bảng Character / Paragraph của Photoshop.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, astuple, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 import math
 import re
 from functools import lru_cache
+from operator import attrgetter
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
@@ -20,6 +21,7 @@ from PySide6.QtGui import (
     QImage,
     QPainter,
     QPainterPath,
+    QPainterPathStroker,
     QPen,
     QTransform,
 )
@@ -133,6 +135,10 @@ class TextStyle:
         return TextStyle(**asdict(self))
 
 
+# TextStyle fields are scalar values, so cache keys only need a shallow snapshot.
+_style_key = attrgetter(*(field.name for field in fields(TextStyle)))
+
+
 def _is_script(style: TextStyle) -> bool:
     return style.superscript or style.subscript
 
@@ -237,11 +243,12 @@ def _block_height(lines, m: _Metrics, style: TextStyle) -> float:
 
 def layout(text: str, style: TextStyle, w: float, h: float):
     """Chọn cỡ chữ lớn nhất vừa khung. Trả về (_Metrics, các dòng)."""
-    key = astuple(style)
+    key = _style_key(style)
     placed = _PLACED.get((text, key, int(w), int(h)))
     if placed:  # khung do place_in_shape dàn theo dáng bóng
         return _Metrics(style, placed[0]), list(placed[1])
-    _, size, lines = _last_resort(style, lambda st: _layout(text, astuple(st), int(w), int(h)), lambda r: r[1])
+    _, size, lines = _last_resort(style, lambda st: _layout(text, key if st is style else _style_key(st), int(w), int(h)),
+                                 lambda r: r[1])
     return _Metrics(style, size), list(lines)
 
 
@@ -268,13 +275,15 @@ def _layout(text: str, style_key: tuple, w: int, h: int):
 
     # Từ có gạch nối ("Tanaka-kun") được xuống dòng ngay sau dấu gạch ("Tanaka- / kun") khi thiếu chỗ.
     flow = "\n".join(" ".join(_words(para.replace(SOFT_BREAK, " "), style.hyphenate)) for para in text.split("\n"))
+    words = tuple(_join([wd]) for wd in _words(text, style.hyphenate))
 
+    @lru_cache(maxsize=None)
     def fit(size: int):
         m = _Metrics(style, size)
         lines = [(_join([ln]), a, b) for ln, a, b in wrap(flow, m, iw, first_w, style.hyphenate)]
         widest = max((m.adv(ln) for ln, _, _ in lines), default=0)
         # Không cắt đôi một từ (vd "Chu|yện"): từ dài nhất phải vừa một dòng.
-        longest_word = max((m.adv(_join([wd])) for wd in _words(text, style.hyphenate)), default=0)
+        longest_word = max((m.adv(wd) for wd in words), default=0)
         ok = _block_height(lines, m, style) <= ih and widest <= iw + 0.5 and longest_word <= first_w + 0.5
         return ok, size, tuple(lines)
 
@@ -336,6 +345,7 @@ def clear_caches() -> None:
     _layout.cache_clear()
     _break.cache_clear()
     _segments.cache_clear()
+    _words.cache_clear()
     _PLACED.clear()
     _place.cache_clear()
 
@@ -411,6 +421,7 @@ def syllable_breaks(word: str) -> list[int]:
     return kept
 
 
+@lru_cache(maxsize=4096)
 def _words(text: str, hyphenate: bool = False) -> tuple[str, ...]:
     """Các từ để ngắt dòng; từ có gạch nối giữa hai chữ ("Tanaka-kun") tách thành hai phần ngắt được.
     Nhiều câu dịch gộp chung bóng (cách nhau SOFT_BREAK) thì từ cuối mỗi câu mang dấu PARA: cả bóng dàn thành một
@@ -606,9 +617,10 @@ def place_in_shape(text: str, style: TextStyle, shape, anchor=None) -> tuple[int
     mỗi dòng được rộng bằng lòng bóng ở độ cao của nó, khối chữ đặt chính giữa lòng bóng – hoặc theo tâm chữ gốc
     `anchor` (x, y) nếu có, miễn còn nằm gọn trong lòng bóng.
     Trả về khung chữ (để vẽ/xuất như khung thường) hoặc None nếu không dàn được theo dáng."""
-    key = astuple(style)
+    key = _style_key(style)
     at = None if anchor is None else (round(anchor[0]), round(anchor[1]))
-    res = _last_resort(style, lambda st: _place(text, astuple(st), shape, at), lambda r: r[1])
+    res = _last_resort(style, lambda st: _place(text, key if st is style else _style_key(st), shape, at),
+                       lambda r: r[1])
     if res is None:
         return None
     rect, size, lines = res
@@ -731,9 +743,23 @@ def _place(text: str, style_key: tuple, shape, anchor=None):
         size = _fit(style, size)
         m = _Metrics(style, size)
     lines = _lines_of(words, cuts)
+    x, y, clearance = _balance(_ink_boxes(lines, m, style), rows, cx, cy, anchor, size)
+    if style.size <= 0 and clearance < .5:
+        # Line advances can fit while Vietnamese accents, an outline, or
+        # rotated glyphs still cross the contour. Keep the chosen breaks and
+        # look for the largest smaller size whose drawn ink stays inside.
+        lo, hi = MIN_SIZE, size - 1
+        while lo <= hi:
+            trial = (lo + hi) // 2
+            metrics = _Metrics(style, trial)
+            nx, ny, space = _balance(_ink_boxes(lines, metrics, style), rows, cx, cy, anchor, trial)
+            if space >= .5:
+                size, m, x, y = trial, metrics, nx, ny
+                lo = trial + 1
+            else:
+                hi = trial - 1
     seg = _segments(words, style_key, size)
     widest = max(seg[a][b] for a, b in zip(cuts, cuts[1:]))
-    x, y = _balance(_ink_boxes(lines, m, style), rows, cx, cy, anchor, size)
     # Khung chữ đủ rộng cho dòng dài nhất sau khi trừ lề (style.padding) và chừa thêm chút cho Photoshop đo lệch.
     w = int(math.ceil(widest / (1 - 2 * style.padding))) + 6
     h = int(math.ceil(_block_height(lines, m, style) / (1 - 2 * style.padding))) + 4
@@ -747,20 +773,47 @@ def _ink_boxes(lines, m: _Metrics, style: TextStyle):
     nét để dấu thanh giữa dòng không bị tính như phủ tới tận hai đầu dòng (khối có dòng rộng ở trên bị đẩy lệch)."""
     top = -_block_height(lines, m, style) / 2
     scale = QTransform(m.hs, 0, 0, m.vs, 0, 0)
+    transform = QTransform().rotate(style.rotation) if style.rotation else None
+    stroker = None
+    if style.stroke_width:
+        stroker = QPainterPathStroker()
+        stroker.setWidth(style.stroke_width * 2)
+        stroker.setJoinStyle(Qt.RoundJoin)
+    shift = style.baseline_shift
+    if style.superscript:
+        shift += m.size * SCRIPT_POS
+    elif style.subscript:
+        shift -= m.size * SCRIPT_POS * .5
     out = []
     for i, (ln, _, _) in enumerate(lines):
-        path = scale.map(_line_path(ln, m))
+        path = _line_path(ln, m)
+        if style.underline or style.strike:
+            width = m.fm.horizontalAdvance(ln)
+            thickness = max(1.0, m.fm.lineWidth())
+            if style.underline:
+                path.addRect(QRectF(0, m.fm.underlinePos(), width, thickness))
+            if style.strike:
+                path.addRect(QRectF(0, -m.fm.strikeOutPos() - thickness / 2, width, thickness))
+        path = scale.map(path)
+        left = -m.adv(ln) / 2
+        baseline = top + i * m.lh + (m.lh - m.fm.height() * m.vs) / 2 + m.fm.ascent() * m.vs - shift
+        if transform is not None:
+            path = transform.map(path.translated(left, baseline))
+            left = baseline = 0.0
+        outline = stroker.createStroke(path) if stroker else None
         r = path.boundingRect()
+        if outline is not None:
+            r = r.united(outline.boundingRect())
         if r.isEmpty():
             continue
-        left = -m.adv(ln) / 2
-        baseline = top + i * m.lh + (m.lh - m.fm.height() * m.vs) / 2 + m.fm.ascent() * m.vs - style.baseline_shift
         w, h = int(math.ceil(r.width())) + 2, int(math.ceil(r.height())) + 2
         img = QImage(w, h, QImage.Format_Grayscale8)
         img.fill(0)
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing)
         p.translate(1 - r.left(), 1 - r.top())
+        if outline is not None:
+            p.fillPath(outline, Qt.white)
         p.fillPath(path, QColor(255, 255, 255))
         p.end()
         ink = np.frombuffer(img.constBits(), np.uint8, img.sizeInBytes()).reshape(h, img.bytesPerLine())[:, :w] > 60
@@ -776,14 +829,17 @@ def _balance(ink, rows, cx: float, cy: float, anchor=None, size: float = 0.0):
     """Căn giữa theo mắt nhìn: dời khối chữ cho khoảng hở từ nét chữ tới mép lòng bóng bằng nhau hai bên trái/phải
     và trên/dưới (tâm hình học của bóng mây, bóng gai, bóng méo không phải chỗ mắt thấy là giữa). Có `anchor` (tâm
     chữ Nhật gốc) thì rồi dời khối chữ về đó trong giới hạn lòng bóng."""
-    y0 = rows[0][0]
+    if not ink:
+        return cx, cy, math.inf
     span = {y: (left, right) for y, left, right in rows}
-    tops: dict[int, int] = {}
-    bottoms: dict[int, int] = {}
+    x0 = min(left for _, left, _ in rows)
+    width = max(right for _, _, right in rows) - x0
+    tops = np.full(width, math.inf)
+    bottoms = np.full(width, -math.inf)
     for y, left, right in rows:
-        for col in range(left, right):
-            tops[col] = min(tops.get(col, y), y)
-            bottoms[col] = max(bottoms.get(col, y), y)
+        start, end = left - x0, right - x0
+        np.minimum(tops[start:end], y, out=tops[start:end])
+        np.maximum(bottoms[start:end], y, out=bottoms[start:end])
 
     def gaps(x, y):
         gl = gr = gt = gb = math.inf
@@ -792,15 +848,18 @@ def _balance(ink, rows, cx: float, cy: float, anchor=None, size: float = 0.0):
                 if row not in span:
                     return None
                 gl, gr = min(gl, x + a - span[row][0]), min(gr, span[row][1] - (x + b))
-            for col in range(int(math.floor(x + a)), int(math.ceil(x + b)) + 1):
-                if col not in tops:
-                    return None
-                gt, gb = min(gt, y + t - tops[col]), min(gb, bottoms[col] - (y + u))
+            left, right = math.floor(x + a) - x0, math.ceil(x + b) - x0 + 1
+            if left < 0 or right > width:
+                return None
+            top, bottom = float(tops[left:right].max()), float(bottoms[left:right].min())
+            if not math.isfinite(top):
+                return None
+            gt, gb = min(gt, y + t - top), min(gb, bottom - (y + u))
         return gl, gr, gt, gb
 
     start = gaps(cx, cy)
-    if start is None or y0 is None:
-        return cx, cy
+    if start is None:
+        return cx, cy, -math.inf
     x, y = cx, cy
     for _ in range(4):  # dời một bước làm dòng khác chạm chỗ hẹp hơn, nên lặp vài lần cho cân
         g = gaps(x, y)
@@ -821,8 +880,8 @@ def _balance(ink, rows, cx: float, cy: float, anchor=None, size: float = 0.0):
             nx, ny = x + t * (anchor[0] - x), y + t * (anchor[1] - y)
             moved = gaps(nx, ny)
             if moved is not None and min(moved) >= margin - .5:
-                return nx, ny
-    return x, y
+                return nx, ny, min(moved)
+    return x, y, min(g)
 
 
 def _quality(text: str, style: TextStyle, style_key: tuple, size: int, lines, want: float) -> float:
@@ -850,7 +909,7 @@ def best_rect(text: str, style: TextStyle, rects: list[tuple[int, int, int, int]
     """Trong các khung ứng viên, chọn khung cho chữ to và khối chữ đẹp: như người typeset, chịu nhỏ chữ đi chút
     (≤ SHRINK_MAX) nếu ở khung khác khối chữ tròn đều hơn hẳn (khung hẹp cho chữ to nhưng mỗi dòng 1–2 từ, dòng dài
     ngắn thụt thò). Cùng điểm thì chọn khung mà khối chữ lấp đều nhất – dáng khối chữ gần dáng khung."""
-    key = astuple(style)
+    key = _style_key(style)
     t = prepare(text, style)
     metrics: dict[int, _Metrics] = {}
 
@@ -882,8 +941,9 @@ def block_quality(text: str, style: TextStyle, rect) -> float:
     """Điểm dáng của khối chữ khi dàn trong `rect` (cắt từ ghép, thụt thò, dòng vụn…; càng nhỏ càng đẹp)."""
     x1, y1, x2, y2 = rect
     t = prepare(text, style)
-    ok, size, lines = _layout(t, astuple(style), int(x2 - x1), int(y2 - y1))
-    return _quality(t, style, astuple(style), size, lines, math.log(max(x2 - x1, 1) / max(y2 - y1, 1)))
+    key = _style_key(style)
+    ok, size, lines = _layout(t, key, int(x2 - x1), int(y2 - y1))
+    return _quality(t, style, key, size, lines, math.log(max(x2 - x1, 1) / max(y2 - y1, 1)))
 
 
 def block_box(text: str, style: TextStyle, rect):
