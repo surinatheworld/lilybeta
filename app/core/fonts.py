@@ -49,11 +49,15 @@ def _names(path: str):
     except Exception:  # noqa: BLE001 - file font hỏng/không đọc được thì bỏ qua
         return []
     out = []
-    for i, f in enumerate(fonts):
-        n = f["name"]
-        fam = n.getDebugName(16) or n.getDebugName(1) or ""
-        sub = n.getDebugName(17) or n.getDebugName(2) or "Regular"
-        out.append((fam, sub, n.getDebugName(6) or "", i))
+    try:
+        for i, f in enumerate(fonts):
+            n = f["name"]
+            fam = n.getDebugName(16) or n.getDebugName(1) or ""
+            sub = n.getDebugName(17) or n.getDebugName(2) or "Regular"
+            out.append((fam, sub, n.getDebugName(6) or "", i))
+    finally:
+        for f in fonts:
+            f.close()
     return out
 
 
@@ -83,9 +87,13 @@ def postscript_name(family: str, style: str = "") -> str:
     ck = (family, style)
     if ck in _ps_cache:
         return _ps_cache[ck]
-    faces = [(sub, ps) for p in files_for(family) for _, sub, ps, _ in _names(p) if ps]
-    if not faces:  # tên trong registry khác tên họ font: dò bảng tên trong file
-        faces = [(sub, ps) for fam, sub, ps in _all_faces() if fam.lower() == family.lower() and ps]
+    key = family.lower()
+    found = [face for p in files_for(family) for face in _names(p) if face[2]]
+    faces = [(sub, ps) for fam, sub, ps, _ in found if fam.lower() == key]
+    if not faces:  # Registry prefixes may match a different family such as a “Lower” variant.
+        faces = [(sub, ps) for fam, sub, ps in _all_faces() if fam.lower() == key and ps]
+    if not faces:  # Preserve registered aliases whose display name differs from the internal family.
+        faces = [(sub, ps) for _, sub, ps, _ in found]
     want = (style or "Regular").lower()
     plain = ("regular", "roman", "normal", "book")
     pick = (next((ps for sub, ps in faces if sub.lower() == want), None)

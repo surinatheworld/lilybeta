@@ -23,6 +23,54 @@ def region(rid,ja,order=0,bubble='round'):
 
 
 class AssignmentTests(unittest.TestCase):
+    def test_two_translation_units_can_fill_three_connected_lobes(self):
+        a, b, c = 'それにしてもよいのですか', '魔族である私の事でしたら気になさらずに', 'お受けになってもよろしいのに'
+        first, second = 'Mà như thế có được không?', 'Nếu vì em là ma tộc thì chàng không cần bận tâm đâu.'
+        lines = [f'{first} {second}', 'Chàng cứ nhận lời cũng được mà.']
+        regs = [region(rid, ja, i) for i, (rid, ja) in enumerate(zip('ABC', (a, b, c)))]
+        for reg in regs:
+            reg['balloon'] = {'parts': 3, 'peers': list('ABC')}
+        scores = Scores({(f'{a} {b}', lines[0]): 4, (c, lines[1]): 4, (a, first): 3, (b, second): 3,
+                         (a, first + ' Nếu vì'): 3.1, (b, second.removeprefix('Nếu vì ')): 3.1})
+        out = matcher.match(regs, lines, scores)
+        self.assertEqual([(piece['id'], piece['text']) for piece in out['splits'][0]], [('A', first + ' '), ('B', second)])
+        self.assertEqual(out['assign'][1][0], 'C')
+        self.assertFalse(out['unplaced'])
+
+    def test_recheck_joined_lobes_only_when_both_fragments_fit_their_source(self):
+        a, b = '普通の人族がいくら鍛錬を繰り返しても', '到達することができない程の能力'
+        first, second = 'Nhân tộc bình thường có khổ luyện bao nhiêu đi nữa', 'cũng chẳng thể sánh được…'
+        line = f'{first} {second}'
+        regs = [region('A', a, 1), region('B', b, 2)]
+        for r in regs:
+            r['balloon'] = {'peers': ['A', 'B'], 'parts': 2}
+        result = {'assign': {0: ('A', None, '')}, 'splits': {}, 'evidence': {0: {'sources': ['A']}}}
+        scores = {(a, line): 3.0, (f'{a} {b}', line): 3.4, (a, first): 2.4, (b, second): 1.9}
+        ambiguous = copy.deepcopy(result)
+        matcher.refine_joined_units(regs, [line], ambiguous, Scores({**scores, (a, second): 1.8}))
+        self.assertFalse(ambiguous['splits'])
+        matcher.refine_joined_units(regs, [line], result, Scores(scores))
+        self.assertEqual([(p['id'], p['text']) for p in result['splits'][0]], [('A', first + ' '), ('B', second)])
+
+    def test_joined_exclamation_can_move_to_its_own_lobe_despite_region_order(self):
+        a, b = '遠い国から来たんだな', 'っは!'
+        first, second = 'Ha!', 'Anh đến từ nơi xa thật đấy.'
+        line = f'{first} {second}'
+        regs = [region('A', a, 1), region('B', b, 2)]
+        for r in regs:
+            r['balloon'] = {'peers': ['A', 'B'], 'parts': 2}
+        result = {'assign': {0: ('A', None, '')}, 'splits': {}, 'evidence': {0: {'sources': ['A']}}}
+        scores = {(a, line): 2.99, (f'{b} {a}', line): 3.30, (b, first): 2.9, (a, second): 2.8}
+        matcher.refine_joined_units(regs, [line], result, Scores(scores))
+        self.assertEqual([(p['id'], p['text']) for p in result['splits'][0]], [('B', first + ' '), ('A', second)])
+
+    def test_stylized_sentence_can_be_matched_even_with_an_effect_label(self):
+        phrase = '狩りのノルマがーっ!!!'
+        line = 'Chỉ tiêu đi săn của tôi!!!'
+        result = matcher.match([region('A', phrase, bubble='sfx')], [line], Scores({(phrase, line): 3.0}))
+        self.assertEqual(result['assign'][0][0], 'A')
+        self.assertFalse(matcher.japanese_phrase('ゴゴゴゴゴゴゴ'))
+
     def test_shuffled_inputs_and_arbitrary_lengths_follow_meaning(self):
         a,b='今日は本当に楽しかったです','明日は一緒に行きましょう'
         lines=['Ngày mai cùng đi nhé.','Hôm nay thật vui.']
@@ -122,6 +170,20 @@ class AssignmentTests(unittest.TestCase):
         lines=['Cứ gọi tên em.','Gọi kèm san thì xa cách.']
         out=matcher.match(regs,lines,Scores({(regs[0]['ja'],lines[0]):4,(regs[1]['ja'],lines[1]):4}))
         self.assertEqual([out['assign'][i][0] for i in (0,1)],['A','B'])
+
+    def test_high_joint_score_cannot_rescue_a_weak_lobe_with_a_better_separate_source(self):
+        a, b, c = '明日は学校へ行く', '学校で勉強します', '学校は今日休みです'
+        regs = [region('A', a, 1), region('B', b, 2), region('C', c, 3)]
+        duplicate = '明日は学校へ行って勉強します'
+        for r in regs[:2]:
+            r['balloon'] = {'peers': ['A', 'B'], 'parts': 2}
+            r['ja_variants'] = [duplicate]
+        regs[2]['balloon'] = {'parts': 1, 'uncertain': True}
+        lines = ['Hôm nay trường nghỉ.', 'Tôi sẽ học ở trường.']
+        out = matcher.match(regs, lines, Scores({(a, lines[0]): .2, (b, lines[1]): 3,
+                                                  (duplicate, lines[0]): 4,
+                                                  (c, lines[0]): 2, (f'{a} {b}', ' '.join(lines)): 8}))
+        self.assertEqual([out['assign'][i][0] for i in (0, 1)], ['C', 'B'])
 
     def test_dense_pages_have_bounded_memory_and_no_duplicate_input(self):
         opts=[[{'mask':1<<i,'a':i,'k':1,'score':3.,'mapped':[[str(i)]]}] for i in range(22)]

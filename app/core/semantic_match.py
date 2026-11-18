@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import re
 import json
+from collections import Counter
 from pathlib import Path
 import numpy as np
 
 from .ocr import normalize, coverage
-from .match_language import lexical, plain, category, shape, SOUNDS, ACKS
+from .match_language import lexical, plain, category, shape, japanese_phrase, SOUNDS, ACKS
 from .semantic_review import local_models, _unreliable_japanese
 from .local_translation import translator
 from .translation_weights import FILES
@@ -110,6 +111,10 @@ def groups_for(regions):
     return groups
 
 
+def _triple_partitions(group):
+    return ((group[:1], group[1:]), (group[:2], group[2:]))
+
+
 def optimize(options, count, details=False):
     """Disjoint subset assignment. Missing sources do not move other input units."""
     if count>18:
@@ -157,9 +162,17 @@ def match(regions, lines, scorer=None, report=None, refine=True):
     regions=[{**r,'ja_variants':[v for v in r.get('ja_variants',[]) if
              len(normalize(r.get('ja','')))<8 or .45*len(normalize(r.get('ja','')))<=len(normalize(v))<=2.2*len(normalize(r.get('ja','')))]} for r in regions]
     groups=groups_for(regions); sources=[]
+    shared_by_region = {}
     for g in groups:
+        if len(g) > 1:
+            shared_readings = Counter(reading for r in g for reading in set(r['ja_variants']))
+            repeated = {reading for reading, count in shared_readings.items() if count > 1}
+            for r in g:
+                shared_by_region[r['id']] = repeated
         sources.extend(r.get('ja','') for r in g)
         if len(g)>1:sources.append(' '.join(r.get('ja','') for r in g))
+        if len(g) == 3:
+            sources.extend(' '.join(r['ja'] for r in pair) for segments in _triple_partitions(g) for pair in segments if len(pair) == 2)
         for r in g:sources.extend(r.get('ja_variants',[]))
     sources=list(dict.fromkeys(sources))
     blocks=[((a,),line) for a,line in enumerate(lines)]
@@ -175,19 +188,21 @@ def match(regions, lines, scorer=None, report=None, refine=True):
         raise ValueError("Model ghép nghĩa trả kết quả không hợp lệ")
     ix={s:i for i,s in enumerate(sources)}; jx={s:j for j,s in enumerate(texts)}
     def atom(ja,line,reg):
-        lex=max(lexical(line,s) for s in [ja,*reg.get('ja_variants',[])])
+        shared = shared_by_region.get(reg['id'], ())
+        variants = [reading for reading in reg['ja_variants'] if reading not in shared]
+        lex=max(lexical(line,s) for s in [ja,*variants])
         if lex<0:return -30.
         if lex>=6:return lex
         q=float(raw[jx[line],ix[ja]])+lex
         # A second actual reading may repair an OCR error; never substitute VI.
-        for variant in reg.get('ja_variants',[]):
+        for variant in variants:
             if not _unreliable_japanese(variant) and (len(normalize(variant))>=4):
                 q=max(q,float(raw[jx[line],ix[variant]])+lex-.35)
-        if reg['bubble']=='sfx' and not lex:q-=2.2
+        if reg['bubble']=='sfx' and not lex and not japanese_phrase(ja):q-=2.2
         if len(normalize(ja))<=2 and not lex:q-=2.
         if category(line) in ACKS and reg['bubble']=='sfx' and not lex:return -30.
         if category(line) in ACKS and not lex and len(normalize(ja))<6:return -30.
-        if plain(line)=='me oi' and not re.search(r'ママ|まま|母|かあ',' '.join([ja,*reg.get('ja_variants',[])])):return -30.
+        if plain(line)=='me oi' and not re.search(r'ママ|まま|母|かあ',' '.join([ja,*variants])):return -30.
         if re.search(r'\b(?:anh|toi|tao|em) (?:la|ten toi la)\b',plain(line)) and '様' in ja:q-=2.5
         if re.match(r'^(?:ten toi la|toi ten la|ten minh la|minh ten la)\b',plain(line)) and re.search(r'大学.{0,5}年生|高校.{0,5}年生',ja):q+=1.2
         if re.search(r'\bsan\b',plain(line)):
@@ -196,6 +211,15 @@ def match(regions, lines, scorer=None, report=None, refine=True):
         if re.search(r'\bsama\b',plain(line)) and '様' in ja:q+=.8
         if re.match(r'^(chuong|chapter)\s*\d',plain(line)) and not re.search(r'第\s*[0-9０-９一二三四五六七八九十]+\s*[話回章]',ja):return -30.
         return q
+
+    def segment_score(segment, line):
+        if len(segment) == 1:
+            return atom(segment[0]['ja'], line, segment[0])
+        if len(line.split()) < 4:
+            return -30.
+        japanese = ' '.join(r['ja'] for r in segment)
+        return float(raw[jx[line], ix[japanese]])
+
     options=[]
     for g in groups:
         opts=[]; joined=' '.join(r.get('ja','') for r in g)
@@ -241,9 +265,20 @@ def match(regions, lines, scorer=None, report=None, refine=True):
                 if k==1:
                     members=[atom(r['ja'],text,r) for r in g]; j=int(np.argmax(members))
                     covers=[coverage(r['ja'],back.get(text,'')) for r in g]
-                    if members[j]>=joint-.6 or len(text.split())<4 or min(covers)<.3:
+                    if len(g) == 3 or members[j]>=joint-.6 or len(text.split())<4 or min(covers)<.3:
                         score=members[j]; mapped=[[g[j]['id']]]
                     else:score=joint-.2; mapped=[[r['id'] for r in g]]
+                elif len(g) == 3:
+                    plans = []
+                    for segments in _triple_partitions(g):
+                        for order in (segments, segments[::-1]):
+                            local = [segment_score(segment, line) for segment, line in zip(order, unit_lines)]
+                            if min(local) >= .8:
+                                plans.append((sum(local), [[r['id'] for r in segment] for segment in order]))
+                    if not plans:
+                        continue
+                    score, mapped = max(plans)
+                    score += .25 * min(2., max(0., joint)) - .15
                 elif len(g)==2:
                     direct=sum(atom(r['ja'],s,r) for r,s in zip(g,unit_lines))
                     reverse=sum(atom(r['ja'],s,r) for r,s in zip(g,unit_lines[::-1]))
@@ -282,8 +317,110 @@ def match(regions, lines, scorer=None, report=None, refine=True):
             if len(ids)>1:splits[k]=split_unit(lines[k],[next(r for r in regions if r['id']==rid) for rid in ids],scorer)
     result={"assign":assigned,"unplaced":[k for k in range(len(lines)) if k not in assigned],
             "warnings":[],"evidence":evidence,"splits":splits}
-    if refine:refine_clauses(regions,lines,result,scorer)
+    if refine:
+        recheck_lobe_competition(regions, lines, result, atom)
+        refine_joined_units(regions, lines, result, scorer)
+        refine_clauses(regions, lines, result, scorer)
     return result
+
+
+def recheck_lobe_competition(regions, lines, result, atom):
+    """A shared balloon score cannot override a clear, otherwise unused independent source."""
+    by_id = {r["id"]: r for r in regions}
+    used = Counter(rid for ev in result["evidence"].values() for rid in ev["sources"])
+    for index, (owner, _, _) in list(result["assign"].items()):
+        region, text = by_id[owner], lines[index]
+        geometry = region.get("balloon") or {}
+        if index in result["splits"] or used[owner] != 1 or len(geometry.get("peers", [])) != 2 or geometry.get("uncertain"):
+            continue
+        current = atom(region["ja"], text, region)
+        if current >= .5:
+            continue
+        alternatives = sorted(((atom(r["ja"], text, r), r["id"]) for r in regions
+                               if not used[r["id"]] and r["bubble"] != "sfx"
+                               and (r.get("balloon") or {}).get("parts", 1) == 1 and len(normalize(r["ja"])) >= 6), reverse=True)
+        if not alternatives:
+            continue
+        score, destination = alternatives[0]
+        margin = score - max(current, alternatives[1][0] if len(alternatives) > 1 else current)
+        if score < 1.1 or margin < .85:
+            continue
+        result["assign"][index] = (destination, None, "Tìm thấy câu gốc rõ hơn ngoài bóng đôi")
+        result["evidence"][index] = {"version": VERSION, "score": score, "margin": margin,
+                                     "sources": [destination], "ja": by_id[destination]["ja"]}
+        used[destination] += 1
+        used[owner] -= 1
+
+
+def refine_joined_units(regions, lines, result, scorer):
+    """Recheck a lone assignment in a proven double balloon as two Vietnamese clauses."""
+    regions_by_id = {r["id"]: r for r in regions}
+    used = {rid for evidence in result["evidence"].values() for rid in evidence["sources"]}
+    for index, (owner, _, _) in list(result["assign"].items()):
+        if index in result["splits"]:
+            continue
+        region = regions_by_id[owner]
+        balloon = region.get("balloon") or {}
+        peers = balloon.get("peers", [])
+        if balloon.get("parts") != 2 or balloon.get("uncertain") or len(peers) != 2:
+            continue
+        other = next((r for rid, r in regions_by_id.items() if rid in peers and rid not in used), None)
+        if other is None or (other.get("balloon") or {}).get("uncertain"):
+            continue
+        ordered = sorted([region, other], key=lambda r: r["order"])
+        source = [r.get("ja", "") for r in ordered]
+        shortest = min(len(normalize(s)) for s in source)
+        if shortest < 2 or any(_unreliable_japanese(s) for s in source):
+            continue
+        original = lines[index]
+        candidates = []
+        for gap in re.finditer(r"\s+", original):
+            first, second = original[:gap.end()].strip(), original[gap.end():].strip()
+            short_intro = len(first.split()) == 1 and first.endswith(('!', '?'))
+            if len(second.split()) < 2 or (len(first.split()) < 2 and not short_intro):
+                continue
+            left_words, right_words = plain(first).split(), plain(second).split()
+            if not left_words or not right_words:
+                continue
+            lead, tail = right_words[0], left_words[-1]
+            punctuation = first.endswith((",", ";", ".", "!", "?", "…", "…»"))
+            connector = lead in {"cung", "nhung", "nen", "thi", "van", "ma", "roi", "de"} and tail not in {"cung", "van", "deu"}
+            short_topic = (len(left_words) <= 3 and tail == "cung"
+                           and left_words[0] in {"toi", "ta", "minh", "em", "anh", "chau", "con", "chung", "bon"})
+            if punctuation or connector or short_topic:
+                candidates.append((gap.end(), first, second, short_intro))
+        if not candidates:
+            continue
+        pieces = list(dict.fromkeys([original, *(part for _, a, b, _ in candidates for part in (a, b))]))
+        joined = [" ".join(source), " ".join(source[::-1])]
+        scores, _ = scorer.score([*source, *joined], pieces, set(source), set(pieces))
+        piece_ids = {part: i for i, part in enumerate(pieces)}
+        viable = []
+        for cut, a, b, short_intro in candidates:
+            first, second = scores[piece_ids[a]], scores[piece_ids[b]]
+            for direction, (left, right) in enumerate(((0, 1), (1, 0))):
+                joint_margin = scores[0, 2 + direction] - max(scores[0, :2])
+                strength = float(min(first[left], second[right]))
+                margin = float(min(first[left] - first[right], second[right] - second[left]))
+                if short_intro:
+                    terminal = source[left].rstrip().replace('！', '!').replace('？', '?').endswith(a[-1])
+                    acceptable = terminal and joint_margin >= .23 and strength >= 1.85 and margin >= 2.5
+                else:
+                    acceptable = (shortest >= 4 and joint_margin >= .35
+                                  and strength >= 1.5 and margin >= .9
+                                  and (joint_margin >= .55 or (strength >= 1.85 and margin >= 2.5)))
+                if acceptable:
+                    viable.append((float(first[left] + second[right]), strength, margin, cut, direction))
+        if not viable:
+            continue
+        _, strength, margin, cut, direction = max(viable)
+        ids = [r['id'] for r in (ordered if direction == 0 else ordered[::-1])]
+        result["splits"][index] = [{"id": ids[0], "text": original[:cut], "start": 0, "end": cut},
+                                   {"id": ids[1], "text": original[cut:], "start": cut, "end": len(original)}]
+        result["assign"][index] = (ids[0], None, "Tách hai vế đã đối chiếu trong bóng đôi")
+        result["evidence"][index] = {"version": VERSION, "score": strength, "margin": margin,
+                                     "sources": ids, "ja": joined[direction]}
+        used.update(ids)
 
 
 def refine_clauses(regions,lines,result,scorer):
@@ -328,6 +465,13 @@ def split_unit(text, regions, scorer):
     pieces=list(dict.fromkeys([t.strip() for c in cuts for t in (text[:c],text[c:])]))
     raw,_=scorer.score([r['ja'] for r in regions],pieces,{r['ja'] for r in regions},set(pieces))
     index={s:i for i,s in enumerate(pieces)}
-    cut=max(cuts,key=lambda c:float(raw[index[text[:c].strip()],0]+raw[index[text[c:].strip()],1]))
+    scores = {c: (float(raw[index[text[:c].strip()], 0]), float(raw[index[text[c:].strip()], 1])) for c in cuts}
+    cut = max(cuts, key=lambda c: sum(scores[c]))
+    # Closely scored fragments should end at the sentence boundary rather than
+    # pull the opening words of a new sentence into the previous balloon.
+    sentence_cuts = [c for c in cuts if min(scores[c]) >= .5 and sum(scores[c]) >= sum(scores[cut]) - .4
+                     and re.search(r'[.!?…][»”」\"]?$', text[:c].rstrip())]
+    if sentence_cuts:
+        cut = max(sentence_cuts, key=lambda c: sum(scores[c]))
     return [{"id":regions[0]['id'],"text":text[:cut],"start":0,"end":cut},
             {"id":regions[1]['id'],"text":text[cut:],"start":cut,"end":len(text)}]

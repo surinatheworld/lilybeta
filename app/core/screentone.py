@@ -172,36 +172,46 @@ def _restore_resampled(crop, gray, hole, train, check):
         ty, tx = ty[keep], tx[keep]
     h, w = gray.shape
 
-    def features(x, y):
+    def features(x, y, modulated):
         coordinates = np.column_stack((x, y)).astype(np.float32)
         angle = (2 * np.pi) * (coordinates @ frequencies.T)
-        trend = coordinates / np.array([w, h], np.float32)
-        return np.column_stack((np.ones(len(x), np.float32), trend, np.cos(angle), np.sin(angle)))
+        trend = coordinates / np.array([w, h], np.float32) - .5
+        waves = np.column_stack((np.cos(angle), np.sin(angle)))
+        columns = [np.ones(len(x), np.float32), trend, waves]
+        if modulated:
+            columns.extend((waves * trend[:, :1], waves * trend[:, 1:]))
+        return np.column_stack(columns)
 
-    ok, model = cv2.solve(features(tx, ty), crop[ty, tx].astype(np.float32), flags=cv2.DECOMP_QR)
-    if not ok:
-        return False
     rim = crop[vy, vx]
-    predicted = np.clip(features(vx, vy) @ model, 0, 255)
-    residual = np.abs(predicted - rim).max(axis=1)
-    # Require the same screen immediately next to the actual cutout. Large,
-    # connected discrepancies usually mean a contour crosses the mask.
     deviation = gray[vy, vx].std()
-    if deviation < 8 or (residual @ residual) / len(residual) > min(24, .48 * deviation) ** 2:
+    if deviation < 8:
         return False
-    outlier = residual > 48
-    if outlier.mean() > .035:
-        return False
-    if outlier.any():
-        defects = np.zeros_like(hole, dtype=np.uint8)
-        defects[vy[outlier], vx[outlier]] = 1
-        _, _, stats, _ = cv2.connectedComponentsWithStats(defects)
-        if stats[1:, cv2.CC_STAT_AREA].max() >= 8:
-            return False
-    # Limit temporary allocations when the mask contains a broad lettering block.
-    hy, hx = np.nonzero(hole)
-    for start in range(0, len(hx), 16384):
-        sl = slice(start, start + 16384)
-        values = np.clip(features(hx[sl], hy[sl]) @ model, 0, 255)
-        crop[hy[sl], hx[sl]] = np.round(values).astype(np.uint8)
-    return True
+    samples = crop[ty, tx].astype(np.float32)
+    for modulated in (False, True):
+        if modulated and len(tx) < 12 * (3 + 6 * len(frequencies)):
+            break
+        ok, model = cv2.solve(features(tx, ty, modulated), samples, flags=cv2.DECOMP_QR)
+        if not ok:
+            continue
+        predicted = np.clip(features(vx, vy, modulated) @ model, 0, 255)
+        residual = np.abs(predicted - rim).max(axis=1)
+        # A contrast gradient can change the dots' amplitude, while a contour
+        # crossing the hole leaves connected errors on the held-out rim.
+        if (residual @ residual) / len(residual) > min(24, .48 * deviation) ** 2:
+            continue
+        outlier = residual > 48
+        if outlier.mean() > .035:
+            continue
+        if outlier.any():
+            defects = np.zeros_like(hole, dtype=np.uint8)
+            defects[vy[outlier], vx[outlier]] = 1
+            _, _, stats, _ = cv2.connectedComponentsWithStats(defects)
+            if stats[1:, cv2.CC_STAT_AREA].max() >= 8:
+                continue
+        hy, hx = np.nonzero(hole)
+        for start in range(0, len(hx), 16384):
+            sl = slice(start, start + 16384)
+            values = np.clip(features(hx[sl], hy[sl], modulated) @ model, 0, 255)
+            crop[hy[sl], hx[sl]] = np.round(values).astype(np.uint8)
+        return True
+    return False

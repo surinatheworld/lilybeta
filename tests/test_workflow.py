@@ -199,6 +199,62 @@ class WorkflowTests(unittest.TestCase):
         np.testing.assert_array_equal(np.where(visible[..., None], patch[..., :3], raw), original)
         self.assertFalse(visible[:y].any() or visible[bottom:].any())
 
+    def test_cleanup_after_matching_preserves_original_unassigned_lettering(self):
+        p, page = self.project, self.page
+        self._detect({"R01": "round", "R02": "free", "R03": "sfx"})
+        raw = workflow.imread(p.file(page, "work.png"))
+        assigned, unassigned = page["regions"][:2]
+        assigned["lines"] = ["Chữ đã ghép."]
+        page["assignment_units"] = []
+        p.data["clean_kinds"] = ["round", "free", "sfx"]
+        workflow.clean(p, page)
+        result = workflow.imread(p.file(page, "cleaned.png"))
+        x, y, right, bottom = unassigned["box"]
+        np.testing.assert_array_equal(result[y:bottom, x:right], raw[y:bottom, x:right])
+        self.assertTrue(assigned["cleaned"])
+        self.assertFalse(unassigned["cleaned"])
+
+    def test_inpaint_padding_cannot_erase_neighboring_unassigned_ink(self):
+        p, page = self.project, self.page
+        raw = np.full((160, 200, 3), 255, np.uint8)
+        raw[50:85, 60:83] = 30
+        raw[50:85, 85:98] = 45
+        workflow.imwrite(p.file(page, "work.png"), raw)
+        np.savez(p.file(page, "mask.npz"), mask=np.zeros(raw.shape[:2], np.float32))
+        assigned = workflow.new_region("R01", [60, 50, 83, 85])
+        assigned.update(bubble="round", lines=["Chữ đã ghép."])
+        neighbor = workflow.new_region("R02", [85, 50, 98, 85])
+        neighbor.update(bubble="sfx")
+        page["regions"] = [assigned, neighbor]
+        page["assignment_units"] = []
+
+        def broad_inpaint(pg, region):
+            pg.working[42:93, 52:103] = 255
+
+        with patch("app.core.page.Page._clean_pixels", broad_inpaint):
+            workflow.clean(p, page)
+        result = workflow.imread(p.file(page, "cleaned.png"))
+        np.testing.assert_array_equal(result[48:87, 83:100], raw[48:87, 83:100])
+        self.assertTrue((result[50:85, 60:83] == 255).all())
+
+    def test_photoshop_typeset_replaces_stale_cleanup_after_verification(self):
+        from app.panel import Runner
+
+        p, page = self.project, self.page
+        self._detect({"R01": "round", "R02": "free", "R03": "sfx"})
+        page["regions"][0]["lines"] = ["Chữ đã ghép."]
+        p.set_status(page, "clean", "done")
+        p.invalidate(page, "match")
+        self.assertEqual(p.status(page, "clean")["state"], "stale")
+        calls = []
+        runner = Runner(SimpleNamespace(project=p, ps=SimpleNamespace(call=lambda command, **_: calls.append(command))))
+        with patch("app.core.semantic_review.require_verified", side_effect=lambda *_: calls.append("verify")), \
+                patch.object(workflow, "clean", return_value=("clean.png", [])), \
+                patch.object(workflow, "typeset", return_value=("layers.json", [])):
+            runner.run_step("typeset", page, lambda _: None)
+        self.assertEqual(calls, ["verify", "place_layer", "typeset"])
+        self.assertEqual(p.status(page, "clean")["state"], "done")
+
     def test_full_flow_keeps_ids_and_manual_edits(self):
         p, page = self.project, self.page
         workflow.copy_image(p.file(page, "work.png"), p.file(page, "raw.png"))
@@ -259,8 +315,28 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(sorted(set(ids)), ["R01", "R03"])
         sfx = next(layer for layer in data["layers"] if layer["id"] == "R03")
         self.assertTrue(sfx["redraw"] and sfx["name"].startswith("R03 · "))
+        self.assertFalse(sfx["visible"])
         self.assertEqual(data["redraw"], "")
         self.assertTrue(p.has(page, "preview.png"))
+
+    def test_typeset_repairs_a_missed_white_balloon_and_attaches_a_redraw_patch(self):
+        from app.core.semantic_review import confirm_region
+
+        p, page = self.project, self.page
+        self._detect({"R01": "free", "R02": "free", "R03": "sfx"})
+        page.update(lines_manual=True, lines=["Cảm ơn anh."])
+        row = p.region(page, "R01")
+        row.update(lines=["Cảm ơn anh."], lines_src="manual")
+        confirm_region(p, page, row)
+
+        path, _ = workflow.typeset(p, page)
+
+        result = json.loads(Path(path).read_text(encoding="utf-8"))
+        self.assertTrue(result["layers"][0]["visible"])
+        self.assertFalse(p.has(page, "cleaned.png"))
+        patch = cv2.imdecode(np.fromfile(result["redraw"], np.uint8), cv2.IMREAD_UNCHANGED)
+        self.assertTrue((patch[112:165, 371:390] == 255).all())
+        self.assertFalse(patch[340:400, 330:451, 3].any())
 
     def test_ai_failure_keeps_detected_regions_and_reports(self):
         workflow.copy_image(self.project.file(self.page, "work.png"), self.project.file(self.page, "raw.png"))

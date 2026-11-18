@@ -11,7 +11,7 @@ import numpy as np
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage, QPainter
 
-from .clean import MARGIN, clean_local, fill_bubble, is_small_sfx, lobe_shape, screentone_only, text_area
+from .clean import FURIGANA_PAD, MARGIN, clean_local, fill_bubble, is_small_sfx, lobe_shape, screentone_only, text_area
 from .detect import TextDetector, sort_reading_order
 from .typeset import TextStyle, best_rect, block_box, block_quality, draw_text, layout, place_in_shape
 from .typeset_profiles import apply_profile, profile_style
@@ -79,6 +79,9 @@ class Region:
     text_shape: tuple | None = None
     # Font chỉnh tay cho riêng vùng (bảng điều khiển): {"family", "style", "postscript", "italic"}, ưu tiên hơn bộ font.
     override: dict = field(default_factory=dict)
+    lobe_outline: list[list[int]] = field(default_factory=list)
+    fitted_lobe: Box | None = None
+    detected_kind: str = ""
 
     @property
     def text_rect(self) -> Box:
@@ -86,6 +89,8 @@ class Region:
         dài, trên/dưới ngắn); không được nữa thì khung chữ nhật cho cỡ chữ lớn nhất."""
         if self.manual_rect:
             return self.manual_rect
+        if self.fitted_lobe:
+            return self.fitted_lobe
         if self.text_shape and self.text.strip():
             x1, y1, x2, y2 = self.box  # đặt theo chỗ chữ Nhật gốc (trong giới hạn lòng bóng)
             rect = place_in_shape(self.text, self.effective_style, self.text_shape, ((x1 + x2) / 2, (y1 + y2) / 2))
@@ -175,6 +180,7 @@ class Page:
             r.cleaned = r.needs_redraw = False
             r.text_rects = []
             r.text_shape = None
+            r.fitted_lobe = None
 
     def redrawn_covers(self, region: Region) -> bool:
         """Có bản redraw thì dùng nguyên bản redraw làm nền: tool không xoá chữ, không đặt chữ đè lên chữ gốc (chỗ nào
@@ -182,11 +188,20 @@ class Page:
         return self.redrawn is not None
 
     def detect(self, detector: TextDetector, right_to_left: bool = True) -> None:
+        from .balloons import refine
+
         boxes, mask = detector.detect(self.original)
         self.text_mask = np.maximum(mask, color_text_mask(self.original))
+        boxes, geometry = refine(self.original, self.text_mask, boxes)
         boxes = sort_reading_order(boxes, right_to_left, self.original)
         self.regions = [r for r in self.regions if r.cleaned]
-        self.regions += [Region((b.x1, b.y1, b.x2, b.y2), kind=b.kind) for b in boxes]
+        for b in boxes:
+            box = (b.x1, b.y1, b.x2, b.y2)
+            info = geometry.get(box, {})
+            is_caption = info.get("shape") == "square" and not info.get("uncertain")
+            use_outline = (is_caption or info.get("parts", 1) > 1) and not info.get("uncertain")
+            self.regions.append(Region(box, kind=b.kind, lobe_outline=(info.get("outline") or []) if use_outline else [],
+                                       detected_kind="square" if is_caption else ""))
         apply_profile(self)
         self.detected = True
 
@@ -220,13 +235,21 @@ class Page:
         region.needs_redraw = False
         if self.redrawn_covers(region):
             return None
+        area = self.area_mask(region)
+        if area is None:
+            x, y, right, bottom = region.box
+            pad = FURIGANA_PAD
+            detected = self.text_mask[max(0, y - pad):bottom + pad, max(0, x - pad):right + pad]
+            if not (detected > .15).any():
+                pixels = self.working[max(0, y):bottom, max(0, x):right]
+                region.needs_redraw = bool(pixels.size and np.ptp(pixels, axis=(0, 1)).max() > 6)
+                return None
         skip = getattr(self.inpainter, "skip", False)
         if skip and self.inpainter is not screentone_only and not region.polygon and not self.in_balloon(region):
             # Chỉ xoá chữ trong bóng thoại / ô khép kín: SFX, chữ đè lên tranh (dù nền trắng) để nguyên, đặt chữ đè lên.
             region.needs_redraw = True
             return None
-        need = clean_local(self.working, self.text_mask, region.box, self.area_mask(region), self.inpainter,
-                           whole_box=region.kind == "text", sfx=region.kind == "sfx")
+        need = clean_local(self.working, self.text_mask, region.box, area, self.inpainter, sfx=region.kind == "sfx")
         if need is not None and (skip(self, region) if callable(skip) else skip):
             region.needs_redraw = True
             return None
@@ -285,7 +308,7 @@ class Page:
         if not region.cleaned:
             self._clean_pixels(region)
             region.cleaned = True
-        region.text_shape, region.tight = None, False
+        region.text_shape, region.fitted_lobe, region.tight = None, None, False
         if region.kind == "sfx":
             # Dịch SFX đặt ngay tại chỗ SFX gốc (không loang ra nền trắng của panel).
             x1, y1, x2, y2 = region.box
@@ -310,9 +333,25 @@ class Page:
                     region.text_shape = self._shared_shape(region, shape, span)
         else:
             region.text_rects = [region.box]
-        self._readable(region)
-        self._separate(region)
+        if fit_bubble:
+            self._fit_detected_lobe(region)
+        if not region.fitted_lobe:
+            self._readable(region)
+            self._separate(region)
         self._contrast(region)
+
+    def _fit_detected_lobe(self, region: Region) -> None:
+        if not region.lobe_outline or region.manual_rect or not region.text.strip():
+            return
+        if region.group and any(r is not region and r.group == region.group for r in self.regions):
+            return  # several script fragments in the same detected lobe
+        from .balloon_layout import fit_lobe
+
+        if region.detected_kind != "square" and not region.style.size:
+            region.style = replace(region.style, short_grow=1.0)
+        result = fit_lobe(self, region, region.lobe_outline)
+        if result:
+            region.text_shape, region.fitted_lobe = result
 
     def _contrast(self, region: Region) -> None:
         """Chữ đặt trên nền tối (biển / băng rôn đen, ô đen) mà vẫn màu đen mặc định thì đổi sang trắng."""
@@ -345,7 +384,7 @@ class Page:
 
         def options(r, first):
             """(khung, có giữ dáng bóng không, khung khối chữ) – khung đang dùng đứng đầu."""
-            if r.manual_rect:
+            if r.manual_rect or r.fitted_lobe:
                 return [first]
             style = r.effective_style
             return [first] + [(c, False, block_box(r.text, style, c)) for c in r.text_rects if c != first[0]]
@@ -524,7 +563,8 @@ class Page:
         x1, y1, x2, y2 = region.text_rect
         if size((x1, y1, x2, y2)) >= floor:
             return
-        if region.text_shape and region.group and getattr(self, "_by_script", False):
+        if region.text_shape and (getattr(self, "keep_balloon_contour", False)
+                                  or (region.group and getattr(self, "_by_script", False))):
             return  # câu tách theo cụm chữ gốc trong bóng: giữ đúng phần bóng của nó
         if region.text_shape:
             # Lòng bóng lấy được quá nhỏ (bóng trong suốt bị nét tóc / nét vẽ cắt ngang): bỏ dáng bóng, nới khung
@@ -586,6 +626,9 @@ class Page:
                 self.clean(r, fit_bubble)  # đã xoá rồi: chỉ tính lại khung đặt chữ
         self._rejoin_cramped(fit_bubble)
         self.even_sizes()
+        if fit_bubble:
+            for r in self.regions:
+                self._fit_detected_lobe(r)
 
     def _rejoin_cramped(self, fit_bubble: bool = True) -> None:
         """Hai câu chung một bóng đã tách thành hai phần mà có phần chật bất thường (chữ < REJOIN cỡ chuẩn, Ren AI chap 2
@@ -596,7 +639,7 @@ class Page:
             return  # câu đã khớp từng cụm chữ Nhật theo script: giữ tách đúng chỗ chữ gốc, không gộp lại
         groups: dict[int, list[Region]] = {}
         for r in self.regions:
-            if r.group and r.cleaned and r.text.strip() and not r.manual_rect:
+            if r.group and r.cleaned and r.text.strip() and not r.manual_rect and not r.lobe_outline:
                 groups.setdefault(r.group, []).append(r)
         for parts in groups.values():
             if len(parts) < 2:

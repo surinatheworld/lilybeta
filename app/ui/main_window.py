@@ -147,6 +147,7 @@ class CleanWorker(QThread):
 ENGINES = [
     ("simple", "Chỉ xoá chỗ đơn giản – nền khó (SFX, tranh) để nguyên, chữ đặt đè lên"),
     ("screentone", "Giữ lưới chấm (offline)"),
+    ("local", "Redraw nét tranh bằng LaMa (offline)"),
     ("opencv", "Thường (OpenCV) – nhanh, nền tranh hơi mờ"),
     ("gemini", "AI Google Gemini – cần API key"),
     ("openai", "AI OpenAI (ChatGPT) – cần API key"),
@@ -1171,6 +1172,9 @@ class MainWindow(QMainWindow):
             return skip_hard
         if self.engine == "screentone":
             return screentone_only
+        if self.engine == "local":
+            from ..core.local_redraw import prepare_local_redraw
+            return prepare_local_redraw()
         if self.engine in PROVIDERS:
             key = secrets.get_key(self.engine)
             if not key:
@@ -1672,7 +1676,7 @@ class MainWindow(QMainWindow):
 
         Những chi tiết tranh nhỏ có thể bị nhận nhầm thành SFX, nên không tự xoá chúng chỉ vì vừa mở ảnh.
         """
-        if self.engine == "screentone":
+        if self.engine in ("local", "screentone"):
             return (screentone_only, False, self.chk_bubble.isChecked())
         if self.engine in PROVIDERS or self.engine == "simple":
             return (skip_hard, False, self.chk_bubble.isChecked())

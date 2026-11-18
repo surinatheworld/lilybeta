@@ -1,5 +1,6 @@
 PySide6>=6.7
 opencv-python-headless>=4.9
+rapidocr==3.9.2
 numpy>=1.26
 tokenizers==0.22.2  # tokenization for local Japanese/Vietnamese semantic checks
 ctranslate2==4.8.5  # in-process offline Japanese/Vietnamese translation scoring

@@ -137,6 +137,16 @@ def _partition_lettering(ink, owners, relevant):
     sizes = [max(w,h) for x,y,w,h,area in stats[1:] if area >= 8]
     gap = max(3,min(13,round(float(np.percentile(sizes,75))*.35))) | 1 if sizes else 3
     _, words = cv2.connectedComponents(cv2.dilate(ink,cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(gap,gap))))
+    groups = _assign_lettering(ink, owners, relevant, words)
+    if groups is not None:
+        return groups
+    # Dilation can join two complete glyphs across a narrow balloon neck.
+    # Retry with undilated components; a connected stroke still stays intact.
+    _, strokes = cv2.connectedComponents(ink)
+    return _assign_lettering(ink, owners, relevant, strokes)
+
+
+def _assign_lettering(ink, owners, relevant, words):
     stride = int(owners.max())+1
     count = int(words.max())+1
     votes = np.bincount((words[ink>0]*stride+owners[ink>0]),minlength=count*stride).reshape(count,stride)
@@ -169,6 +179,209 @@ def _broad_neck(region):
     depths = np.sort(defects.reshape(-1,4)[:,3]/256)[::-1]
     short = min(region.shape)
     return depths[0] > .12*short and (depths[0] > .2*short or (len(depths)>1 and depths[1]>.08*short))
+
+
+def _framed_caption(body):
+    """Find a rectangular writing area even if folds round off its outer ends."""
+    height, width = body.shape
+    if height < 1.12 * width or float(body.mean()) < .84:
+        return False
+    start, stop = round(height * .14), round(height * .86)
+    middle = body[start:stop]
+    if len(middle) < 18 or not middle.any(axis=1).all():
+        return False
+    left = middle.argmax(axis=1)
+    right = width - middle[:, ::-1].argmax(axis=1)
+    spans = right - left
+    narrow, wide = np.quantile(spans, (.05, .95))
+    if narrow < .88 * width or wide - narrow > .07 * width:
+        return False
+    yy = np.arange(len(middle))
+    return all(np.quantile(abs(edge - np.polyval(np.polyfit(yy, edge, 1), yy)), .9) < .035 * width
+               for edge in (left, right))
+
+
+def _deep_notches(body, relative_depth=.12):
+    contour = max(cv2.findContours(body, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0], key=cv2.contourArea)
+    hull = cv2.convexHull(contour, returnPoints=False)
+    if not 3 < len(hull) < len(contour):
+        return []
+    try:
+        defects = cv2.convexityDefects(contour, hull)
+    except cv2.error:
+        return []
+    if defects is None:
+        return []
+    short = min(body.shape)
+    dents = []
+    for start, end, at, depth in defects.reshape(-1, 4):
+        if depth < 256 * max(4, relative_depth * short):
+            continue
+        left, right, tip = contour[[start, end, at], 0].astype(float)
+        edge = right - left
+        inward = tip - (left + edge * np.clip((tip - left) @ edge / max(1, edge @ edge), 0, 1))
+        dents.append((depth, tip, inward / max(1, np.linalg.norm(inward))))
+    dents.sort(key=lambda item: -item[0])
+    return dents
+
+
+def _notch_split(body, ink, relative_depth=.12):
+    """Split a wide overlap where two opposed outline dents bracket a gap in the ink."""
+    dents = _deep_notches(body, relative_depth)
+    short = min(body.shape)
+    text_y, text_x = np.nonzero((ink > 0) & (body > 0))
+    if len(text_x) < 2 * MIN_INK:
+        return None
+    yr, xr = np.ogrid[:body.shape[0], :body.shape[1]]
+    for i, (_, first, inward) in enumerate(dents[:5]):
+        for _, second, other_inward in dents[i + 1:5]:
+            axis = second - first
+            length = np.linalg.norm(axis)
+            if length < .42 * short or inward @ other_inward > -.35:
+                continue
+            side = ((text_x - first[0]) * axis[1] - (text_y - first[1]) * axis[0]) / length
+            gap = max(2.0, .012 * short)
+            if min((side >= gap).sum(), (side <= -gap).sum()) < max(MIN_INK, .09 * len(side)):
+                continue
+            if (abs(side) < gap).any():
+                side = _ink_gap_seam(body, ink, first, second, gap)
+                if side is None:
+                    continue
+            else:
+                side = (xr - first[0]) * axis[1] - (yr - first[1]) * axis[0]
+            parts = np.where(body > 0, 1 + (side > 0), 0).astype(np.int32)
+            sizes = np.bincount(parts[body > 0], minlength=3)
+            text_sizes = np.bincount(parts[(ink > 0) & (body > 0)], minlength=3)
+            if min(sizes[1:]) >= .16 * sizes.sum() and min(text_sizes[1:]) >= max(MIN_INK, .09 * text_sizes.sum()):
+                return parts
+    return None
+
+
+def _ink_gap_seam(body, ink, first, second, gap):
+    """Follow a clear route near the chord when the straight chord clips a glyph."""
+    transpose = abs(second[0] - first[0]) > abs(second[1] - first[1])
+    if transpose:
+        body, ink = body.T, ink.T
+        first, second = first[::-1], second[::-1]
+    (x0, y0), (x1, y1) = sorted((first.astype(int), second.astype(int)), key=lambda p: p[1])
+    ys = np.arange(body.shape[0])
+    guide = x0 + (ys - y0) * (x1 - x0) / (y1 - y0)
+    xs = np.arange(body.shape[1])
+    band = max(8, round(.17 * min(body.shape)))
+    wall = cv2.dilate(ink.astype(np.uint8), np.ones((2 * int(gap) + 1,) * 2, np.uint8))
+    allowed = (cv2.dilate(body, np.ones((3, 3), np.uint8)) > 0) & (wall == 0)
+    trace = np.zeros((y1 - y0 + 1, len(xs)), np.int8)
+    cost = np.full(len(xs), np.inf)
+    cost[x0] = 0
+    steps = np.array([-2, -1, 0, 1, 2], np.int8)
+    # Penalize deviations from the observed neck and changes of direction;
+    # never route through predicted lettering to gain width.
+    for y in range(y0 + 1, y1 + 1):
+        previous = np.pad(cost, (2, 2), constant_values=np.inf)
+        moves = np.stack([previous[k:k + len(xs)] + .22 * abs(d) for k, d in enumerate(steps)])
+        pick = moves.argmin(axis=0)
+        trace[y - y0] = steps[pick]
+        deviation = abs(xs - guide[y])
+        cost = moves[pick, xs] + (deviation / band) ** 2
+        cost[(deviation > band) | ~allowed[y]] = np.inf
+    if not np.isfinite(cost[x1]):
+        return None
+    x = x1
+    for y in range(y1, y0, -1):
+        guide[y] = x
+        x += int(trace[y - y0, x])
+    side = xs[None, :] - guide[:, None]
+    return side.T if transpose else side
+
+
+def _frame_notch_split(body, ink, gray, x, y):
+    """Separate text-bearing lobes cut off by a panel rule or the page edge."""
+    height, width = body.shape
+    edges = []
+    for border, edge in ((y, 0), (y + height, height - 1)):
+        rule = gray[max(0, border - 2):border + 5, x:x + width]
+        cropped = border == 0 or border == gray.shape[0]
+        ruled = rule.size and (rule < 80).mean(axis=1).max() >= .89
+        if (cropped or ruled) and body[edge].mean() >= .62:
+            edges.append(edge)
+    if not edges:
+        return None
+    dents = _deep_notches(body, .08)
+    column = ((body > 0) & (ink > 0)).sum(axis=0)
+    transitions = np.flatnonzero(np.diff(np.r_[False, column <= 1, False]))
+    gaps = [(left, right, (left + right) // 2) for left, right in zip(transitions[::2], transitions[1::2])
+            if right - left >= .025 * width
+            and min(column[:left].sum(), column[right:].sum()) >= max(MIN_INK, .13 * column.sum())]
+    # For a balloon touching a row divider, the missing end of the
+    # separation must meet that divider in the same clear column gap.
+    for edge in edges:
+        cuts = {}
+        for _, point, inward in dents:
+            delta = edge - point[1]
+            if abs(delta) < .48 * height or inward[1] * np.sign(delta) < .45:
+                continue
+            eligible = [(abs(middle - point[0]), middle) for _, _, middle in gaps
+                        if abs(middle - point[0]) < .085 * width]
+            for _, middle in sorted(eligible):
+                if body[edge, middle] and middle not in cuts:
+                    seam = _ink_gap_seam(body, ink, point, np.array([middle, edge]), 2)
+                    if seam is not None:
+                        cuts[middle] = seam
+                        break
+        # A flat convex-hull edge can span several equal lobes and report only
+        # one defect. Inspect the actual outline opposite each remaining gap.
+        distance = height - 1 - (body[::-1] if edge == 0 else body).argmax(axis=0)
+        distance[~body.any(axis=0)] = 0
+        reach = max(12, round(.2 * height))
+        for left, right, middle in gaps:
+            if middle in cuts or not body[edge, middle]:
+                continue
+            at = left + int(np.argmin(distance[left:right]))
+            span = distance[at]
+            shoulders = (distance[max(0, at - reach):at], distance[at + 1:at + reach + 1])
+            if span < .48 * height or any(not len(s) or s.max() - span < .08 * height for s in shoulders):
+                continue
+            point = np.array([at, span if edge == 0 else edge - span])
+            seam = _ink_gap_seam(body, ink, point, np.array([middle, edge]), 2)
+            if seam is not None:
+                cuts[middle] = seam
+        parts = body.astype(np.int32)
+        for _, seam in sorted(cuts.items()):
+            proposed = parts + ((body > 0) & (seam > 0))
+            sizes = np.bincount(proposed[body > 0])[1:]
+            lettering = np.bincount(proposed[(body > 0) & (ink > 0)], minlength=len(sizes) + 1)[1:]
+            if min(sizes) >= .13 * body.sum() and min(lettering) >= max(MIN_INK, .10 * column.sum()):
+                parts = proposed
+        if parts.max() > 1:
+            return parts
+    return None
+
+
+def _split_weak_peak(body, ink):
+    """A little outline bump should not make a third lobe between two clear text blocks."""
+    dents = _deep_notches(body)
+    if len(dents) != 2 or dents[0][2] @ dents[1][2] > -.25:
+        return None
+    tips = np.array([item[1] for item in dents])
+    text = (body > 0) & (ink > 0)
+    choices = []
+    for axis in (0, 1):
+        counts = text.sum(axis=axis)
+        changes = np.flatnonzero(np.diff(np.r_[False, counts == 0, False]))
+        for first, last in zip(changes[::2], changes[1::2]):
+            middle = (first + last) // 2
+            if (last - first >= .12 * min(body.shape)
+                    and tips[:, axis].min() <= middle <= tips[:, axis].max()
+                    and min(counts[:first].sum(), counts[last:].sum()) >= .13 * counts.sum()):
+                choices.append((last - first, axis, middle))
+    if not choices:
+        return None
+    _, axis, middle = max(choices)
+    y, x = np.ogrid[:body.shape[0], :body.shape[1]]
+    side = (x if axis == 0 else y) >= middle
+    parts = np.where(body > 0, 1 + side, 0).astype(np.int32)
+    sizes = np.bincount(parts[body > 0], minlength=3)
+    return parts if min(sizes[1:]) >= .16 * sizes.sum() else None
 
 
 def _plausible(body, bright=None):
@@ -500,6 +713,37 @@ def _outlined_children(boxes, labels, stats, ink, bright, scale, protected, size
     return out, evidence
 
 
+def _merge_repeated_lobe_boxes(boxes, evidence, text_mask, protected):
+    """Consolidate a nested re-detection of the same ink in one established lobe."""
+    merged = []
+    for box in boxes:
+        rect = (box.x1, box.y1, box.x2, box.y2)
+        info = evidence.get(rect, {})
+        if info.get("parts", 1) > 1 and not info.get("uncertain") and not any(_overlap(rect, p) > .5 for p in protected):
+            for i, prior in enumerate(merged):
+                old = (prior.x1, prior.y1, prior.x2, prior.y2)
+                other = evidence.get(old, {})
+                if (other.get("uncertain") or (info["parent"], info["part"]) != (other.get("parent"), other.get("part"))
+                        or any(_overlap(old, p) > .5 for p in protected)):
+                    continue
+                x, y, right, bottom = max(old[0], rect[0]), max(old[1], rect[1]), min(old[2], rect[2]), min(old[3], rect[3])
+                if right <= x or bottom <= y:
+                    continue
+                shared = np.count_nonzero(text_mask[y:bottom, x:right] > .3)
+                counts = [np.count_nonzero(text_mask[b:d, a:c] > .3) for a, b, c, d in (old, rect)]
+                if shared < .84 * min(counts) or shared < MIN_INK:
+                    continue
+                full = (min(old[0], rect[0]), min(old[1], rect[1]), max(old[2], rect[2]), max(old[3], rect[3]))
+                merged[i] = TextBox(*full, max(prior.score, box.score), box.kind)
+                evidence[full] = {**info, "split": info.get("split", False) or other.get("split", False)}
+                break
+            else:
+                merged.append(box)
+        else:
+            merged.append(box)
+    return merged
+
+
 def refine(image, text_mask, boxes, protected=()):
     """Return (text boxes, evidence keyed by box). Ambiguous ink is never cut.
 
@@ -577,23 +821,45 @@ def refine(image, text_mask, boxes, protected=()):
         body = _filled(labels[y:y+bh, x:x+bw] == parent)
         if not _plausible(body,bright[y:y+bh,x:x+bw]):
             continue
-        if area > 5*text_area and _shape(body)[0]=="cloud" and not _ellipse_match(body):
+        body_kind, body_contour = _shape(body)
+        if area > 5*text_area and body_kind=="cloud" and not _ellipse_match(body):
             continue
         thought = _thought_tail(body,x,y,raw_white,raw_stats,source_gray,
                                [s for s,b in zip(scaled,boxes) if b.kind!="sfx"])
-        parts, conjoined = _lobes(body)
-        if not conjoined and _broad_neck(body):
-            parts, conjoined = _lobes(body,.94)
-            if not conjoined:
-                parts, conjoined = _lobes(body,.99)
-        occupied = np.bincount(parts[ink[y:y+bh,x:x+bw] > 0], minlength=int(parts.max())+1)
+        local_ink = ink[y:y+bh, x:x+bw]
+        frame = _framed_caption(body)
+        parts, conjoined = (body.astype(np.int32), False) if frame else _lobes(body)
+        if not frame and not conjoined and body_kind in ("round", "cloud") and not thought:
+            partition = _frame_notch_split(body, local_ink, source_gray, x, y)
+            if partition is None and body_kind == "cloud" and len(_deep_notches(body, .075)) == 2:
+                partition = _notch_split(body, local_ink, .075)
+            if partition is not None:
+                parts, conjoined = partition, True
+        if not frame and not conjoined and _broad_neck(body):
+            partition = _notch_split(body, local_ink) if body_kind == "round" and not thought else None
+            if partition is not None:
+                parts, conjoined = partition, True
+            else:
+                parts, conjoined = _lobes(body,.94)
+                if not conjoined:
+                    parts, conjoined = _lobes(body,.99)
+        occupied = np.bincount(parts[local_ink > 0], minlength=int(parts.max())+1)
+        active = occupied[1:][occupied[1:] >= MIN_INK]
+        if body_kind == "round" and len(indices) == 1 and len(active) == 3 and min(active) < .05 * sum(active):
+            partition = _split_weak_peak(body, local_ink)
+            if partition is not None:
+                parts = partition
+                occupied = np.bincount(parts[local_ink > 0], minlength=3)
         has_text_lobes = np.count_nonzero(occupied[1:] >= MIN_INK) >= 2
-        if not conjoined or (not has_text_lobes and _shape(body)[0] == "cloud"):
+        if not conjoined or (not has_text_lobes and body_kind == "cloud"):
             # Single balloons need the same outline analysis as joined ones.
             # Font weight is not evidence of rays, and one deep scallop does
             # not cancel all the other dents of a cloud.
-            kind, contour = _shape(body)
-            if thought:kind="cloud"
+            kind, contour = body_kind, body_contour
+            if frame:
+                kind = "square"
+            elif thought:
+                kind = "cloud"
             if area > (8 if kind=="square" else 5)*text_area and not _ellipse_match(body):
                 continue  # a whole white panel is not a balloon
             contour = cv2.approxPolyDP(contour,max(.8,.003*cv2.arcLength(contour,True)),True).reshape(-1,2)
@@ -611,7 +877,7 @@ def refine(image, text_mask, boxes, protected=()):
         if not has_text_lobes:
             validated.update((boxes[i].x1,boxes[i].y1,boxes[i].x2,boxes[i].y2) for i in indices)
             continue  # a wide tail/empty decorative lobe is not a second text-bearing balloon
-        part_ids = list(range(1, int(parts.max()) + 1))
+        part_ids = [int(part) for part in np.flatnonzero(occupied[1:] >= MIN_INK) + 1]
         if not thought:
             thought = any(_thought_tail((parts==p).astype(np.uint8),x,y,raw_white,raw_stats,source_gray,
                           [s for s,b in zip(scaled,boxes) if b.kind!="sfx"]) for p in part_ids)
@@ -632,7 +898,7 @@ def refine(image, text_mask, boxes, protected=()):
                 continue
             lettering = np.zeros(body.shape, np.uint8)
             lettering[top:bottom, left:right] = ink[y+top:y+bottom, x+left:x+right]
-            amounts = np.bincount(parts[lettering > 0], minlength=len(part_ids)+1)
+            amounts = np.bincount(parts[lettering > 0], minlength=len(occupied))
             relevant = [j for j in part_ids if amounts[j] >= MIN_INK]
             if not relevant:
                 continue
@@ -654,7 +920,7 @@ def refine(image, text_mask, boxes, protected=()):
                         break
                     coords = (max(0, int((x1+xs.min())/scale)-2), max(0, int((y1+ys.min())/scale)-2),
                               min(w, int(np.ceil((x1+xs.max()+1)/scale))+2), min(h, int(np.ceil((y1+ys.max()+1)/scale))+2))
-                    if coords[2]-coords[0] < 6 or coords[3]-coords[1] < 6:
+                    if part_id and (coords[2]-coords[0] < 6 or coords[3]-coords[1] < 6):
                         targets = []
                         break
                     targets.append((TextBox(*coords, box.score, box.kind), part_id))
@@ -675,6 +941,10 @@ def refine(image, text_mask, boxes, protected=()):
                     "outline": outline, "split": len(targets) > 1,
                     "uncertain": len(relevant) > 1 and len(targets) == 1,
                 }
+                if evidence[(target.x1, target.y1, target.x2, target.y2)]["uncertain"]:
+                    evidence[(target.x1, target.y1, target.x2, target.y2)]["alternatives"] = [
+                        {"part": p, "shape": outlines[p][0], "outline": outlines[p][1]} for p in relevant
+                    ]
     out = [b for i, box in enumerate(boxes) for b in replacements.get(i, [box])]
     for box in out:
         coords=(box.x1,box.y1,box.x2,box.y2)
@@ -686,5 +956,6 @@ def refine(image, text_mask, boxes, protected=()):
         else:
             evidence[coords]=separate_evidence("free",uncertain=True,note="Không xác nhận được viền bóng: kiểm tra chữ ngoài khung")
     out = filter_decorations(source_gray,pred,out,scale,protected)
+    out = _merge_repeated_lobe_boxes(out, evidence, text_mask, protected)
     keys = {(b.x1,b.y1,b.x2,b.y2) for b in out}
     return out, {k:v for k,v in evidence.items() if k in keys}

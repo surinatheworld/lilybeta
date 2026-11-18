@@ -224,8 +224,7 @@ def align_to(out: np.ndarray, ref: np.ndarray, edit_mask: np.ndarray) -> np.ndar
 def make_inpainter(provider: str, api_key: str, model: str):
     """Trả về hàm inpaint(img, mask) tại chỗ dùng AI trên mạng.
 
-    Hàm có thuộc tính `whole_box` (dán lại cả khung chữ, không chỉ nét) và `context_box`
-    (vùng gửi đi) để bước xoá chữ gom các vùng gần nhau vào một lần gọi.
+    Hàm có thuộc tính `context_box` để bước xoá chữ gom các vùng gần nhau vào một lần gọi.
     """
     if not api_key:
         raise CloudError("Chưa nhập API key.")
@@ -248,6 +247,5 @@ def make_inpainter(provider: str, api_key: str, model: str):
         out = align_to(resize_to(out, x2 - x1, y2 - y1), crop, crop_mask)
         blend_back(img, box, out, mask, feather=FEATHER)
 
-    inpaint.whole_box = True
     inpaint.context_box = lambda mask: ctx(mask)[0]
     return inpaint

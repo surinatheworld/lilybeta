@@ -267,8 +267,8 @@ var LilyzonoPS = (function () {
 
     function savedEngine() {
         try {
-            return app.getCustomOptions(SETTINGS).getString(stringIDToTypeID("engine")) === "screentone"
-                ? "screentone" : "simple";
+            var engine = app.getCustomOptions(SETTINGS).getString(stringIDToTypeID("engine"));
+            return engine === "screentone" || engine === "local" ? engine : "simple";
         } catch (error) { return "simple"; }
     }
 
@@ -386,7 +386,7 @@ var LilyzonoPS = (function () {
         if (missing.length) { alert("Photoshop không có font: " + missing.join(", ") + ". Chọn bằng nút Chọn…"); return "cancel"; }
         saveFonts(fonts);
         var request = {protocol:1, profile:"custom", mode:"batch", right_to_left:data.right_to_left,
-                       engine:data.engine === "screentone" ? "screentone" : "simple",
+                       engine:data.engine === "screentone" || data.engine === "local" ? data.engine : "simple",
                        custom_fonts:fonts, pages:data.pages};
         if (data.translation_file) request.translation_file = data.translation_file;
         else request.translation_text = data.translation_text || "";
@@ -432,9 +432,10 @@ var LilyzonoPS = (function () {
         };
         input.onChanging = function () { if (translationFile && input.text) { translationFile = null; fileLabel.text = ""; } };
         var rtl = win.add("checkbox", undefined, "Đọc manga: phải → trái"); rtl.value = true;
-        var redraw = win.add("checkbox", undefined, "Giữ lưới chấm khi xoá chữ (offline)");
-        redraw.value = savedEngine() === "screentone";
-        redraw.helpTip = "Khôi phục lưới chấm và xoá SFX trên nền đồng nhất. Vùng khó được đánh dấu REDRAW.";
+        var redrawOptions = ["simple", "screentone", "local"], lastEngine = savedEngine();
+        var redraw = win.add("dropdownlist", undefined, ["Chỉ xoá nền đơn giản", "Giữ lưới chấm (offline)", "Redraw LaMa (offline)"]);
+        redraw.selection = lastEngine === "local" ? 2 : lastEngine === "screentone" ? 1 : 0;
+        redraw.helpTip = "LaMa phục hồi phần nét tranh ngay dưới nét chữ. Vùng chưa xử lý được sẽ đánh dấu REDRAW.";
         var pick = win.add("group");
         pick.add("statictext", undefined, "Bộ font:");
         var names = [], chosen = savedProfile(), i;
@@ -448,7 +449,7 @@ var LilyzonoPS = (function () {
         for (i = 0; i < PROFILES.length; i++) if (PROFILES[i].key === chosen) profileBox.selection = i;
         function typesetRequest(mode) {
             var key = PROFILES[profileBox.selection ? profileBox.selection.index : 0].key;
-            var engine = redraw.value ? "screentone" : "simple";
+            var engine = redrawOptions[redraw.selection ? redraw.selection.index : 0];
             saveOptions(key, engine);
             return {protocol:1, profile:key, mode:mode === "batch" && key === "custom" ? "scan" : mode,
                     right_to_left:rtl.value, engine:engine};
@@ -461,6 +462,17 @@ var LilyzonoPS = (function () {
         buttons.add("button", undefined, "Huỷ", {name:"cancel"});
         var batch = buttons.add("button", undefined, "Làm cả chương (" + app.documents.length + " ảnh)");
         var go = buttons.add("button", undefined, "Nhận diện và xem trước", {name:"ok"});
+        var cover = win.add("button", undefined, "Redraw chữ trên bìa (offline)");
+        cover.helpTip = "Khoanh sát chữ trắng hoặc hồng san hô bằng vùng chọn chữ nhật trước khi chạy.";
+        cover.onClick = function () {
+            var bounds, size = pixelSize(doc);
+            try { bounds = doc.selection.bounds; }
+            catch (error) { alert("Khoanh vùng chữ trên bìa bằng Rectangular Marquee trước khi chạy."); return; }
+            var box = [Math.max(0, Math.floor(bounds[0].as("px"))), Math.max(0, Math.floor(bounds[1].as("px"))),
+                       Math.min(size[0], Math.ceil(bounds[2].as("px"))), Math.min(size[1], Math.ceil(bounds[3].as("px")))];
+            win.result = {protocol:1, mode:"cover_redraw", regions:[box]};
+            win.close(1);
+        };
         function translation(request) {
             if (translationFile) request.translation_file = translationFile;
             else request.translation_text = input.text;
@@ -617,14 +629,27 @@ var LilyzonoPS = (function () {
         var body = win.add("group"); body.alignChildren = "top";
         body.add("image", undefined, new File(data.preview));
         var right = body.add("group"); right.orientation = "column"; right.alignChildren = "fill";
-        right.add("statictext", undefined, data.detected + " vùng nhận diện · " + data.layers.length + " layer chữ");
+        var cover = data.cover_counts;
+        right.add("statictext", undefined, cover ? data.detected + " vùng redraw bìa" :
+                  data.detected + " vùng nhận diện · " + data.layers.length + " layer chữ");
         var labels = [], i;
-        for (i = 0; i < data.layers.length; i++) labels.push((i + 1) + ". " + data.layers[i].contents.replace(/[\r\u0003]/g, " "));
-        var list = right.add("listbox", undefined, labels); list.preferredSize = [360, 380];
-        var info = right.add("statictext", undefined, "", {multiline:true}); info.preferredSize = [360, 65];
-        list.onChange = function () { if (list.selection) { var layer = data.layers[list.selection.index]; info.text = layer.family + (layer.faux_italic ? " · nghiêng" : "") + "\n" + layer.size + " px"; } };
-        if (labels.length) list.selection = 0;
+        for (i = 0; i < data.layers.length; i++) {
+            var spec = data.layers[i];
+            labels.push((i + 1) + ". " + (spec.visible === false ? "[Chờ redraw] " : "") +
+                        spec.contents.replace(/[\r\u0003]/g, " "));
+        }
+        if (cover) {
+            right.add("statictext", undefined, cover.smooth + " vùng nền mượt");
+            if (cover.directional) right.add("statictext", undefined, cover.directional + " vùng nội suy theo nét vẽ");
+            if (cover.empty) right.add("statictext", undefined, cover.empty + " vùng chưa tách được chữ");
+        } else {
+            var list = right.add("listbox", undefined, labels); list.preferredSize = [360, 380];
+            var info = right.add("statictext", undefined, "", {multiline:true}); info.preferredSize = [360, 65];
+            list.onChange = function () { if (list.selection) { var layer = data.layers[list.selection.index]; info.text = layer.family + (layer.faux_italic ? " · nghiêng" : "") + "\n" + layer.size + " px"; } };
+            if (labels.length) list.selection = 0;
+        }
         if (data.needs_redraw) right.add("statictext", undefined, data.needs_redraw + " vùng nền khó cần redraw thêm.");
+        if (data.unplaced && data.unplaced.length) right.add("statictext", undefined, data.unplaced.length + " câu chưa khớp OCR.");
         var buttons = win.add("group"); buttons.alignment = "right";
         buttons.add("button", undefined, "Huỷ", {name:"cancel"});
         buttons.add("button", undefined, "Tạo layer trong Photoshop", {name:"ok"});
@@ -707,7 +732,10 @@ var LilyzonoPS = (function () {
                 var text = art.textItem, slack = layer.width * .12 + 4;
                 text.kind = TextType.PARAGRAPHTEXT;
                 text.contents = layer.contents;
-                text.font = layer.font;
+                try { text.font = layer.font; }
+                catch (error) { throw new Error("Photoshop không dùng được font “" + layer.font + "”. Kiểm tra font đã cài."); }
+                if (text.font.toLowerCase() !== layer.font.toLowerCase())
+                    throw new Error("Photoshop thay font “" + layer.font + "” bằng “" + text.font + "”. Chọn lại font cho vùng này.");
                 // Preserve the document's resolution: typography is measured in pixels.
                 text.size = new UnitValue(layer.size * 72 / doc.resolution, "pt");
                 text.useAutoLeading = layer.auto_leading !== false;
@@ -735,6 +763,7 @@ var LilyzonoPS = (function () {
                 }
                 if (layer.stroke > 0) { doc.activeLayer = art; addStroke(layer.stroke, layer.stroke_color || "ffffff"); }
                 if (layer.rotation) art.rotate(layer.rotation, AnchorPosition.MIDDLECENTER);
+                if (layer.visible === false) art.visible = false;
             }
             doc.activeLayer = group;
         } finally {
@@ -802,6 +831,7 @@ var LilyzonoPS = (function () {
         } else {
             var input = new File(folder.fsName + "/input.png");
             if (request.mode === "sfx") snapshotBackground(doc, input);
+            else if (request.mode === "cover_redraw") snapshot(doc, input);
             else if (hasRedraw(doc)) {  // PSD có layer Redraw: chữ nhận diện trên raw, type lên bản đã redraw
                 var redrawn = new File(folder.fsName + "/redrawn.png");
                 snapshot(doc, redrawn); snapshotBackground(doc, input); request.redrawn = redrawn.fsName;
@@ -949,7 +979,8 @@ var LilyzonoPS = (function () {
             if (p.ok) {
                 ok.push(p);
                 labels.push("✓ " + p.doc_name + ": " + p.layers.length + " layer chữ" +
-                            (p.needs_redraw ? " · " + p.needs_redraw + " chỗ chữ đè bản gốc" : ""));
+                            (p.needs_redraw ? " · " + p.needs_redraw + " lớp chữ ẩn chờ redraw" : "") +
+                            (p.unplaced && p.unplaced.length ? " · " + p.unplaced.length + " câu chưa khớp OCR" : ""));
             } else labels.push("✗ " + p.doc_name + ": " + p.error);
         }
         if (!ok.length) throw new Error("Không làm được trang nào:\n" + labels.join("\n"));
