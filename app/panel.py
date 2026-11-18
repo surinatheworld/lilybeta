@@ -660,17 +660,29 @@ class Runner:
         elif step == "match":
             p.file(page, "assignment-preview.png").unlink(missing_ok=True)
             out = workflow.match(p, page, self.w.ai_config, report)
+            p.invalidate(page, "match")  # Preview must not reuse redraw for an older assignment.
             if any(r["lines"] and r["bubble"] != "skip" for r in page["regions"]):
                 report("Dựng ảnh xem trước: đặt chữ Việt vào các bóng đã gán…")
                 _, preview_warnings = workflow.preview_assignments(p, page, report)
                 out.extend(preview_warnings)
         elif step == "typeset":
-            path, out = workflow.typeset(p, page, report)
+            out = []
+            if (not p.uses_redraw(page) and p.status(page, "clean")["state"] == "stale"
+                    and any(r["lines"] and r["bubble"] != "skip" for r in page["regions"])):
+                from .core.semantic_review import require_verified
+
+                require_verified(p, page, report)
+                clean_warnings = self.run_step("clean", page, report)
+                p.set_status(page, "clean", "warn" if clean_warnings else "done", "\n".join(clean_warnings))
+                out.extend(clean_warnings)
+            path, layout_warnings = workflow.typeset(p, page, report)
+            out.extend(layout_warnings)
             report("Tạo layer chữ trong Photoshop…")
             ps.call("typeset", json=path, **doc)
         else:
             raise ValueError(step)
-        p.invalidate(page, step)
+        if step != "match":
+            p.invalidate(page, step)
         return out
 
 
@@ -724,8 +736,11 @@ class PanelWindow(QMainWindow):
         for k, v in PROFILES.items():
             self.profile.addItem(v, k)
         self.rtl = QCheckBox("Đọc phải → trái")
-        self.screentone = QCheckBox("Giữ lưới chấm khi xoá chữ (offline)")
-        self.screentone.setToolTip("Áp dụng khi chạy Bước 6. Chọn loại bóng được xoá trong “Loại bóng → font…”.")
+        self.redraw_engine = QComboBox()
+        self.redraw_engine.addItem("Chỉ xoá nền đơn giản", "simple")
+        self.redraw_engine.addItem("Giữ lưới chấm (offline)", "screentone")
+        self.redraw_engine.addItem("Redraw LaMa (offline)", "local")
+        self.redraw_engine.setToolTip("Áp dụng khi chạy Bước 6. Chọn loại bóng được xoá trong “Loại bóng → font…”.")
         kinds_btn = QPushButton("Loại bóng → font…")
         ai_btn = QPushButton("Cấu hình AI…")
         self.ai_label = QLabel()
@@ -753,7 +768,7 @@ class PanelWindow(QMainWindow):
         grid.addWidget(QLabel("Dự án"), 5, 0)
         grid.addWidget(self.folder_label, 5, 1, 1, 2)
         grid.addWidget(open_folder, 5, 3)
-        grid.addWidget(self.screentone, 6, 0, 1, 3)
+        grid.addWidget(self.redraw_engine, 6, 0, 1, 3)
         grid.addWidget(self.upload_redraw_btn, 6, 3)
         grid.setColumnStretch(1, 1)
 
@@ -896,7 +911,9 @@ class PanelWindow(QMainWindow):
         self.numbering.currentIndexChanged.connect(lambda: self._setting("numbering", self.numbering.currentData(), ["match"]))
         self.profile.currentIndexChanged.connect(lambda: self._setting("profile", self.profile.currentData(), ["setup"]))
         self.rtl.toggled.connect(lambda v: self._setting("right_to_left", v, ["detect"]))
-        self.screentone.toggled.connect(lambda v: self._setting("restore_screentone", v, ["clean"]))
+        self.redraw_engine.currentIndexChanged.connect(
+            lambda: self._setting("redraw_engine", self.redraw_engine.currentData(), ["clean"])
+        )
         run_all.clicked.connect(lambda: self.run(workflow.RUN_ORDER))
         self.stop_btn.clicked.connect(self.stop)
         self.pages.currentItemChanged.connect(lambda cur, _: cur and self.show_page(cur.data(Qt.UserRole)))
@@ -936,7 +953,7 @@ class PanelWindow(QMainWindow):
         p = self.project
         self._filling = True
         try:
-            for w in (self.source, self.numbering, self.profile, self.rtl, self.screentone):
+            for w in (self.source, self.numbering, self.profile, self.rtl, self.redraw_engine):
                 w.setEnabled(p is not None)
             if p is None:
                 self.folder_label.setText("chưa có – lấy ảnh từ Photoshop để tạo")
@@ -945,7 +962,12 @@ class PanelWindow(QMainWindow):
             self.numbering.setCurrentIndex(max(0, self.numbering.findData(p.data["numbering"])))
             self.profile.setCurrentIndex(max(0, self.profile.findData(p.data["profile"])))
             self.rtl.setChecked(p.data["right_to_left"])
-            self.screentone.setChecked(bool(p.data.get("restore_screentone")))
+            redraw_engine = p.data.get("redraw_engine")
+            if redraw_engine is None:
+                redraw_engine = "local" if p.data.get("local_redraw") else (
+                    "screentone" if p.data.get("restore_screentone") else "simple"
+                )
+            self.redraw_engine.setCurrentIndex(max(0, self.redraw_engine.findData(redraw_engine)))
             self.raw_label.setText(p.data.get("raw_folder") or ("không cần (ảnh đang mở là raw)"
                                                                  if p.data["source"] == "raw" else "chưa chọn"))
             tl = p.data.get("translation_file")

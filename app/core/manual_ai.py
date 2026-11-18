@@ -44,16 +44,12 @@ class Job:
 
 
 def region_mask(page, r) -> np.ndarray:
-    """Phần cần vẽ lại của một vùng: vùng lasso, hoặc nét chữ (nới rộng) + cả khung chữ thoại."""
+    """Phần cần vẽ lại: vùng lasso do người dùng chọn, hoặc nét chữ và viền chữ."""
     area = page.area_mask(r)
     if area is not None:
         return cv2.dilate(area, np.ones((5, 5), np.uint8))
     m = build_text_mask(page.text_mask, r.box)
     m = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=2)
-    if r.kind == "text":
-        h, w = m.shape[:2]
-        x1, y1, x2, y2 = r.box
-        m[max(0, y1 - 4):min(h, y2 + 4), max(0, x1 - 4):min(w, x2 + 4)] = 255
     return m
 
 

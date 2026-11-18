@@ -49,6 +49,7 @@ def _region_from(d: dict) -> Region:
     d["text_rects"] = [tuple(b) for b in d.get("text_rects") or []]
     d["polygon"] = [tuple(pt) for pt in d["polygon"]] if d.get("polygon") else None
     d["manual_rect"] = tuple(d["manual_rect"]) if d.get("manual_rect") else None
+    d["fitted_lobe"] = tuple(d["fitted_lobe"]) if d.get("fitted_lobe") else None
     if d.get("text_shape"):
         cx, cy, rows = d["text_shape"]
         d["text_shape"] = (cx, cy, tuple(tuple(r) for r in rows))

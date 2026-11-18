@@ -13,6 +13,60 @@ from PySide6.QtGui import QGuiApplication
 
 from app.photoshop import load_request, main, process_job
 from app.core.detect import TextBox
+from app.core.english_ocr import Line, _flat_glyphs, _smooth_lettering, match_rows, script_rows
+
+
+def _ocr_line(text, box):
+    x1, y1, x2, y2 = box
+    return Line(text, .99, np.array([(x1, y1), (x2 - 1, y1), (x2 - 1, y2 - 1), (x1, y2 - 1)]), box)
+
+
+class EnglishQuickTests(unittest.TestCase):
+    def test_groups_neighboring_lines_and_leaves_ambiguous_rows_unplaced(self):
+        rows = script_rows(["⟦en|A while ago⟧Hồi nãy", "⟦en|Hey!⟧Ê!"])
+        lines = [_ocr_line("A WHILE", (150, 10, 220, 29)),
+                 _ocr_line("AGO", (163, 28, 207, 47)),
+                 _ocr_line("HEY!", (15, 90, 64, 110)),
+                 _ocr_line("HEY!", (95, 140, 145, 160))]
+        result = match_rows(rows, lines)
+        self.assertEqual(list(result), [0])
+        self.assertEqual([line.text for line in result[0]], ["A WHILE", "AGO"])
+        self.assertIsNone(script_rows(["⟦dialogue|あれ⟧Ơ kìa"]))
+        with self.assertRaises(ValueError):
+            script_rows(["⟦en|A while ago⟧Hồi nãy", "Một câu thiếu bản gốc"])
+
+    def test_isolated_sfx_erases_the_glyph_but_not_a_decorative_oval(self):
+        image = np.full((150, 220, 3), 255, np.uint8)
+        cv2.ellipse(image, (108, 70), (75, 45), 0, 0, 360, (0, 0, 0), 2)
+        background = image.copy()
+        cv2.putText(image, "POP", (67, 86), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 0), 4)
+        box = (25, 18, 195, 122)
+        self.assertTrue(_flat_glyphs(image, box, np.ones((104, 170), np.float32), decorative=True))
+        np.testing.assert_array_equal(image, background)
+
+    def test_exact_sentence_wins_over_its_short_prefix(self):
+        rows = [("I could not believe you went through all that just to show up",
+                 "Không ngờ cậu làm tới mức đó chỉ để có mặt ở đây.")]
+        lines = [_ocr_line("I COULD NOT BELIEVE", (30, 20, 143, 43)),
+                 _ocr_line("YOU WENT THROUGH", (35, 41, 138, 64)),
+                 _ocr_line("ALL THAT JUST TO SHOW", (28, 62, 145, 85)),
+                 _ocr_line("UP", (75, 83, 99, 106))]
+        self.assertEqual(len(match_rows(rows, lines)[0]), 4)
+
+    def test_lettering_redraw_preserves_gradient_and_rejects_line_art(self):
+        y, x = np.indices((100, 120))
+        shade = (50 + y + x // 3).astype(np.uint8)
+        clean = np.repeat(shade[..., None], 3, axis=2)
+        target = np.zeros(shade.shape, dtype=bool)
+        target[40:60, 40:80] = True
+        crop = clean.copy()
+        crop[target] = 255
+        self.assertTrue(_smooth_lettering(crop, target))
+        self.assertLessEqual(np.abs(crop.astype(float) - clean).max(), 1)
+        crop[48:54, 19:101] = 0
+        before = crop.copy()
+        self.assertFalse(_smooth_lettering(crop, target))
+        np.testing.assert_array_equal(crop, before)
 
 
 class PhotoshopBridgeTests(unittest.TestCase):
@@ -33,6 +87,31 @@ class PhotoshopBridgeTests(unittest.TestCase):
                 job.write_text(json.dumps({**value, **change}), encoding="utf-8")
                 with self.assertRaises(ValueError):
                     load_request(job)
+
+    def test_cover_redraw_is_scoped_and_does_not_run_text_detection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            y, x = np.indices((220, 320))
+            background = np.stack((155 + y // 5, 95 + y // 5, 22 + x // 9), axis=-1).astype(np.uint8)
+            image = background.copy()
+            cv2.rectangle(image, (42, 62), (105, 72), (252, 252, 252), -1)
+            cv2.rectangle(image, (72, 60), (80, 119), (146, 149, 237), -1)
+            cv2.putText(image, "03", (163, 130), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+            art = folder / "cover.png"
+            cv2.imencode(".png", image)[1].tofile(art)
+            job = folder / "request.json"
+            job.write_text(json.dumps({"protocol": 1, "mode": "cover_redraw", "image": str(art),
+                                       "regions": [[33, 52, 115, 128]]}), encoding="utf8")
+            with patch("app.photoshop.TextDetector") as detector:
+                result = process_job(job)
+                detector.assert_not_called()
+            self.assertEqual(result["cover_counts"], {"smooth": 1, "directional": 0, "empty": 0})
+            layer = cv2.imdecode(np.fromfile(result["redraw"], np.uint8), cv2.IMREAD_UNCHANGED)
+            self.assertTrue(layer[65, 50, 3])
+            self.assertTrue(layer[98, 76, 3])
+            self.assertFalse(layer[:, 145:, 3].any())
+            changed = layer[..., 3] > 0
+            self.assertLess(np.abs(layer[..., :3][changed].astype(np.int16) - background[changed]).mean(), 1)
 
     def test_backend_outputs_text_specs_transparent_redraw_and_editable_project(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -139,11 +218,51 @@ class PhotoshopModesTests(unittest.TestCase):
             self.assertFalse(by_box[(360, 100, 401, 181)]["redraw"])  # bóng thoại: xoá được
             self.assertTrue(by_box[(100, 100, 141, 181)]["redraw"])  # chữ trên tranh: chữ đè lên bản gốc
             self.assertTrue(by_box[(330, 330, 451, 401)]["redraw"])  # SFX: chữ đè lên bản gốc
+            self.assertTrue(by_box[(360, 100, 401, 181)]["visible"])
+            self.assertFalse(by_box[(100, 100, 141, 181)]["visible"])
+            self.assertFalse(by_box[(330, 330, 451, 401)]["visible"])
             self.assertEqual(result["needs_redraw"], 2)
             redraw = cv2.imdecode(np.fromfile(result["redraw"], np.uint8), cv2.IMREAD_UNCHANGED)
             self.assertTrue(redraw[110:170, 365:395, 3].all())  # bóng thoại: đã xoá
             self.assertFalse(redraw[100:181, 100:141, 3].any())  # chữ trên tranh: giữ nguyên
             self.assertFalse(redraw[330:401, 330:451, 3].any())  # SFX: giữ nguyên
+            preview = cv2.imdecode(np.fromfile(folder / "preview.png", np.uint8), cv2.IMREAD_COLOR)
+            np.testing.assert_array_equal(preview[:, :240], _page_image()[:, :240])
+
+    def test_postscript_prefers_the_selected_family_over_a_registry_prefix(self):
+        from app.core import fonts
+
+        names = {
+            "variant.ttf": [("Comic Lower", "Regular", "ComicLower", 0)],
+            "selected.ttf": [("Comic", "Regular", "ComicRegular", 0)],
+        }
+        with patch.dict(fonts._ps_cache, clear=True), \
+             patch.object(fonts, "files_for", return_value=list(names)), \
+             patch.object(fonts, "_names", side_effect=names.__getitem__):
+            self.assertEqual(fonts.postscript_name("Comic"), "ComicRegular")
+
+    def test_english_quick_uses_ocr_instead_of_reading_order(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            path = folder / "013.png"
+            image = _page_image()
+            # Aperiodic art surrounds the second region; it cannot be copied as a screen.
+            noise = np.random.default_rng(7).integers(56, 205, (480, 250), dtype=np.uint8)
+            image[:, :250] = noise[..., None]
+            image[100:181, 100:141] = 0
+            cv2.imencode(".png", image)[1].tofile(path)
+            # OCR order differs from both the script and CTD reading order.
+            found = [_ocr_line("I AM HERE", (100, 100, 141, 181)),
+                     _ocr_line("THANKS!", (360, 100, 401, 181))]
+            with patch("app.core.english_ocr.read_lines", return_value=found):
+                data = self._run(folder, {"image": str(path), "engine": "screentone", "lines": [
+                    "⟦en|THANKS!⟧Cảm ơn!", "⟦en|MISSING WORDS⟧Vắng mặt.", "⟦en|I AM HERE⟧Tớ đây."]})
+            first, second = data["layers"]
+            self.assertEqual(first["source_box"], [360, 100, 401, 181])
+            self.assertEqual(second["source_box"], [100, 100, 141, 181])
+            self.assertEqual(data["unplaced"], [{"source": "MISSING WORDS", "translation": "Vắng mặt."}])
+            self.assertTrue(first["visible"])
+            self.assertFalse(second["visible"])
 
     def test_batch_uses_page_numbers_and_reports_missing_pages(self):
         with tempfile.TemporaryDirectory() as folder:

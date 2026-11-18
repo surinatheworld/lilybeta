@@ -28,12 +28,13 @@ STEPS = [("open", "Mở ảnh"), ("detect", "Nhận diện & phân loại bóng 
          ("raw", "Nạp bản Raw"), ("ocr", "OCR bản Raw"), ("clean", "Xoá chữ"),
          ("match", "Dịch tham chiếu & ghép thoại"), ("typeset", "Typeset")]
 STEP_NAMES = dict(STEPS)
-# Thứ tự chạy "toàn bộ": cần raw trước khi nhận diện (bản redraw đã xoá chữ Nhật, không còn gì để nhận).
-RUN_ORDER = ["open", "raw", "detect", "setup", "ocr", "clean", "match", "typeset"]
+# Chạy toàn bộ ghép câu trước khi xoá, để phần chữ gốc không có bản dịch được giữ lại.
+RUN_ORDER = ["open", "raw", "detect", "setup", "ocr", "match", "clean", "typeset"]
 # Chạy lại một bước thì các bước dùng kết quả của nó cần chạy lại (dữ liệu cũ vẫn giữ, chỉ đổi trạng thái).
 DOWNSTREAM = {"open": ["raw", "detect", "setup", "ocr", "clean", "match", "typeset"],
               "raw": ["ocr", "clean", "match", "typeset"], "detect": ["setup", "ocr", "clean", "match", "typeset"],
-              "setup": ["clean", "typeset"], "ocr": ["match"], "clean": ["typeset"], "match": ["typeset"]}
+              "setup": ["clean", "typeset"], "ocr": ["match", "clean"], "clean": ["typeset"],
+              "match": ["clean", "typeset"]}
 BUBBLES = {"round": "Tròn kín", "square": "Vuông kín", "ray": "Có tia", "cloud": "Mây suy nghĩ", "sfx": "SFX",
            "free": "Ngoài khung", "skip": "Không dịch"}
 CLEAN_KINDS = ["round", "square", "ray", "cloud"]  # mặc định: chỉ xoá chữ trong bóng thoại kín
@@ -643,10 +644,35 @@ def _page_object(project: Project, page: dict):
 
 
 # --- bước 6: xoá chữ ---------------------------------------------------------------------------
+def _project_inpainter(project: Project):
+    from .clean import easy_only, screentone_only
+
+    engine = project.data.get("redraw_engine")
+    if engine == "local" or (engine is None and project.data.get("local_redraw")):
+        from .local_redraw import prepare_local_redraw
+        return prepare_local_redraw()
+    tone = engine == "screentone" or (engine is None and project.data.get("restore_screentone"))
+    return screentone_only if tone else easy_only
+
+
+def _original_ink_to_keep(regions, selected, shape):
+    """Keep neighboring, unselected source ink even inside an inpaint margin."""
+    keep = np.zeros(shape, bool)
+    for r in regions:
+        if r["id"] in selected:
+            continue
+        x, y, right, bottom = r["box"]
+        keep[max(0, y - 2):bottom + 2, max(0, x - 2):right + 2] = True
+    for r in regions:
+        if r["id"] in selected:
+            x, y, right, bottom = r["box"]
+            keep[y:bottom, x:right] = False
+    return keep
+
+
 def clean(project: Project, page: dict) -> tuple[str | None, list[str]]:
     """Xoá chữ Nhật theo `clean_kinds`, có thể phục hồi screentone. Trả về (layer PNG, cảnh báo).
     Bản redraw: chữ đã xoá sẵn, không làm gì."""
-    from .clean import easy_only, screentone_only
     from .page import Region
     from .psd_export import clean_layer
 
@@ -656,13 +682,16 @@ def clean(project: Project, page: dict) -> tuple[str | None, list[str]]:
         return None, ["Bản redraw: chữ đã được xoá sẵn, bỏ qua bước này."]
     pg = _page_object(project, page)
     kinds = set(project.data.get("clean_kinds") or CLEAN_KINDS)
+    assigned = "assignment_units" in page or any(rd["lines"] for rd in page["regions"])
     pairs = [(rd, Region(tuple(rd["box"]), kind="sfx" if rd["bubble"] == "sfx" else "text"))
-             for rd in page["regions"] if rd["bubble"] in kinds]
+             for rd in page["regions"] if rd["bubble"] in kinds and (not assigned or rd["lines"])]
     pg.regions = [r for _, r in pairs]
-    pg.inpainter = screentone_only if project.data.get("restore_screentone") else easy_only
+    pg.inpainter = _project_inpainter(project)
     for r in pg.regions:
-        if pg._clean_local(r) is None and not r.needs_redraw:
-            r.cleaned = True
+        pg._clean_pixels(r)
+        r.cleaned = not r.needs_redraw
+    keep = _original_ink_to_keep(page["regions"], {rd["id"] for rd, _ in pairs}, pg.working.shape[:2])
+    pg.working[keep] = pg.original[keep]
     for rd in page["regions"]:
         rd["cleaned"] = False
     for rd, r in pairs:
@@ -800,9 +829,8 @@ def preview_assignments(project: Project, page: dict, report=None) -> tuple[str,
 
 def _render_assignments(project: Project, page: dict, report, *, draft: bool) -> tuple[str, list[str]]:
     from .assign import apply_plan
-    from .document import Document
     from .page import Region
-    from .psd_export import layer_specs
+    from .psd_export import clean_layer, layer_specs, photoshop_preview
     from .typeset import TextStyle, clear_caches
     from .typeset_profiles import PROFILES, kinds_for, region_kind
 
@@ -812,10 +840,12 @@ def _render_assignments(project: Project, page: dict, report, *, draft: bool) ->
     profile = project.data["profile"]
     kinds = kinds_for(profile)
     pg = _page_object(project, page)
+    pg.keep_balloon_contour = True
     redraw = project.uses_redraw(page)
+    has_clean = project.has(page, "cleaned.png") and project.status(page, "clean")["state"] != "stale"
     if redraw:
         pg.set_redrawn(str(project.file(page, "work.png")))
-    elif project.has(page, "cleaned.png"):
+    elif has_clean:
         pg.working = imread(project.file(page, "cleaned.png"))
     owner, plan = {}, []
     for rd in rows:
@@ -825,10 +855,10 @@ def _render_assignments(project: Project, page: dict, report, *, draft: bool) ->
         owner[reg.uid] = rd
         plan.append((reg, list(rd["lines"])))
     pg.regions = [reg for reg, _ in plan]
-    draft_cleaned = {}
-    if draft and not redraw:
-        from .clean import easy_only, screentone_only
-        pg.inpainter = screentone_only if project.data.get("restore_screentone") else easy_only
+    clean_state = {}
+    redraw_patch = ""
+    if not redraw:
+        pg.inpainter = _project_inpainter(project)
         before_clean = pg.working.copy()
         erase_guard = np.zeros(pg.working.shape[:2], bool)
         clean_kinds = set(project.data.get("clean_kinds") or CLEAN_KINDS)
@@ -836,20 +866,24 @@ def _render_assignments(project: Project, page: dict, report, *, draft: bool) ->
         for rd in rows:
             x,y,X,Y = rd["box"]
             erase_guard[max(0,y-6):min(erase_guard.shape[0],Y+6),max(0,x-6):min(erase_guard.shape[1],X+6)] = True
-            done = rd["cleaned"] and project.has(page, "cleaned.png")
+            done = rd["cleaned"] and has_clean
             if not done and rd["bubble"] == "free":
                 from .clean import fill_bubble
                 # A missed classification must not leave Japanese under the
                 # translation when geometry proves a closed white balloon.
-                done = fill_bubble(pg.working, pg.text_mask, tuple(rd["box"]),
-                                   preserve_texture=pg.inpainter is screentone_only)
+                done = fill_bubble(pg.working, pg.text_mask, tuple(rd["box"]), preserve_texture=True)
             if not done and rd["bubble"] in clean_kinds:
                 original = Region(tuple(rd["box"]), kind="sfx" if rd["bubble"] == "sfx" else "text")
-                done = pg._clean_local(original) is None and not original.needs_redraw
-            draft_cleaned[rd["id"]] = done
-        # Flood/leftover cleanup may see a shared balloon outline. A draft must
-        # never erase artwork outside the actual original lettering rectangles.
+                pg._clean_pixels(original)
+                done = not original.needs_redraw
+            clean_state[rd["id"]] = done
+        # Keep extra redraw inside the original lettering rectangles. A separate
+        # patch travels with the final text group when Step 6 had missed a region.
+        erase_guard &= ~_original_ink_to_keep(page["regions"], {rd["id"] for rd in rows}, erase_guard.shape)
         pg.working[~erase_guard] = before_clean[~erase_guard]
+        if not draft and not np.array_equal(pg.working, before_clean):
+            redraw_patch = str(project.file(page, "typeset-redraw.png"))
+            imwrite(redraw_patch, clean_layer(pg, before_clean))
     if report:
         report("Dàn chữ…")
     apply_plan(pg, plan, None)
@@ -859,12 +893,9 @@ def _render_assignments(project: Project, page: dict, report, *, draft: bool) ->
         kind = rd["style_kind"] if rd["style_kind"] in kinds else (marked if marked in kinds else project.style_kind(rd))
         r.typeset_kind = kind
         if redraw:
-            r.cleaned = r.kind == "sfx"
+            r.cleaned, r.needs_redraw = True, rd.get("erased") is False
         else:
-            cleaned = rd["cleaned"] and project.has(page, "cleaned.png")
-            if draft:
-                cleaned = draft_cleaned.get(rd["id"], False)
-            r.cleaned, r.needs_redraw = True, not cleaned
+            r.cleaned, r.needs_redraw = True, not clean_state[rd["id"]]
     from .balloon_layout import constrain_lobes, constrain_panel_rects
     constrain_lobes(pg, owner)
     for r in pg.regions:
@@ -882,15 +913,14 @@ def _render_assignments(project: Project, page: dict, report, *, draft: bool) ->
         if r.override.get("postscript"):
             spec["font"] = r.override["postscript"]  # đúng font chọn trong danh sách của Photoshop
         spec["name"] = f"{spec['id']} · {spec['contents']}".replace("\r", " ").replace("\u0003", " ")[:120]
-    pg.doc = Document(pg)
-    preview = pg.doc.composite()
+    preview = photoshop_preview(pg)
     if draft:
         out = project.file(page, "assignment-preview.png")
         imwrite(out, preview)
     else:
         imwrite(project.file(page, "preview.png"), preview)
         out = project.file(page, "typeset.json")
-        out.write_text(json.dumps({"size": list(pg.size), "profile_name": PROFILES.get(profile, "Typeset"), "redraw": "",
+        out.write_text(json.dumps({"size": list(pg.size), "profile_name": PROFILES.get(profile, "Typeset"), "redraw": redraw_patch,
                                    "layers": specs}, ensure_ascii=False), encoding="utf-8")
     clear_caches()
     warnings = []
@@ -900,7 +930,7 @@ def _render_assignments(project: Project, page: dict, report, *, draft: bool) ->
         warnings.append(f"{len(page['unplaced'])} câu chưa có vùng nên chưa type")
     overlay = [s["id"] for s in specs if s.get("redraw")]
     if overlay:
-        warnings.append("Chữ đặt đè lên chữ gốc (chưa xoá): " + ", ".join(dict.fromkeys(overlay)))
+        warnings.append("Đã ẩn lớp chữ còn chờ redraw: " + ", ".join(dict.fromkeys(overlay)))
     return str(out), warnings
 
 

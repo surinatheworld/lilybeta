@@ -50,6 +50,12 @@ def category(s):
     return p
 
 
+def japanese_phrase(text):
+    """Lettering styled as an effect can still contain spoken words."""
+    compact = normalize(text)
+    return len(compact) >= 7 and bool(re.search(r"[一-龯々][ぁ-ゖ]*(?:の|に|が|を|で|は|へ|て|と)[一-龯々ァ-ヺぁ-ゖ]", compact))
+
+
 def kana_name(text):
     """Hepburn reading for short kana/furigana name anchors, without a dictionary."""
     text=''.join(chr(ord(c)-0x60) if 'ァ'<=c<='ヶ' else c for c in text)

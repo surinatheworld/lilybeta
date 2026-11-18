@@ -62,6 +62,71 @@ class BalloonLayoutTests(unittest.TestCase):
         constrain_lobes(page,{r.uid:owner})
         self.assertIsNone(r.manual_rect);self.assertIsNone(second.manual_rect)
 
+    def test_lobe_evidence_from_separate_detector_boxes_is_used(self):
+        page, r, owner, _ = self.fixture()
+        owner["balloon"].update(split=False, parts=2)
+        constrain_lobes(page, {r.uid: owner})
+        self.assertIsNotNone(r.manual_rect)
+
+    def test_lone_lobe_leaking_to_page_edge_cannot_fit_over_neighboring_art(self):
+        page, r, owner, _ = self.fixture()
+        r.box = (90, 145, 162, 230)
+        page.working = np.full((400, 400, 3), 255, np.uint8)
+        cv2.rectangle(page.working, (99, 85), (112, 285), (0, 0, 0), -1)
+        owner['balloon'] = {'parts': 3, 'peers': ['A'], 'outline': [[0, 72], [177, 72], [177, 301], [0, 301]]}
+        constrain_lobes(page, {r.uid: owner})
+        self.assertIsNotNone(r.manual_rect)
+        self.assertTrue(all(bounds[0] > 113 for bounds in block_box(r.text, r.effective_style, r.text_rect)[5]))
+
+    def test_text_in_a_tall_caption_is_centered_in_the_writing_area(self):
+        page, r, owner, _ = self.fixture()
+        r.box = (130, 68, 165, 143)
+        owner["bubble"] = "square"
+        owner["balloon"] = {"split": False, "parts": 1, "shape": "square",
+                            "outline": [[103, 42], [210, 42], [210, 336], [103, 336]]}
+        constrain_lobes(page, {r.uid: owner})
+        self.assertIsNotNone(r.manual_rect)
+        x, y, right, bottom, _, _ = block_box(r.text, r.effective_style, r.text_rect)
+        self.assertAlmostEqual((y + bottom) / 2, 189, delta=12)
+
+    def test_clipped_short_lobe_stays_near_its_source_and_does_not_oversize(self):
+        short = Region((278, 99, 300, 193), text="Xin lỗi,", cleaned=True)
+        long = Region((181, 143, 220, 259), text="Tôi được lệnh không nói chuyện với anh.", cleaned=True)
+        page = SimpleNamespace(regions=[short, long], size=(400, 400), auto_cap=27, typeset_profile="")
+        owners = {}
+        outlines = [[[259, 0], [322, 0], [322, 263], [273, 245], [266, 118]],
+                    [[151, 105], [253, 105], [257, 270], [226, 304], [161, 295], [140, 226]]]
+        for i, (region, outline) in enumerate(zip(page.regions, outlines), start=1):
+            owners[region.uid] = {"id": str(i), "src": "detect", "bubble": "round",
+                                  "balloon": {"parent": 1, "part": i, "parts": 2, "outline": outline}}
+        constrain_lobes(page, owners)
+        first, second = [block_box(r.text, r.effective_style, r.text_rect) for r in page.regions]
+        self.assertAlmostEqual((first[1] + first[3]) / 2, 146, delta=20)
+        self.assertLessEqual(first[4], max(second[4] * 1.08, round(.85 * page.auto_cap)))
+
+    def test_automatic_redraw_does_not_invent_a_rectangular_mask(self):
+        from app.core.clean import build_text_mask
+
+        mask = np.zeros((100, 100), np.float32)
+        self.assertFalse(build_text_mask(mask, (15, 20, 70, 80)).any())
+        mask[39:48, 37:43] = .8
+        strokes = build_text_mask(mask, (15, 20, 70, 80))
+        self.assertTrue(strokes[43, 41])
+        self.assertFalse(strokes[31, 55])
+
+    def test_local_redraw_only_changes_selected_pixels(self):
+        from unittest.mock import patch
+        from app.core.local_redraw import redraw_local
+
+        page = np.full((90, 140, 3), 219, np.uint8)
+        mask = np.zeros(page.shape[:2], np.uint8)
+        mask[34:60, 32:55] = 255
+        model = SimpleNamespace(run=lambda *_: [np.full((1, 3, 512, 512), .25, np.float32)])
+        with patch("app.core.local_redraw._session", return_value=model):
+            redraw_local(page, mask)
+        self.assertTrue(np.all(page[mask == 0] == 219))
+        self.assertTrue(np.all(page[mask > 0] == 63))
+
     def test_free_text_within_a_panel_does_not_extend_across_its_border(self):
         page,r,owner,_=self.fixture()
         page.original=np.full((400,400,3),255,np.uint8)

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from app.core.balloons import refine
+from app.core.balloons import _frame_notch_split, _ink_gap_seam, _merge_repeated_lobe_boxes, _split_weak_peak, refine
 from app.core.detect import TextBox
 from app.core import ai, workflow
 
@@ -43,6 +43,121 @@ def open_fixture():
 
 
 class ConjoinedBalloonTests(unittest.TestCase):
+    def test_nested_detection_merges_only_the_same_ink_in_the_same_lobe(self):
+        ink = np.zeros((120, 120), np.float32)
+        ink[12:45, 16:22] = 1
+        ink[62:85, 76:81] = 1
+        nested, full, separate, other_lobe = (14, 10, 24, 37), (12, 9, 28, 46), (73, 60, 85, 88), (11, 8, 30, 47)
+        evidence = {bounds: {"parent": 1, "parts": 2, "part": 1} for bounds in (nested, full, separate)}
+        evidence[other_lobe] = {"parent": 1, "parts": 2, "part": 2}
+        result = _merge_repeated_lobe_boxes([TextBox(*box, .9) for box in evidence], evidence, ink, ())
+        self.assertEqual([(b.x1, b.y1, b.x2, b.y2) for b in result], [full, separate, other_lobe])
+
+    def test_tiny_exterior_mark_does_not_cancel_a_confirmed_split(self):
+        page, ink, boxes = fixture([(160, 160), (310, 300)], merged=True)
+        merged = boxes[0]
+        merged.x2 = 470
+        ink[145, 441] = 1
+        page[145, 441] = 0
+        _, info = refine(page, ink, boxes)
+        self.assertEqual({m["part"] for m in info.values() if m["parts"] == 2 and not m["uncertain"]},
+                         {1, 2})
+
+    def test_broad_overlap_uses_a_clear_seam_between_two_outline_dents(self):
+        image = np.full((430, 430, 3), 190, np.uint8)
+        body = np.zeros(image.shape[:2], np.uint8)
+        edge = np.array([(205, 0), (306, 0), (306, 292), (283, 307), (255, 295),
+                         (233, 350), (195, 367), (157, 352), (124, 323), (105, 269),
+                         (105, 183), (117, 132), (150, 94), (175, 79), (208, 91), (197, 31)])
+        cv2.fillPoly(body, [edge], 1)
+        image[body > 0] = 255
+        cv2.polylines(image, [edge], True, (0, 0, 0), 2)
+        ink = np.zeros(body.shape, np.float32)
+        for x, y in ((270, 47), (270, 99), (270, 167), (127, 155), (127, 240),
+                     (178, 147), (178, 215), (219, 129), (219, 176)):
+            ink[y:y+21, x:x+13] = 1
+        image[ink > 0] = 0
+        rows, metadata = refine(image, ink, [TextBox(123, 45, 285, 266, .9)])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({m["parts"] for m in metadata.values()}, {2})
+        self.assertTrue(all(not m["uncertain"] for m in metadata.values()))
+        self.assertTrue(any(b.x1 <= 130 < b.x2 < 270 for b in rows))
+        self.assertTrue(any(130 < b.x1 <= 273 < b.x2 for b in rows))
+        covered = np.zeros(ink.shape, bool)
+        for row in rows:
+            covered[row.y1:row.y2, row.x1:row.x2] = True
+        self.assertFalse(np.any((ink > 0) & ~covered))
+
+    def test_clear_seam_bends_around_ink_instead_of_cutting_a_glyph(self):
+        body = np.ones((160, 120), np.uint8)
+        ink = np.zeros_like(body)
+        ink[42:90, 48:73] = 1
+        sides = _ink_gap_seam(body, ink, np.array([60, 8]), np.array([60, 150]), 3)
+        self.assertIsNotNone(sides)
+        positions = sides[ink > 0]
+        self.assertTrue(np.all(positions >= 3) or np.all(positions <= -3))
+
+    def test_missing_end_of_the_seam_requires_a_real_panel_rule(self):
+        mask = np.zeros((240, 230), np.uint8)
+        border = np.array([(0, 185), (0, 71), (35, 18), (87, 0), (113, 13), (138, 46),
+                           (152, 91), (173, 66), (197, 71), (222, 113), (229, 150), (229, 239), (0, 239)])
+        cv2.fillPoly(mask, [border], 1)
+        ink = np.zeros_like(mask)
+        ink[88:202, 41:61] = 1
+        ink[92:197, 103:136] = 1
+        ink[124:203, 167:184] = 1
+        frame = np.full((280, 260), 255, np.uint8)
+        frame[255:258, :] = 0
+        parts = _frame_notch_split(mask, ink, frame, 15, 15)
+        self.assertIsNotNone(parts)
+        self.assertNotEqual(parts[130, 120], parts[130, 170])
+        self.assertIsNone(_frame_notch_split(mask, ink, np.full_like(frame, 255), 15, 15))
+
+    def test_page_edge_can_complete_two_seams_in_one_balloon_group(self):
+        mask = np.zeros((210, 500), np.uint8)
+        for x in (100, 250, 400):
+            cv2.ellipse(mask, (x, 22), (100, 160), 0, 0, 360, 1, -1)
+        ink = np.zeros_like(mask)
+        for x in (100, 250, 400):
+            ink[19:120, x - 24:x + 24] = 1
+        gray = np.full_like(mask, 255)
+        parts = _frame_notch_split(mask, ink, gray, 0, 0)
+        self.assertIsNotNone(parts)
+        self.assertEqual([parts[80, x] for x in (100, 250, 400)], [1, 2, 3])
+        self.assertEqual(len(np.unique(parts[ink > 0])), 3)
+
+    def test_large_blank_band_brackets_two_clauses_on_a_jagged_outline(self):
+        mask = np.zeros((380, 165), np.uint8)
+        outline = np.array([(74, 55), (119, 0), (153, 30), (164, 75), (157, 133),
+                            (164, 160), (123, 182), (149, 244), (124, 292),
+                            (111, 353), (89, 379), (28, 360), (0, 302), (0, 184),
+                            (14, 142), (52, 103), (98, 123)])
+        cv2.fillPoly(mask, [outline], 1)
+        ink = np.zeros_like(mask)
+        ink[74:138, 126:144] = 1
+        ink[199:302, 38:53] = 1
+        ink[196:317, 61:75] = 1
+        parts = _split_weak_peak(mask, ink)
+        self.assertIsNotNone(parts)
+        self.assertNotEqual(parts[102, 135], parts[260, 62])
+
+    def test_tall_scroll_has_a_single_rectangular_writing_area(self):
+        image = np.full((450, 400, 3), 185, np.uint8)
+        paper = np.array([(106, 67), (135, 58), (255, 60), (272, 79), (274, 327),
+                          (260, 350), (124, 357), (105, 338), (109, 167)])
+        cv2.fillPoly(image, [paper], (255, 255, 255))
+        cv2.polylines(image, [paper], True, (0, 0, 0), 3)
+        mark = np.zeros(image.shape[:2], np.float32)
+        for x in (135, 165, 195, 225):
+            for y in range(112, 293, 27):
+                mark[y:y+12, x:x+12] = 1
+        image[mark > 0] = 0
+        box = (131, 108, 240, 295)
+        boxes, evidence = refine(image, mark, [TextBox(*box, .9)])
+        self.assertEqual(len(boxes), 1)
+        self.assertEqual(evidence[box]["shape"], "square")
+        self.assertEqual(evidence[box]["parts"], 1)
+
     def test_mixed_enclosed_and_exterior_text_is_partitioned_without_losing_ink(self):
         for reversed_text in (False,True):
             with self.subTest(reversed=reversed_text):

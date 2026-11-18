@@ -38,7 +38,20 @@ def clean_layer(page, against: np.ndarray | None = None) -> np.ndarray:
 
 def layer_specs(page) -> list[dict]:
     """Thông số từng lớp chữ (toạ độ px của ảnh)."""
-    return [text_spec(r) for r in page.regions if r.cleaned and r.text.strip()]
+    return [{**text_spec(r), "visible": not r.needs_redraw}
+            for r in page.regions if r.cleaned and r.text.strip()]
+
+
+def photoshop_preview(page):
+    """Use the same layer visibility for preview and Photoshop output."""
+    from .document import doc_for
+
+    doc = doc_for(page)
+    pending = {r.uid for r in page.regions if r.needs_redraw}
+    for layer in doc.layers:
+        if layer.kind == "text" and layer.uid in pending:
+            layer.visible = False
+    return doc.composite()
 
 
 KERNING = {"optical": "OPTICAL", "metrics": "METRICSKERN", "none": "MANUAL"}  # AutoKernType của Photoshop

@@ -33,11 +33,11 @@ from .core.assign import apply_plan, assign_lines
 from .core.clean import easy_only, screentone_only
 from .core.docs import clean_line, load_pages, page_number
 from .core.detect import TextDetector
-from .core.document import Document
+from .core import english_ocr
 from .core.fonts import files_for
 from .core.page import Page
 from .core.paths import model_path
-from .core.psd_export import clean_layer, layer_specs
+from .core.psd_export import clean_layer, layer_specs, photoshop_preview
 from .core.typeset import TextStyle, clear_caches
 from .core.typeset_profiles import CUSTOM, GAI_BANG, PROFILES, kinds_for, fonts_for, region_kind
 
@@ -66,9 +66,17 @@ def load_request(path: Path) -> dict:
     request = json.loads(path.read_text(encoding="utf-8-sig"))
     if request.get("protocol") != PROTOCOL:
         raise ValueError("Phiên bản công cụ và bộ xử lý không khớp.")
-    if request.get("engine", "simple") not in ("opencv", "simple", "screentone"):
+    if request.get("engine", "simple") not in ("opencv", "simple", "screentone", "local"):
         raise ValueError("Chế độ xoá chữ không hợp lệ.")
     mode = request.get("mode", "page")
+    if mode == "cover_redraw":
+        _check_image(request.get("image"))
+        boxes = request.get("regions")
+        if (not isinstance(boxes, list) or not boxes or
+                any(not isinstance(box, list) or len(box) != 4 or any(type(n) is not int for n in box)
+                    for box in boxes)):
+            raise ValueError("Khoanh vùng chữ trên bìa trước khi chạy redraw.")
+        return request
     if mode == "sfx":
         _check_image(request.get("image"))
         if not request.get("redrawn") or not Path(request["redrawn"]).is_file():
@@ -179,8 +187,8 @@ def _verify_quick_plan(page, plan, lines, folder, prefix, report, document=None,
     workflow.imwrite(review.file(data, "work.png"), page.original)
     data["size"] = [page.original.shape[1], page.original.shape[0]]
     review.data.update(profile=getattr(page,"typeset_profile",GAI_BANG), kind_fonts=getattr(page,"custom_fonts",{}))
+    review.data["redraw_engine"] = engine
     if engine == "screentone":
-        review.data["restore_screentone"] = True
         clean_kinds = review.data.get("clean_kinds") or workflow.CLEAN_KINDS
         review.data["clean_kinds"] = list(dict.fromkeys([*clean_kinds, "sfx"]))
     np.savez_compressed(review.file(data,"mask.npz"),
@@ -206,24 +214,38 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
         raise ValueError("Kích thước ảnh chụp không khớp tài liệu Photoshop.")
     page.typeset_profile = profile
     page.custom_fonts = custom_fonts or {}
+    page.keep_balloon_contour = True
     page.inpainter = screentone_only if engine == "screentone" else easy_only
+    if engine == "local":
+        from .core.local_redraw import prepare_local_redraw
+        page.inpainter = prepare_local_redraw()
     report("Nhận diện chữ…")
     page.detect(detector or TextDetector(), right_to_left=right_to_left)
     if redrawn:
         page.set_redrawn(redrawn)
-    plan = assign_lines(page, page.regions, lines)
-    if not plan and not page.regions:
-        raise ValueError("Không nhận diện được khung chữ. Hãy dùng ảnh rõ nét hơn.")
-    _verify_quick_plan(page, plan, lines, folder, prefix, report, review_document, engine=engine)
+    english_rows = english_ocr.script_rows(lines)
+    unplaced = []
+    if english_rows is None:
+        plan = assign_lines(page, page.regions, lines)
+        if not plan and not page.regions:
+            raise ValueError("Không nhận diện được khung chữ. Hãy dùng ảnh rõ nét hơn.")
+        _verify_quick_plan(page, plan, lines, folder, prefix, report, review_document, engine=engine)
+    else:
+        report("Đối chiếu câu gốc tiếng Anh trên ảnh…")
+        plan, glyph_masks, unplaced = english_ocr.prepare(page, english_rows)
+        if not plan:
+            raise ValueError("OCR không xác nhận được câu gốc tiếng Anh nào trên trang.")
     apply_plan(page, plan, TextStyle())
     translated = [r for r in page.regions if r.text.strip()]
     report(f"Xoá chữ ({len(translated)} khung)…")
-    page.clean_many(translated)
+    if english_rows is None:
+        page.clean_many(translated)
+    else:
+        english_ocr.clean_verified(page, glyph_masks)
     # Hai câu chung bóng có thể đã gộp lại thành một vùng: lấy lại đúng danh sách như layer_specs.
     translated = [r for r in page.regions if r.cleaned and r.text.strip()]
     report("Dựng bản xem trước…")
-    page.doc = Document(page)
-    preview = page.doc.composite()
+    preview = photoshop_preview(page)
     cv2.imencode(".png", preview)[1].tofile(folder / f"{prefix}preview.png")
     scale = min(420 / page.size[0], 560 / page.size[1], 1)
     thumb = cv2.resize(preview, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
@@ -243,7 +265,7 @@ def typeset_page(image: str, lines: list[str], folder: Path, prefix: str = "", s
             spec["font"] = chosen["postscript"]  # đúng font người dùng chọn trong danh sách của Photoshop
     return {"size": list(page.size), "profile_name": PROFILES[profile], "redraw": str(folder / f"{prefix}redraw.png"),
             "preview": str(folder / f"{prefix}preview-ui.png"), "layers": specs, "detected": len(page.regions),
-            "needs_redraw": sum(r.needs_redraw for r in translated)}
+            "needs_redraw": sum(r.needs_redraw for r in translated), "unplaced": unplaced}
 
 
 def redraw_sfx(base_path: str, redrawn_path: str, out_path: Path) -> dict:
@@ -330,6 +352,28 @@ def process_job(path: Path, report=None) -> dict:
     mode = request.get("mode", "page")
     base = {"protocol": PROTOCOL, "ok": True, "mode": mode,
             "doc_id": request.get("doc_id"), "doc_name": request.get("doc_name", "")}
+    if mode == "cover_redraw":
+        from .core.cover_redraw import redraw_cover
+
+        report("Tách nét chữ theo màu và phục hồi nền bìa…")
+        page = Page(request["image"])
+        width, height = page.size
+        boxes = request["regions"]
+        if any(not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height) for x1, y1, x2, y2 in boxes):
+            raise ValueError("Vùng chọn redraw nằm ngoài ảnh.")
+        counts = redraw_cover(page, boxes)
+        if counts["empty"] == len(boxes):
+            raise ValueError("Không tách được nét chữ trắng hoặc hồng san hô trong vùng chọn.")
+        redraw = folder / "cover-redraw.png"
+        preview = folder / "cover-preview.png"
+        cv2.imencode(".png", clean_layer(page))[1].tofile(redraw)
+        scale = min(1, 490 / width, 660 / height)
+        thumb = cv2.resize(page.working, (max(1, round(width * scale)), max(1, round(height * scale))),
+                           interpolation=cv2.INTER_AREA)
+        cv2.imencode(".png", thumb)[1].tofile(preview)
+        return {**base, "size": [width, height], "profile_name": "Redraw bìa offline",
+                "redraw": str(redraw), "preview": str(preview), "layers": [],
+                "detected": len(boxes) - counts["empty"], "cover_counts": counts}
     if mode == "sfx":
         report("So ảnh redraw với ảnh gốc…")
         return {**base, **redraw_sfx(request["image"], request["redrawn"], folder / "sfx_redraw.png")}
@@ -446,6 +490,7 @@ def run_with_progress(job: Path, request: dict) -> int:
     win.setWindowTitle("Lilyzono")
     lay = QVBoxLayout(win)
     what = {"batch": f"cả chương ({len(request.get('pages') or [])} trang)",
+            "cover_redraw": "redraw chữ trên bìa",
             "sfx": f"ảnh redraw SFX của {request.get('doc_name', '')}",
             "sfx_batch": f"{len(request.get('items') or [])} ảnh redraw"}.get(request.get("mode"), request.get("doc_name", ""))
     title = QLabel(f"Đang xử lý <b>{what}</b> – Photoshop vẫn dùng bình thường.")

@@ -3,7 +3,7 @@
 **Đối chiếu nghĩa trước typeset:** Bước 7 chọn vùng theo nghĩa Nhật–Việt bằng NLLB cục bộ, hai encoder nghĩa
 và ngữ cảnh bóng đôi; không dùng độ dài/thứ tự làm dự phòng khi không API. Cài thêm
 `tools/install_translation_models.py` (trọng số NLLB phi thương mại, CC BY-NC 4.0). Bước 8 và chế độ
-chạy nhanh dừng nếu còn vùng chưa xác minh/câu chưa đặt. Chọn vùng, so với Raw, sửa câu rồi dùng
+chạy nhanh cho ảnh tiếng Nhật dừng nếu còn vùng chưa xác minh/câu chưa đặt. Chọn vùng, so với Raw, sửa câu rồi dùng
 **Xác nhận nghĩa vùng…** cho trường hợp cần đánh giá thủ công. Mặc định không dùng API. Xem hướng dẫn
 `docs/step7-meaning-review.md` trong repo. Đóng/mở lại bảng Lilyzono trong PTS để nạp mã nguồn mới.
 Không tự tạo bản dịch Việt mới.
@@ -18,10 +18,11 @@ trong tài liệu đang mở:
 - Mỗi câu thoại/SFX là **layer chữ Photoshop thật**, sửa được nội dung, font và vị trí.
 - Giữ các layer, kích thước và độ phân giải của tài liệu; Undo một lần để bỏ nhóm vừa tạo.
 
-**Xoá chữ offline.** Trong bảng điều khiển 8 bước, bật **Giữ lưới chấm khi xoá chữ (offline)** rồi chạy lại Bước 6.
-**Loại bóng → font…** xác định vùng được xoá, gồm cả SFX nếu bạn bật loại này. Trong hộp thoại nhanh, tuỳ chọn cùng
-tên áp dụng cho những vùng đã ghép bản dịch. Chế độ này khôi phục lưới chấm hoặc nền đồng màu khi khớp được mẫu quanh
-chữ. Vùng nền khó được đánh dấu bằng tên layer bắt đầu với `REDRAW · `.
+**Xoá chữ offline.** Chọn **Giữ lưới chấm (offline)** hoặc **Redraw LaMa (offline)** rồi chạy Bước 6.
+**Loại bóng → font…** xác định vùng được xoá, gồm cả SFX nếu bạn bật loại này. Trong hộp thoại nhanh, lựa chọn này
+áp dụng cho các vùng đã ghép bản dịch. LaMa dùng `models/lama_fp32.onnx` để khôi phục nét tranh dưới phần chữ và
+giữ lại ảnh nguyên gốc bên ngoài nét cần xoá. Vùng chưa xử lý có tên bắt đầu với `REDRAW · ` và được ẩn trong bản xem trước lẫn Photoshop.
+Sau khi sửa nền, bật lại lớp chữ để kiểm tra vị trí và font.
 
 **Căn chữ:** chữ dàn theo đúng hình lòng bóng, phủ khoảng 70% bề ngang bóng và đặt chính giữa (khoảng hở tới
 mép bóng bằng nhau 4 phía); tự xuống dòng cho khối chữ bo tròn (dòng
@@ -36,6 +37,8 @@ layer chữ, kerning Optical; sửa tay trong Photoshop như thường.
 2. **File → Scripts → Browse…**, chọn `Lilyzono.jsx` trong thư mục này.
 3. Để dùng hộp thoại nhanh, giữ **Shift** khi chạy script. Dán bản dịch, **mỗi câu một dòng theo thứ tự đọc**, hoặc **Mở bản dịch (.txt / .docx)**
    (file chia theo trang: dòng chỉ có số trang, các dòng sau là thoại của trang đó – tool tự lấy đúng trang theo tên ảnh).
+   Với ảnh tiếng Anh, dùng mỗi dòng theo mẫu `⟦en|English source text⟧Câu dịch tiếng Việt`. Lilyzono tìm cụm chữ khớp
+   câu gốc bằng OCR cục bộ. Bảng xem trước đếm riêng câu chưa khớp và vùng đã khớp nhưng còn chờ redraw.
 4. Bấm **Nhận diện và xem trước**. Hộp thoại đóng ngay và **Photoshop dùng tiếp được bình thường**; bộ xử lý chạy
    riêng với cửa sổ tiến độ (bấm **Huỷ** để dừng bất cứ lúc nào), khoảng 10–15 giây.
 5. Xong, Photoshop tự hiện bảng xem trước. Kiểm tra ảnh và danh sách thoại, bấm **Tạo layer trong Photoshop**
@@ -54,6 +57,13 @@ mở rồi hiện bảng các loại khung có trong chương (thoại thường
 khung, SFX, thoại lúng túng) kèm ảnh mẫu và số khung. Chọn font cho từng loại (nút **Chọn…**, gõ để lọc danh sách font
 của Photoshop), tick **Nghiêng** nếu cần, bấm **Type cả chương** – tool dùng lại ảnh vừa quét để type hàng loạt. Lựa
 chọn được nhớ cho lần sau (cả khi làm từng trang); loại để trống dùng font mặc định.
+
+### Redraw chữ trên bìa (offline)
+
+Dùng **Rectangular Marquee** khoanh sát cụm chữ trắng hoặc hồng san hô trên bìa. Mở Lilyzono ở chế độ nhanh
+bằng phím **Shift**, rồi bấm **Redraw chữ trên bìa (offline)**. Xem trước ảnh và tạo layer Redraw nếu nền đã
+phục hồi đúng. Tách riêng số tập và chữ cần giữ khỏi vùng chọn. Chế độ bìa xử lý màu và nội suy bằng OpenCV,
+không chạy OCR hay model AI.
 
 ### Upload bản redraw SFX (từng ảnh)
 Sau khi redraw SFX ở nơi khác (Photoshop, AI…) thành **một ảnh cả trang, cùng khung** với ảnh gốc: mở trang đó, chạy

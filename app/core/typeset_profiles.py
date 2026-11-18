@@ -298,6 +298,8 @@ def region_kind(page, region) -> str:
         return "sfx"
     if getattr(region, "orphan", False):
         return "normal"  # khung tạm trên tranh: chưa biết loại thoại
+    if getattr(region, "detected_kind", "") == "square":
+        return "square"
     if profile == REN_AI:
         return _ren_kind(page, region)
     cache = getattr(page, "_balloon_cache", None)

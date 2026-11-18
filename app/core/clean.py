@@ -5,13 +5,15 @@ import cv2
 import numpy as np
 
 from .screentone import restore_screentone
+from .tone_restore import restore_gradient
 
 MARGIN = 20
 FURIGANA_PAD = 10
 TEXT_DILATE = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
 
-def build_text_mask(text_mask: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
+def build_text_mask(text_mask: np.ndarray, box: tuple[int, int, int, int], *,
+                    whole_box: bool = False) -> np.ndarray:
     """Mask nhị phân (0/255) các nét chữ trong khung, nới rộng để ăn cả viền chữ."""
     h, w = text_mask.shape[:2]
     # Nới khung ra một chút để ăn cả furigana nằm sát mép khung chữ.
@@ -20,7 +22,7 @@ def build_text_mask(text_mask: np.ndarray, box: tuple[int, int, int, int]) -> np
     out = np.zeros((h, w), np.uint8)
     # Ngưỡng thấp: chữ màu, chữ nhỏ (vd dòng tiếng Anh trên bìa) chỉ được model đánh dấu mờ.
     out[y1:y2, x1:x2] = (text_mask[y1:y2, x1:x2] > 0.15).astype(np.uint8) * 255
-    if not out[y1:y2, x1:x2].any():
+    if whole_box and not out[y1:y2, x1:x2].any():
         bx1, by1, bx2, by2 = box
         out[by1:by2, bx1:bx2] = 255  # model không ra nét chữ: xoá cả khung
     # Two dilations add at most four pixels on each side of the strokes.
@@ -108,7 +110,7 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
     if area_mask is not None:
         mask = cv2.dilate(area_mask[cy1:cy2, cx1:cx2], np.ones((3, 3), np.uint8))
     else:
-        strokes = build_text_mask(text_mask, box)
+        strokes = build_text_mask(text_mask, box, whole_box=whole_box)
         mask = strokes[cy1:cy2, cx1:cx2]
     if not mask.any():
         return None
@@ -138,8 +140,12 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
                 if (np.abs(edge - color).max(axis=1) <= 9).mean() >= .99:
                     patch[target > 0] = color.astype(np.uint8)
                     return None
+            if _restore_gradient_crop(img, tone_mask):
+                return None
             return tone_mask
     if strokes is not None and _fill_light_bubble(img, strokes, box, preserve_texture=tone):
+        return None
+    if tone and trusted and area_mask is None and _restore_gradient_crop(img, tone_mask):
         return None
     crop = img[cy1:cy2, cx1:cx2]
 
@@ -178,8 +184,8 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
         # Chữ trên tranh (SFX) thường có viền trắng quanh nét: nới mask để xoá luôn phần viền.
         if area_mask is None:
             mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=2)
-            # Xoá cả khung chữ (xoá luôn nét mờ model bỏ sót như "——", "。"): AI trên mạng luôn làm vậy.
-            if getattr(inpainter, "whole_box", False) or whole_box:
+            # Chỉ xoá cả khung nếu lệnh gọi yêu cầu rõ ràng.
+            if whole_box:
                 bx1, by1 = max(0, x1 - 4) - cx1, max(0, y1 - 4) - cy1
                 mask[by1:y2 + 4 - cy1, bx1:x2 + 4 - cx1] = 255
         full = np.zeros(img.shape[:2], np.uint8)
@@ -187,6 +193,15 @@ def clean_local(img: np.ndarray, text_mask: np.ndarray, box: tuple[int, int, int
         return full
     crop[:] = cv2.inpaint(crop, mask, 5, cv2.INPAINT_TELEA)
     return None
+
+
+def _restore_gradient_crop(img, mask):
+    x, y, w, h = cv2.boundingRect(mask)
+    if not w or not h:
+        return False
+    context = 41
+    roi = np.s_[max(0, y - context):y + h + context, max(0, x - context):x + w + context]
+    return restore_gradient(img[roi], mask[roi] > 0, halo=6)
 
 
 def _fill_light_bubble(img: np.ndarray, strokes: np.ndarray, box: tuple[int, int, int, int], *,
@@ -203,6 +218,8 @@ def _fill_light_bubble(img: np.ndarray, strokes: np.ndarray, box: tuple[int, int
     wx1, wy1, wx2, wy2 = max(0, x1 - e), max(0, y1 - e), min(w, x2 + e), min(h, y2 + e)
     win = img[wy1:wy2, wx1:wx2]
     strokes = strokes[wy1:wy2, wx1:wx2] > 0
+    if not strokes.any():
+        return False
     gray = cv2.cvtColor(win, cv2.COLOR_BGR2GRAY)
     # Chỉ xoá nét trong đúng khung chữ khi dò lòng bóng: chữ (nhất là chữ Anh) hay sát viền bóng, xoá cả phần
     # nới rộng thì mất viền và vùng loang tràn ra ngoài. Furigana ngoài khung thành "lỗ" trong lòng bóng, vẫn được tô.
@@ -226,21 +243,34 @@ def _fill_light_bubble(img: np.ndarray, strokes: np.ndarray, box: tuple[int, int
     box_in = interior[y1 - wy1:y2 - wy1, x1 - wx1:x2 - wx1]
     if box_in.mean() < 0.9 or interior.sum() < 1.3 * (x2 - x1) * (y2 - y1):
         return False
-    bg = np.median(win[region & ~strokes], axis=0)
+    support = win[region & ~strokes]
+    if not len(support):
+        return False
+    bg = np.median(support, axis=0)
     if bg.min() < 230:
         return False
-    holes = _drop_edge_holes(interior & ~region, interior)
     # Nét chữ chỉ tô trong khung chữ (model hay đánh dấu nhầm cả tia của bóng tia sáng là chữ).
     in_box = np.zeros_like(strokes)
     p = FURIGANA_PAD
     in_box[max(0, y1 - p - wy1):y2 + p - wy1, max(0, x1 - p - wx1):x2 + p - wx1] = True
-    fill = holes | (strokes & interior & in_box)
+    luminance = cv2.cvtColor(win, cv2.COLOR_BGR2GRAY)
+    safe = cv2.erode(interior.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    holes = _drop_edge_holes(interior & ~region, interior)
+    fill = (holes | strokes) & in_box & safe
+    if preserve_texture:
+        # The ring of a short English line can include the outlined edge
+        # of the balloon. Validate only inside the proven white contour.
+        protected = cv2.erode(interior.astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
+        if not one_color_around(luminance, strokes & in_box & protected, strokes | ~protected,
+                                preserve_texture=True):
+            return False
+        win[fill & protected] = bg.astype(np.uint8)
+        return True
     # Chỉ bóng đúng một màu trắng: bóng trong suốt (tranh xám lộ qua một phần lòng bóng) thì tô trắng thành vệt trắng
     # → không xoá, chữ dịch đặt đè lên.
     # Chỉ bóng thoại một màu: sát quanh chữ phải trắng tinh. Chữ trên mảng trắng / chuyển màu của tranh (SFX "ぽた…"),
     # bóng trong suốt có tranh lộ qua thì để nguyên, chữ dịch đặt đè lên.
-    if not one_color_around(cv2.cvtColor(win, cv2.COLOR_BGR2GRAY), strokes & in_box, strokes,
-                            preserve_texture=preserve_texture):
+    if not one_color_around(luminance, strokes & in_box, strokes):
         return False
     win[fill] = bg.astype(np.uint8)
     return True
