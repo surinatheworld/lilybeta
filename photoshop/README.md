@@ -1,11 +1,11 @@
-# Lilyzono trong Photoshop 2023 (Windows)
+# Lilybeta trong Photoshop 2023 (Windows)
 
 **Đối chiếu nghĩa trước typeset:** Bước 7 chọn vùng theo nghĩa Nhật–Việt bằng NLLB cục bộ, hai encoder nghĩa
 và ngữ cảnh bóng đôi; không dùng độ dài/thứ tự làm dự phòng khi không API. Cài thêm
 `tools/install_translation_models.py` (trọng số NLLB phi thương mại, CC BY-NC 4.0). Bước 8 và chế độ
 chạy nhanh cho ảnh tiếng Nhật dừng nếu còn vùng chưa xác minh/câu chưa đặt. Chọn vùng, so với Raw, sửa câu rồi dùng
 **Xác nhận nghĩa vùng…** cho trường hợp cần đánh giá thủ công. Mặc định không dùng API. Xem hướng dẫn
-`docs/step7-meaning-review.md` trong repo. Đóng/mở lại bảng Lilyzono trong PTS để nạp mã nguồn mới.
+`docs/step7-meaning-review.md` trong repo. Đóng/mở lại bảng Lilybeta trong PTS để nạp mã nguồn mới.
 Không tự tạo bản dịch Việt mới.
 
 Sau Bước 7, panel tự mở **Bản gán thử (chữ Việt trong bóng)** để xem câu đã đặt vào đâu trước khi duyệt.
@@ -34,10 +34,10 @@ layer chữ, kerning Optical; sửa tay trong Photoshop như thường.
 ## Chạy
 
 1. Mở ảnh trong Photoshop.
-2. **File → Scripts → Browse…**, chọn `Lilyzono.jsx` trong thư mục này.
+2. **File → Scripts → Browse…**, chọn `lilybeta.jsx` trong thư mục này.
 3. Để dùng hộp thoại nhanh, giữ **Shift** khi chạy script. Dán bản dịch, **mỗi câu một dòng theo thứ tự đọc**, hoặc **Mở bản dịch (.txt / .docx)**
    (file chia theo trang: dòng chỉ có số trang, các dòng sau là thoại của trang đó – tool tự lấy đúng trang theo tên ảnh).
-   Với ảnh tiếng Anh, dùng mỗi dòng theo mẫu `⟦en|English source text⟧Câu dịch tiếng Việt`. Lilyzono tìm cụm chữ khớp
+   Với ảnh tiếng Anh, dùng mỗi dòng theo mẫu `⟦en|English source text⟧Câu dịch tiếng Việt`. Lilybeta tìm cụm chữ khớp
    câu gốc bằng OCR cục bộ. Bảng xem trước đếm riêng câu chưa khớp và vùng đã khớp nhưng còn chờ redraw.
 4. Bấm **Nhận diện và xem trước**. Hộp thoại đóng ngay và **Photoshop dùng tiếp được bình thường**; bộ xử lý chạy
    riêng với cửa sổ tiến độ (bấm **Huỷ** để dừng bất cứ lúc nào), khoảng 10–15 giây.
@@ -60,7 +60,7 @@ chọn được nhớ cho lần sau (cả khi làm từng trang); loại để t
 
 ### Redraw chữ trên bìa (offline)
 
-Dùng **Rectangular Marquee** khoanh sát cụm chữ trắng hoặc hồng san hô trên bìa. Mở Lilyzono ở chế độ nhanh
+Dùng **Rectangular Marquee** khoanh sát cụm chữ trắng hoặc hồng san hô trên bìa. Mở Lilybeta ở chế độ nhanh
 bằng phím **Shift**, rồi bấm **Redraw chữ trên bìa (offline)**. Xem trước ảnh và tạo layer Redraw nếu nền đã
 phục hồi đúng. Tách riêng số tập và chữ cần giữ khỏi vùng chọn. Chế độ bìa xử lý màu và nội suy bằng OpenCV,
 không chạy OCR hay model AI.
@@ -77,12 +77,11 @@ hoặc trong thư mục `photoshop` của repo khi chạy từ mã nguồn.
 ## Bộ xử lý
 
 - Từ mã nguồn: giữ cấu trúc repo và [chuẩn bị bộ xử lý một lần](../README.md#chuẩn-bị-bộ-xử-lý-photoshop-từ-mã-nguồn).
-  Sau đó mở `photoshop/Lilyzono.jsx` từ Photoshop. JSX tự gọi `.venv/Scripts/pythonw.exe` của dự án.
+  Sau đó mở `photoshop/lilybeta.jsx` từ Photoshop. JSX tự gọi `.venv/Scripts/pythonw.exe` của dự án.
 - Dán bản dịch: nếu các câu bị dính liền thành một dòng (một số nguồn copy chỉ xuống dòng kiểu LF), copy lại từ
   Notepad / Word, hoặc dùng **Mở bản dịch (.txt / .docx)**.
-- Bản độc lập: chạy `build_photoshop.bat`, gửi cả thư mục `dist/LilyzonoPhotoshop`. Không cần Python trên máy dùng.
 - Cần Windows Script Host để khởi động bộ xử lý ẩn. Tool không thay đổi thiết lập bảo mật hay cần mở máy chủ HTTP.
-- Model ONNX nằm trong thư mục `models` cạnh bộ xử lý. Xử lý trên máy, không gửi ảnh/bản dịch qua mạng.
+- Model ONNX nằm trong thư mục `models` cạnh bộ xử lý. Ở chế độ **Không dùng API**, ảnh và bản dịch được xử lý trên máy. Khi bật API, bước nhận diện hoặc ghép thoại gửi dữ liệu đến nhà cung cấp đã chọn.
 
 Cần cài các font của bộ đang chọn. Tool không phân phối các font này.
 
@@ -98,7 +97,7 @@ Câu dịch không khớp bóng nào (chữ vẽ tay nhỏ tool không nhận ra
 đen) tự đổi sang màu trắng. Trang nền đen: khe đen giữa các panel cũng được dùng để xác định thứ tự đọc.
 
 Nhận dạng và ghép thoại là tự động, có thể sai với bố cục khó. Luôn xem trước, đặc biệt SFX và chữ ngoài khung.
-Ở chế độ chạy nhanh, Lilyzono chỉ xoá những vùng đã ghép bản dịch. Vùng cần xử lý thêm dùng lớp chữ đánh dấu `REDRAW`.
+Ở chế độ chạy nhanh, Lilybeta chỉ xoá những vùng đã ghép bản dịch. Vùng cần xử lý thêm dùng lớp chữ đánh dấu `REDRAW`.
 
 ## Kiểm thử tích hợp ngầm
 
@@ -110,5 +109,5 @@ Kiểm tra layer chữ thật, Undo một bước, rollback khi lỗi, font/ki�
 .venv\Scripts\python tools/test_photoshop_integration.py --image 013.jpg --translation translation.txt --output output/ps-test
 ```
 
-Thêm `--profile isshiki` để thử bộ font Isshiki; `--script-folder dist/LilyzonoPhotoshop` để kiểm tra bộ xử lý đã đóng gói thay vì Python của repo.
+Thêm `--profile isshiki` để thử bộ font Isshiki.
 Ảnh xem trước PNG, PSD có layer và báo cáo JSON được ghi vào thư mục output đã chọn.

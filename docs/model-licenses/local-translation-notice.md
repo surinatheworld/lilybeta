@@ -6,7 +6,7 @@ The optional weights are downloaded separately, are unmodified, and are not incl
   licensed under [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/).
   The pinned int8 CTranslate2 conversion is distributed by
   [JustFrederik](https://huggingface.co/JustFrederik/nllb-200-distilled-600M-ct2-int8).
-  These weights are restricted to noncommercial use under that license. Lilyzono's code license does not replace it.
+  These weights are restricted to noncommercial use under that license.
 * **PP-OCRv5 detection and recognition** — PaddlePaddle/PaddleOCR contributors,
   [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR), Apache License 2.0.
   The unmodified ONNX distributions come from [RapidAI/RapidOCR](https://github.com/RapidAI/RapidOCR)

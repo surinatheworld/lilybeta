@@ -1,6 +1,6 @@
-"""Bảng điều khiển Lilyzono: cửa sổ chạy cạnh Photoshop, làm từng bước của quy trình typeset theo ID vùng thoại.
+"""Bảng điều khiển Lilybeta: cửa sổ chạy cạnh Photoshop, làm từng bước của quy trình typeset theo ID vùng thoại.
 
-Script Lilyzono.jsx trong Photoshop mở cửa sổ này (LilyzonoPhotoshop.py --panel --script <đường dẫn jsx>). Cửa sổ
+Script lilybeta.jsx trong Photoshop mở cửa sổ này (LilyzonoPhotoshop.py --panel --script <đường dẫn jsx>). Cửa sổ
 điều khiển Photoshop qua scripting (COM): chụp ảnh trang, gắn raw, tạo layer xoá chữ và layer chữ. Mọi kết quả nằm
 trong thư mục dự án (app.core.workflow), chỉnh tay trong bảng thoại được giữ khi chạy lại bước khác.
 """
@@ -29,7 +29,7 @@ from .core import ai, secrets, workflow
 from .core.semantic_review import TypesetBlocked
 from .core.workflow import BUBBLES, STEPS, STATES, Project
 
-INSTANCE = "LilyzonoPanel-" + hashlib.md5(os.environ.get("USERNAME", "").encode()).hexdigest()[:8]
+INSTANCE = "LilybetaPanel-" + hashlib.md5(os.environ.get("USERNAME", "").encode()).hexdigest()[:8]
 ICONS = {"done": "✓", "warn": "!", "error": "✗", "stale": "↻", "pending": "·", "running": "…", "blocked": "!"}
 COLORS = {"done": "#3fb950", "warn": "#d29922", "error": "#f85149", "stale": "#58a6ff", "pending": "#8b949e",
           "running": "#c9d1d9", "blocked": "#d29922"}
@@ -73,7 +73,7 @@ class Photoshop:
             pythoncom.CoInitialize()
             self._local.com = True
         if not self.script or not Path(self.script).is_file():
-            raise PhotoshopError("Không tìm thấy Lilyzono.jsx: mở bảng điều khiển từ Photoshop (File › Scripts).")
+            raise PhotoshopError("Không tìm thấy lilybeta.jsx: mở bảng điều khiển từ Photoshop (File › Scripts).")
         code = ("var LILYZONO_PS_NO_DIALOG = true; $.evalFile(new File(%s)); LilyzonoPS.bridge(%s, %s);"
                 % (json.dumps(self.script), json.dumps(command), json.dumps(json.dumps(args))))
         start = time.time()
@@ -696,7 +696,7 @@ class PanelWindow(QMainWindow):
         super().__init__()
         from .core.typeset_profiles import PROFILES
 
-        self.setWindowTitle("Lilyzono · Bảng điều khiển typeset")
+        self.setWindowTitle("Lilybeta · Bảng điều khiển typeset")
         self.ps = Photoshop(script)
         self.ai_config = load_ai_config()
         self.settings = QSettings("Lilyzono", "Panel")
@@ -1099,7 +1099,7 @@ class PanelWindow(QMainWindow):
             try:
                 self._fonts = self.ps.call("fonts")
             except PhotoshopError as exc:
-                QMessageBox.warning(self, "Lilyzono", f"Không lấy được danh sách font của Photoshop: {exc}")
+                QMessageBox.warning(self, "Lilybeta", f"Không lấy được danh sách font của Photoshop: {exc}")
                 return None
         return self._fonts
 
