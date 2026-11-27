@@ -237,6 +237,25 @@ class EditorTests(unittest.TestCase):
             self.page.regions[0].text = "C"
         self.assertTrue(self.doc.dirty)
 
+    def test_archive_labels_are_single_portable_filenames(self):
+        self.assertEqual(project._page_filename("trang 01.png"), "trang 01.png")
+        for name in ("", ".", "..", "folder/page.png", r"folder\page.png", "page.png.", "NUL.png", "a:b.png"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                project._page_filename(name)
+
+    def test_project_with_missing_raw_reads_an_independent_copy(self):
+        saved = str(Path(self.temp.name) / "portable.lzp")
+        project.save(saved, [self.page])
+        original = Path(self.page.path)
+        original.unlink()
+        root = Path(self.temp.name) / "unpacked"
+        root.mkdir()
+        with patch.object(project.tempfile, "mkdtemp", return_value=str(root)):
+            page = project.load(saved)["pages"][0]
+        self.assertEqual(Path(page.path).name, original.name)
+        self.assertTrue(Path(page.path).resolve().is_relative_to(root))
+        np.testing.assert_array_equal(self.page.original, page.original)
+
     def test_project_roundtrip_preserves_render_and_text(self):
         path = str(Path(self.temp.name) / "roundtrip.lzp")
         project.save(path, [self.page])

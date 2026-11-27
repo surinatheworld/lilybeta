@@ -14,6 +14,7 @@ import uuid
 import cv2
 import numpy as np
 
+from . import secrets
 from .inpaint_util import blend_back, resize_to
 
 GEMINI_DEFAULT_MODEL = "gemini-nano-banana-2.1"
@@ -58,7 +59,7 @@ def _decode(b64: str) -> np.ndarray:
 
 def _send(req: urllib.request.Request) -> dict:
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        with secrets.open_api_request(req, timeout=TIMEOUT) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")

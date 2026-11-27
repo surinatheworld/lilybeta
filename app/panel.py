@@ -105,16 +105,21 @@ def load_ai_config() -> ai.AIConfig:
     s = QSettings("Lilyzono", "Panel")
     provider = s.value("ai/provider", "none")
     return ai.AIConfig(provider=provider if provider in ai.PROVIDERS else "none", model=s.value("ai/model", ""),
-                       match_model=s.value("ai/match_model", ""), base_url=s.value("ai/base_url", ""),
+                       match_model=s.value("ai/match_model", ""),
+                       base_url=s.value("ai/compatible_url", s.value("ai/base_url", "")) if provider == "compatible" else "",
                        send_image_on_match=s.value("ai/match_image", "true") == "true")
 
 
 def save_ai_config(cfg: ai.AIConfig) -> None:
     s = QSettings("Lilyzono", "Panel")
+    if s.value("ai/provider") == "compatible" and not s.contains("ai/compatible_url"):
+        s.setValue("ai/compatible_url", s.value("ai/base_url", ""))
     s.setValue("ai/provider", cfg.provider)
     s.setValue("ai/model", cfg.model)
     s.setValue("ai/match_model", cfg.match_model)
-    s.setValue("ai/base_url", cfg.base_url)
+    if cfg.provider == "compatible":
+        s.setValue("ai/compatible_url", cfg.base_url)
+    s.remove("ai/base_url")
     s.setValue("ai/match_image", "true" if cfg.send_image_on_match else "false")
 
 
@@ -132,7 +137,8 @@ class AIDialog(QDialog):
         self.provider.setCurrentIndex(max(0, self.provider.findData(cfg.provider)))
         self.model = QComboBox(editable=True)
         self.match_model = QComboBox(editable=True)
-        self.base_url = QLineEdit(cfg.base_url)
+        compatible_url = cfg.base_url if cfg.provider == "compatible" else QSettings("Lilyzono", "Panel").value("ai/compatible_url", "")
+        self.base_url = QLineEdit(compatible_url)
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.Password)
         self.image = QCheckBox("Gửi kèm ảnh trang khi ghép bản dịch (chính xác hơn, tốn thêm token)")
@@ -167,7 +173,10 @@ class AIDialog(QDialog):
         key = self.provider.currentData()
         info = ai.PROVIDERS[key]
         on = key != "none"
-        for w in (self.model, self.match_model, self.base_url, self.key, self.image, self._load_btn, self._test_btn):
+        self.layout().setRowVisible(self.base_url, key == "compatible")
+        self.key.clear()
+        self.key.setPlaceholderText("")
+        for w in (self.model, self.match_model, self.key, self.image, self._load_btn, self._test_btn):
             w.setEnabled(on)
         for box in (self.model, self.match_model):
             box.clear()
@@ -181,7 +190,6 @@ class AIDialog(QDialog):
             return
         self.base_url.setPlaceholderText(info["url"])
         saved = secrets.get_key(key)
-        self.key.setText("")
         self.key.setPlaceholderText("đã lưu – để trống để giữ" if saved else
                                     ("không bắt buộc" if key == "compatible" else f"hoặc biến môi trường {info['env']}"))
         self.info.setText("Bước 7 tự đọc chữ Nhật còn thiếu, dịch Việt tham chiếu và ghép câu của bạn theo nghĩa. "
@@ -193,7 +201,8 @@ class AIDialog(QDialog):
 
     def config(self) -> ai.AIConfig:
         return ai.AIConfig(provider=self.provider.currentData(), model=self.model.currentText().strip(),
-                           match_model=self.match_model.currentText().strip(), base_url=self.base_url.text().strip(),
+                           match_model=self.match_model.currentText().strip(),
+                           base_url=self.base_url.text().strip() if self.provider.currentData() == "compatible" else "",
                            send_image_on_match=self.image.isChecked())
 
     def _store_key(self):
