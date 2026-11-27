@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
-let source = fs.readFileSync('photoshop/Lilyzono.jsx', 'utf8').replace(/^#target.*$/m, '');
+let source = fs.readFileSync('photoshop/lilybeta.jsx', 'utf8').replace(/^#target.*$/m, '');
 const sandbox = {LILYZONO_PS_NO_DIALOG:true};
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox);
@@ -70,20 +70,22 @@ sandbox.app = {
   putCustomOptions(_, value) { preferences = value; },
 };
 let quick = tool.options(doc, false);
+assert.equal(quick.label, 'Lilybeta · Typeset');
 let widgets = controls(quick);
-let mode = widgets.find((c) => c.kind === 'checkbox' && c.label.includes('Giữ lưới chấm'));
-assert.equal(mode.value, false);
-mode.value = true;
+const redrawOptions = (c) => c.kind === 'dropdownlist' && c.label.includes('Giữ lưới chấm (offline)');
+let mode = widgets.find(redrawOptions);
+assert.equal(mode.selection.index, 0);
+mode.selection = mode.label.indexOf('Giữ lưới chấm (offline)');
 widgets.find((c) => c.kind === 'edittext').text = 'Cảm ơn anh.';
 widgets.find((c) => c.label === 'Nhận diện và xem trước').onClick();
 assert.equal(quick.result.engine, 'screentone');
 assert.equal(quick.result.mode, 'page');
 quick = tool.options(doc, false);
 widgets = controls(quick);
-mode = widgets.find((c) => c.kind === 'checkbox' && c.label.includes('Giữ lưới chấm'));
-assert.equal(mode.value, true);
+mode = widgets.find(redrawOptions);
+assert.equal(mode.label[mode.selection.index], 'Giữ lưới chấm (offline)');
 widgets.find((c) => c.kind === 'edittext').text = '13\nCảm ơn anh.';
-const profiles = widgets.find((c) => c.kind === 'dropdownlist');
+const profiles = widgets.find((c) => c.kind === 'dropdownlist' && c.label.includes('Tự chọn font theo loại khung'));
 profiles.selection = profiles.label.indexOf('Tự chọn font theo loại khung');
 widgets.find((c) => c.kind === 'button' && c.label.startsWith('Làm cả chương')).onClick();
 assert.equal(quick.result.mode, 'scan');

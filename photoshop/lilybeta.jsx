@@ -1,6 +1,6 @@
 #target photoshop
 
-// Lilyzono: add editable typesetting layers to the current Photoshop document.
+// Lilybeta: add editable typesetting layers to the current Photoshop document.
 var LilyzonoPS = (function () {
     var context = null;
     // Đường dẫn file script này: bộ xử lý dùng để gọi lại Photoshop khi xong.
@@ -118,7 +118,7 @@ var LilyzonoPS = (function () {
         }
         var exe = new File(folder.fsName + "/LilyzonoPhotoshop.exe");
         if (exe.exists) return quote(exe.fsName);
-        throw new Error("Không tìm thấy bộ xử lý. Giữ Lilyzono.jsx cạnh LilyzonoPhotoshop.exe, hoặc chạy build_photoshop.bat.");
+        throw new Error("Không tìm thấy bộ xử lý. Hãy cài môi trường Python theo README ở thư mục gốc, rồi mở lại photoshop/lilybeta.jsx từ Photoshop.");
     }
 
     function snapshot(doc, file) {
@@ -348,7 +348,7 @@ var LilyzonoPS = (function () {
     // Bước 2 của "tự chọn font": bảng các loại khung tìm thấy (ảnh mẫu + số khung), chọn font cho từng loại.
     function finishScan(data, display) {
         var saved = savedFonts(), rows = [], i, k;
-        var win = new Window("dialog", "Lilyzono · Chọn font theo loại khung");
+        var win = new Window("dialog", "Lilybeta · Chọn font theo loại khung");
         win.orientation = "column"; win.alignChildren = "fill";
         win.add("statictext", undefined, data.pages.length + " ảnh. Chọn font cho từng loại khung (để trống: font mặc " +
                 "định); tool nhớ lựa chọn cho lần sau.", {multiline:true});
@@ -406,7 +406,7 @@ var LilyzonoPS = (function () {
     function groupName(data) { return "Lilyzono · " + (data.profile_name || "Typeset"); }
 
     function options(doc, display) {
-        var win = new Window("dialog", "Lilyzono · Typeset");
+        var win = new Window("dialog", "Lilybeta · Typeset");
         win.orientation = "column"; win.alignChildren = "fill";
         var size = pixelSize(doc), translationFile = null;
         win.add("statictext", undefined, doc.name + " · " + size[0] + " × " + size[1] + " px · " +
@@ -589,8 +589,8 @@ var LilyzonoPS = (function () {
         var launcher = new File(folder.fsName + "/run.vbs");
         var code = 'On Error Resume Next\r\n' +
             'CreateObject("WScript.Shell").Run ' + vbsString(workerCommand(scriptFolder, file)) + ', 1, False\r\n' +
-            'If Err.Number <> 0 Then MsgBox ' + vbsString("Không khởi động được bộ xử lý Lilyzono: ") +
-            ' & Err.Description, 16, "Lilyzono"\r\n';
+            'If Err.Number <> 0 Then MsgBox ' + vbsString("Không khởi động được bộ xử lý Lilybeta: ") +
+            ' & Err.Description, 16, "Lilybeta"\r\n';
         write(launcher, code, "ASCII");
         if (!launcher.execute()) throw new Error("Không khởi động được bộ xử lý cục bộ (Windows Script Host).");
         return null;
@@ -625,7 +625,7 @@ var LilyzonoPS = (function () {
     }
 
     function preview(data, display) {
-        var win = new Window("dialog", "Lilyzono · Kiểm tra trước khi tạo layer");
+        var win = new Window("dialog", "Lilybeta · Kiểm tra trước khi tạo layer");
         var body = win.add("group"); body.alignChildren = "top";
         body.add("image", undefined, new File(data.preview));
         var right = body.add("group"); right.orientation = "column"; right.alignChildren = "fill";
@@ -795,7 +795,7 @@ var LilyzonoPS = (function () {
     }
 
     function prepare(doc, request, scriptFolder, interactive) {
-        var folder = new Folder(Folder.temp.fsName + "/LilyzonoPS-" + new Date().getTime() + "-" + Math.floor(Math.random() * 100000));
+        var folder = new Folder(Folder.temp.fsName + "/LilybetaPS-" + new Date().getTime() + "-" + Math.floor(Math.random() * 100000));
         if (!folder.create()) throw new Error("Không tạo được thư mục xử lý tạm.");
         workerCommand(scriptFolder, new File(folder.fsName + "/request.json"));
         if (request.mode === "sfx_batch") {
@@ -841,7 +841,7 @@ var LilyzonoPS = (function () {
         request.doc_name = doc.name;
         request.doc_id = docId(doc);
         request.callback = interactive !== false;
-        request.script = SCRIPT_FILE ? new File(SCRIPT_FILE).fsName : scriptFolder.fsName + "/Lilyzono.jsx";
+        request.script = SCRIPT_FILE ? new File(SCRIPT_FILE).fsName : scriptFolder.fsName + "/lilybeta.jsx";
         return runWorker(scriptFolder, folder, request, interactive);
     }
 
@@ -984,7 +984,7 @@ var LilyzonoPS = (function () {
             } else labels.push("✗ " + p.doc_name + ": " + p.error);
         }
         if (!ok.length) throw new Error("Không làm được trang nào:\n" + labels.join("\n"));
-        var win = new Window("dialog", "Lilyzono · Cả chương");
+        var win = new Window("dialog", "Lilybeta · Cả chương");
         win.orientation = "column"; win.alignChildren = "fill";
         win.add("statictext", undefined, ok.length + "/" + data.pages.length + " trang sẵn sàng. Mỗi trang thành một nhóm layer " +
                 "(Ctrl+Z một lần trong trang đó để bỏ).", {multiline:true});
@@ -994,7 +994,7 @@ var LilyzonoPS = (function () {
         buttons.add("button", undefined, "Tạo layer cho " + ok.length + " trang", {name:"ok"});
         if (display === false) return win;
         if (win.show() !== 1) return "cancel";
-        var progress = new Window("palette", "Lilyzono"), status = progress.add("statictext", undefined, "");
+        var progress = new Window("palette", "Lilybeta"), status = progress.add("statictext", undefined, "");
         status.preferredSize = [380, 20];
         progress.show();
         var errors = [];
@@ -1103,7 +1103,7 @@ var LilyzonoPS = (function () {
         return done.length;
     }
 
-    // --- Bảng điều khiển: cửa sổ Lilyzono chạy riêng, gọi các hàm dưới đây qua scripting của Photoshop (COM) ----------
+    // --- Bảng điều khiển: cửa sổ Lilybeta chạy riêng, gọi các hàm dưới đây qua scripting của Photoshop (COM) ----------
     var CLEAN_LAYER = "Xoá chữ (Lilyzono)";
 
     function layerByName(doc, name) {
@@ -1197,20 +1197,20 @@ var LilyzonoPS = (function () {
             try { app.refresh(); } catch (error) {}
             return encode({result:out});
         } catch (error) {
-            return encode({error:String(error.message || error) + (error.line ? " (Lilyzono.jsx dòng " + error.line + ")" : "")});
+            return encode({error:String(error.message || error) + (error.line ? " (lilybeta.jsx dòng " + error.line + ")" : "")});
         }
     }
 
     function launchPanel(scriptFolder) {
-        var folder = new Folder(Folder.temp.fsName + "/LilyzonoPanel");
+        var folder = new Folder(Folder.temp.fsName + "/LilybetaPanel");
         if (!folder.exists && !folder.create()) throw new Error("Không tạo được thư mục tạm.");
-        var script = SCRIPT_FILE ? new File(SCRIPT_FILE).fsName : scriptFolder.fsName + "/Lilyzono.jsx";
+        var script = SCRIPT_FILE ? new File(SCRIPT_FILE).fsName : scriptFolder.fsName + "/lilybeta.jsx";
         var launcher = new File(folder.fsName + "/panel.vbs");
         var code = 'On Error Resume Next\r\n' +
             'CreateObject("WScript.Shell").Run ' + vbsString(workerBase(scriptFolder) + " --panel --script " + quote(script)) +
             ', 1, False\r\n' +
-            'If Err.Number <> 0 Then MsgBox ' + vbsString("Không mở được bảng điều khiển Lilyzono: ") +
-            ' & Err.Description, 16, "Lilyzono"\r\n';
+            'If Err.Number <> 0 Then MsgBox ' + vbsString("Không mở được bảng điều khiển Lilybeta: ") +
+            ' & Err.Description, 16, "Lilybeta"\r\n';
         write(launcher, code, "ASCII");
         if (!launcher.execute()) throw new Error("Không mở được bảng điều khiển (Windows Script Host).");
     }
@@ -1235,5 +1235,5 @@ var LilyzonoPS = (function () {
 
 if (typeof LILYZONO_PS_NO_DIALOG === "undefined" || !LILYZONO_PS_NO_DIALOG) {
     try { LilyzonoPS.main(new File($.fileName).parent); }
-    catch (error) { alert("Lilyzono: " + error.message); }
+    catch (error) { alert("Lilybeta: " + error.message); }
 }

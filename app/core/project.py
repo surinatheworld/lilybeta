@@ -8,9 +8,13 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
+import shutil
 import tempfile
 import zipfile
+from contextlib import ExitStack
 from dataclasses import asdict, fields
+from pathlib import Path, PureWindowsPath
 
 import cv2
 import numpy as np
@@ -102,25 +106,49 @@ def save(path: str, pages: list[Page], chapter=None, direction: int = 0) -> None
             d.saved_index = d.index
 
 
+def _page_filename(name: str) -> str:
+    """Accept one portable filename before using an archive label on the filesystem."""
+    if (not isinstance(name, str) or not name or name.endswith((".", " "))
+            or re.search(r'[<>:"/\\|?*\x00-\x1f]', name) or PureWindowsPath(name).is_reserved()):
+        raise ValueError("Tên tệp ảnh trong dự án không hợp lệ.")
+    return name
+
+
+def _local_source(path: str) -> bool:
+    # An archive from another machine must not initiate a network-share connection.
+    return isinstance(path, str) and os.path.isabs(path) and not path.replace("\\", "/").startswith("//")
+
+
 def load(path: str) -> dict:
     """Đọc dự án. Trả về {"pages": [Page], "chapter_folder": str | None, "translations": {...}, "filled": [...],
     "direction": int}. Ảnh raw lấy từ chỗ cũ nếu còn, không thì giải nén ra thư mục tạm."""
-    with zipfile.ZipFile(path) as z:
+    with zipfile.ZipFile(path) as z, ExitStack() as cleanup:
         meta = json.loads(z.read("project.json").decode("utf-8"))
         infos = meta["pages"]
+        names = [_page_filename(info["name"]) for info in infos]
         ch = meta.get("chapter")
         # Raw: dùng file gốc nếu vẫn còn nguyên (chế độ chương: cả thư mục), không thì giải nén.
         def same(info):
             p = info["raw_path"]
-            return os.path.exists(p) and os.path.getsize(p) == z.getinfo(info["raw"]).file_size
+            return (_local_source(p) and os.path.basename(p) == info["name"]
+                    and os.path.isfile(p) and os.path.getsize(p) == z.getinfo(info["raw"]).file_size)
 
         folder = ch["folder"] if ch else None
-        if not all(same(i) for i in infos) or (folder and not os.path.isdir(folder)):
+        if (folder and (not _local_source(folder) or not os.path.isdir(folder))) or not all(same(i) for i in infos):
             folder = tempfile.mkdtemp(prefix="lilyzono_project_")
-            for info in infos:
-                with open(os.path.join(folder, info["name"]), "wb") as f:
-                    f.write(z.read(info["raw"]))
-            raw_paths = [os.path.join(folder, i["name"]) for i in infos]
+            cleanup.callback(shutil.rmtree, folder)
+            root = Path(folder).resolve()
+            raw_paths = []
+            for number, (info, name) in enumerate(zip(infos, names)):
+                # Independent pages may have identical names; chapters share one directory.
+                parent = root if ch else root / str(number)
+                parent.mkdir(exist_ok=True)
+                target = parent / name
+                if target.resolve().parent != parent:
+                    raise ValueError("Ảnh phải nằm trong thư mục giải nén của dự án.")
+                with z.open(info["raw"]) as source, target.open("xb") as dest:
+                    shutil.copyfileobj(source, dest)
+                raw_paths.append(str(target))
         else:
             raw_paths = [i["raw_path"] for i in infos]
         pages = []
@@ -157,6 +185,7 @@ def load(path: str) -> dict:
             page.doc = doc
             pages.append(page)
         reserve_uids(max_uid)
+        cleanup.pop_all()  # The editor keeps these raw files open for the project lifetime.
     return {"pages": pages, "chapter_folder": folder if ch else None,
             "translations": {int(k): v for k, v in (ch or {}).get("translations", {}).items()},
             "filled": (ch or {}).get("filled", []), "direction": meta.get("direction", 0)}

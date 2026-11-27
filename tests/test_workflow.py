@@ -48,6 +48,24 @@ class AIClientTests(unittest.TestCase):
             out = ai.ask_json(ai.AIConfig(provider=provider), "detect", "sys", "hello", [b"jpeg"], ai.MATCH_SCHEMA, "assign_lines")
         return out, sent
 
+    def test_only_compatible_provider_uses_custom_url(self):
+        custom = "http://localhost:11434/v1/"
+        for provider in ("gemini", "openai", "anthropic", "none"):
+            with self.subTest(provider=provider):
+                self.assertEqual(ai.AIConfig(provider=provider, base_url=custom).url(), ai.PROVIDERS[provider]["url"])
+        self.assertEqual(ai.AIConfig(provider="compatible", base_url=custom).url(), custom.rstrip("/"))
+
+    def test_api_credentials_are_single_request_headers(self):
+        for header in ("Authorization", "X-api-key", "X-goog-api-key"):
+            with self.subTest(header=header):
+                req = urllib.request.Request("https://example.invalid/", headers={header: "test"})
+                with patch("urllib.request.urlopen") as transport:
+                    ai.secrets.open_api_request(req, timeout=1)
+                    transport.assert_called_once_with(req, timeout=1)
+                self.assertEqual(req.get_header(header), "test")
+                self.assertNotIn(header, req.headers)
+                self.assertEqual(req.unredirected_hdrs[header], "test")
+
     def test_gemini_uses_json_schema_and_reads_text(self):
         out, sent = self._ask("gemini", {"candidates": [{"content": {"parts": [{"text": '{"assignments": []}'}]}}]})
         self.assertEqual(out, {"assignments": []})

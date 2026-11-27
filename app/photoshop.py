@@ -1,4 +1,4 @@
-"""Bộ xử lý cho script Lilyzono.jsx trong Photoshop.
+"""Bộ xử lý cho script lilybeta.jsx trong Photoshop.
 
 Script ghi request.json rồi trả quyền cho Photoshop ngay; bộ xử lý chạy riêng (cửa sổ tiến độ + nút Huỷ), ghi
 result.json và – ở chế độ "callback" – gọi lại Photoshop (LilyzonoPS.finish) để xem trước và tạo layer. Không có
@@ -129,7 +129,7 @@ def register_fonts(families) -> None:
 
 def _check_setup(profile: str) -> None:
     if not Path(model_path("comictextdetector.pt.onnx")).is_file():
-        raise ValueError("Thiếu model comictextdetector.pt.onnx. Chạy build_photoshop.bat hoặc chép model vào thư mục models.")
+        raise ValueError("Thiếu models/comictextdetector.pt.onnx. Hãy tải model nhận diện theo mục chuẩn bị bộ xử lý trong README ở thư mục gốc.")
     if profile not in PROFILES:
         raise ValueError("Chưa hỗ trợ bộ font này.")
     if profile == CUSTOM:
@@ -449,7 +449,7 @@ def notify_photoshop(script: str, folder: Path) -> None:
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError("Photoshop đã đóng.") from exc
     code = ("var LILYZONO_PS_NO_DIALOG = true; $.evalFile(new File(%s));"
-            "try { LilyzonoPS.finish(%s); } catch (e) { alert('Lilyzono: ' + e.message); }"
+            "try { LilyzonoPS.finish(%s); } catch (e) { alert('Lilybeta: ' + e.message); }"
             % (json.dumps(script), json.dumps(str(folder))))
     # Photoshop làm xong nhưng không vẽ lại màn hình / bảng Layers (và không trả lời lệnh này) cho tới khi nhận thêm
     # một lệnh scripting khác – người dùng tưởng chưa tạo gì. Trong lúc chờ, cứ 2 giây gửi một lệnh vẽ lại nhẹ.
@@ -487,7 +487,7 @@ def run_with_progress(job: Path, request: dict) -> int:
     except Exception:  # noqa: BLE001 - giao diện tối chỉ để đẹp
         pass
     win = QWidget(None, Qt.WindowStaysOnTopHint)
-    win.setWindowTitle("Lilyzono")
+    win.setWindowTitle("Lilybeta")
     lay = QVBoxLayout(win)
     what = {"batch": f"cả chương ({len(request.get('pages') or [])} trang)",
             "cover_redraw": "redraw chữ trên bìa",
@@ -524,7 +524,7 @@ def run_with_progress(job: Path, request: dict) -> int:
         timer.stop()
         result = state["result"]
         if not result["ok"]:
-            QMessageBox.critical(win, "Lilyzono", result["error"])
+            QMessageBox.critical(win, "Lilybeta", result["error"])
             app.quit()
             return
         step.setText("Đang mở bản xem trước trong Photoshop…")
@@ -533,7 +533,7 @@ def run_with_progress(job: Path, request: dict) -> int:
         try:
             notify_photoshop(request.get("script", ""), job.parent)
         except Exception as exc:  # noqa: BLE001
-            QMessageBox.warning(None, "Lilyzono", f"Không gửi được kết quả sang Photoshop: {exc}\n"
+            QMessageBox.warning(None, "Lilybeta", f"Không gửi được kết quả sang Photoshop: {exc}\n"
                                 f"Kết quả nằm ở: {job.parent}")
         app.quit()
 
@@ -547,10 +547,10 @@ def run_with_progress(job: Path, request: dict) -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Bộ xử lý cục bộ cho Lilyzono Photoshop")
+    parser = argparse.ArgumentParser(description="Bộ xử lý cục bộ cho Lilybeta trong Photoshop")
     parser.add_argument("--job", type=Path)
     parser.add_argument("--panel", action="store_true", help="mở bảng điều khiển (cửa sổ chạy cạnh Photoshop)")
-    parser.add_argument("--script", default="", help="đường dẫn Lilyzono.jsx (bảng điều khiển gọi lại Photoshop)")
+    parser.add_argument("--script", default="", help="đường dẫn lilybeta.jsx (bảng điều khiển gọi lại Photoshop)")
     args = parser.parse_args(argv)
     if args.panel:
         from .panel import main as panel_main

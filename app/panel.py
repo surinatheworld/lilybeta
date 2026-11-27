@@ -1,6 +1,6 @@
-"""Bảng điều khiển Lilyzono: cửa sổ chạy cạnh Photoshop, làm từng bước của quy trình typeset theo ID vùng thoại.
+"""Bảng điều khiển Lilybeta: cửa sổ chạy cạnh Photoshop, làm từng bước của quy trình typeset theo ID vùng thoại.
 
-Script Lilyzono.jsx trong Photoshop mở cửa sổ này (LilyzonoPhotoshop.py --panel --script <đường dẫn jsx>). Cửa sổ
+Script lilybeta.jsx trong Photoshop mở cửa sổ này (LilyzonoPhotoshop.py --panel --script <đường dẫn jsx>). Cửa sổ
 điều khiển Photoshop qua scripting (COM): chụp ảnh trang, gắn raw, tạo layer xoá chữ và layer chữ. Mọi kết quả nằm
 trong thư mục dự án (app.core.workflow), chỉnh tay trong bảng thoại được giữ khi chạy lại bước khác.
 """
@@ -29,7 +29,7 @@ from .core import ai, secrets, workflow
 from .core.semantic_review import TypesetBlocked
 from .core.workflow import BUBBLES, STEPS, STATES, Project
 
-INSTANCE = "LilyzonoPanel-" + hashlib.md5(os.environ.get("USERNAME", "").encode()).hexdigest()[:8]
+INSTANCE = "LilybetaPanel-" + hashlib.md5(os.environ.get("USERNAME", "").encode()).hexdigest()[:8]
 ICONS = {"done": "✓", "warn": "!", "error": "✗", "stale": "↻", "pending": "·", "running": "…", "blocked": "!"}
 COLORS = {"done": "#3fb950", "warn": "#d29922", "error": "#f85149", "stale": "#58a6ff", "pending": "#8b949e",
           "running": "#c9d1d9", "blocked": "#d29922"}
@@ -73,7 +73,7 @@ class Photoshop:
             pythoncom.CoInitialize()
             self._local.com = True
         if not self.script or not Path(self.script).is_file():
-            raise PhotoshopError("Không tìm thấy Lilyzono.jsx: mở bảng điều khiển từ Photoshop (File › Scripts).")
+            raise PhotoshopError("Không tìm thấy lilybeta.jsx: mở bảng điều khiển từ Photoshop (File › Scripts).")
         code = ("var LILYZONO_PS_NO_DIALOG = true; $.evalFile(new File(%s)); LilyzonoPS.bridge(%s, %s);"
                 % (json.dumps(self.script), json.dumps(command), json.dumps(json.dumps(args))))
         start = time.time()
@@ -105,16 +105,21 @@ def load_ai_config() -> ai.AIConfig:
     s = QSettings("Lilyzono", "Panel")
     provider = s.value("ai/provider", "none")
     return ai.AIConfig(provider=provider if provider in ai.PROVIDERS else "none", model=s.value("ai/model", ""),
-                       match_model=s.value("ai/match_model", ""), base_url=s.value("ai/base_url", ""),
+                       match_model=s.value("ai/match_model", ""),
+                       base_url=s.value("ai/compatible_url", s.value("ai/base_url", "")) if provider == "compatible" else "",
                        send_image_on_match=s.value("ai/match_image", "true") == "true")
 
 
 def save_ai_config(cfg: ai.AIConfig) -> None:
     s = QSettings("Lilyzono", "Panel")
+    if s.value("ai/provider") == "compatible" and not s.contains("ai/compatible_url"):
+        s.setValue("ai/compatible_url", s.value("ai/base_url", ""))
     s.setValue("ai/provider", cfg.provider)
     s.setValue("ai/model", cfg.model)
     s.setValue("ai/match_model", cfg.match_model)
-    s.setValue("ai/base_url", cfg.base_url)
+    if cfg.provider == "compatible":
+        s.setValue("ai/compatible_url", cfg.base_url)
+    s.remove("ai/base_url")
     s.setValue("ai/match_image", "true" if cfg.send_image_on_match else "false")
 
 
@@ -132,7 +137,8 @@ class AIDialog(QDialog):
         self.provider.setCurrentIndex(max(0, self.provider.findData(cfg.provider)))
         self.model = QComboBox(editable=True)
         self.match_model = QComboBox(editable=True)
-        self.base_url = QLineEdit(cfg.base_url)
+        compatible_url = cfg.base_url if cfg.provider == "compatible" else QSettings("Lilyzono", "Panel").value("ai/compatible_url", "")
+        self.base_url = QLineEdit(compatible_url)
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.Password)
         self.image = QCheckBox("Gửi kèm ảnh trang khi ghép bản dịch (chính xác hơn, tốn thêm token)")
@@ -167,7 +173,10 @@ class AIDialog(QDialog):
         key = self.provider.currentData()
         info = ai.PROVIDERS[key]
         on = key != "none"
-        for w in (self.model, self.match_model, self.base_url, self.key, self.image, self._load_btn, self._test_btn):
+        self.layout().setRowVisible(self.base_url, key == "compatible")
+        self.key.clear()
+        self.key.setPlaceholderText("")
+        for w in (self.model, self.match_model, self.key, self.image, self._load_btn, self._test_btn):
             w.setEnabled(on)
         for box in (self.model, self.match_model):
             box.clear()
@@ -181,7 +190,6 @@ class AIDialog(QDialog):
             return
         self.base_url.setPlaceholderText(info["url"])
         saved = secrets.get_key(key)
-        self.key.setText("")
         self.key.setPlaceholderText("đã lưu – để trống để giữ" if saved else
                                     ("không bắt buộc" if key == "compatible" else f"hoặc biến môi trường {info['env']}"))
         self.info.setText("Bước 7 tự đọc chữ Nhật còn thiếu, dịch Việt tham chiếu và ghép câu của bạn theo nghĩa. "
@@ -193,7 +201,8 @@ class AIDialog(QDialog):
 
     def config(self) -> ai.AIConfig:
         return ai.AIConfig(provider=self.provider.currentData(), model=self.model.currentText().strip(),
-                           match_model=self.match_model.currentText().strip(), base_url=self.base_url.text().strip(),
+                           match_model=self.match_model.currentText().strip(),
+                           base_url=self.base_url.text().strip() if self.provider.currentData() == "compatible" else "",
                            send_image_on_match=self.image.isChecked())
 
     def _store_key(self):
@@ -696,7 +705,7 @@ class PanelWindow(QMainWindow):
         super().__init__()
         from .core.typeset_profiles import PROFILES
 
-        self.setWindowTitle("Lilyzono · Bảng điều khiển typeset")
+        self.setWindowTitle("Lilybeta · Bảng điều khiển typeset")
         self.ps = Photoshop(script)
         self.ai_config = load_ai_config()
         self.settings = QSettings("Lilyzono", "Panel")
@@ -1099,7 +1108,7 @@ class PanelWindow(QMainWindow):
             try:
                 self._fonts = self.ps.call("fonts")
             except PhotoshopError as exc:
-                QMessageBox.warning(self, "Lilyzono", f"Không lấy được danh sách font của Photoshop: {exc}")
+                QMessageBox.warning(self, "Lilybeta", f"Không lấy được danh sách font của Photoshop: {exc}")
                 return None
         return self._fonts
 

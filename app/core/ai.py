@@ -71,7 +71,9 @@ class AIConfig:
         return model
 
     def url(self) -> str:
-        return (self.base_url or PROVIDERS[self.provider]["url"]).rstrip("/")
+        if self.provider == "compatible" and self.base_url:
+            return self.base_url.rstrip("/")
+        return PROVIDERS[self.provider]["url"]
 
     def key(self) -> str:
         info = PROVIDERS[self.provider]
@@ -103,7 +105,7 @@ def _post(url: str, body: dict, headers: dict, title: str, retry: bool = True) -
 
 def _send(req: urllib.request.Request, title: str) -> dict:
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        with secrets.open_api_request(req, timeout=TIMEOUT) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")

@@ -13,11 +13,26 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QTableWidget, QHeaderView, QMessageBox, QComboBox
 
 from app.core import workflow, match_text
-from app.panel import PanelWindow, COLS, C_JA, C_VI, C_LINES, C_MEANING, _batch_status
+from app.core.ai import AIConfig, PROVIDERS
+from app.panel import AIDialog, PanelWindow, COLS, C_JA, C_VI, C_LINES, C_MEANING, _batch_status
 from app.core.semantic_review import confirm_region
 
 
 app = QApplication([])
+
+with patch("app.panel.secrets.get_key", return_value=""):
+    compatible_url = "http://localhost:11434/v1"
+    dialog = AIDialog(AIConfig(provider="compatible", base_url=compatible_url))
+    dialog.key.setText("sample")
+    for provider in ("gemini", "anthropic", "openai", "none"):
+        dialog.provider.setCurrentIndex(dialog.provider.findData(provider))
+        assert not dialog.key.text() and not dialog.layout().isRowVisible(dialog.base_url)
+        assert dialog.config().url() == PROVIDERS[provider]["url"]
+    dialog.provider.setCurrentIndex(dialog.provider.findData("compatible"))
+    assert dialog.layout().isRowVisible(dialog.base_url)
+    assert dialog.config().url() == compatible_url
+    dialog.close()
+
 with tempfile.TemporaryDirectory() as folder:
     project = workflow.Project(folder)
     project.sync_documents([{"id":1,"name":"013.jpg"}])

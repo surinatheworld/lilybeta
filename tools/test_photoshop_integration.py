@@ -147,7 +147,7 @@ def main():
               "stem":args.image.stem, "request":{"protocol":1, "profile":args.profile, "engine":"simple", "right_to_left":True, "lines":lines}}
     if args.reuse_job:
         config["data"] = json.loads((args.reuse_job / "result.json").read_text(encoding="utf-8"))
-    source = (ROOT / "photoshop/Lilyzono.jsx").read_text(encoding="utf-8")
+    source = (ROOT / "photoshop/lilybeta.jsx").read_text(encoding="utf-8")
     source = "\n".join(line for line in source.splitlines() if not line.startswith("#target"))
     script = "var LILYZONO_PS_NO_DIALOG = true;\n" + source + "\n" + DRIVER % json.dumps(config, ensure_ascii=False)
     result = json.loads(app.DoJavaScript(script))
