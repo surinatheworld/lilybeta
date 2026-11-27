@@ -1,4 +1,4 @@
-# Lilybeta
+# Lilybeta là bản thử nghiệm trên Photoshop của Lilyzono
 
 Lilybeta giúp dàn bản dịch truyện vào từng bóng thoại trong Photoshop 2023 trên Windows. Bạn đưa vào ảnh gốc (raw), hoặc cả ảnh gốc và bản đã xóa chữ (redraw), cùng bản dịch có sẵn. Kết quả là tài liệu Photoshop có lớp redraw và các lớp chữ chỉnh sửa được. Sau khi cài đặt một lần, mở **File → Scripts → Browse…** và chọn `photoshop/lilybeta.jsx`. Script tự gọi bộ xử lý Python cho các bước nhận diện, xóa chữ và dàn chữ.
 
